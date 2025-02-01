@@ -1,15 +1,40 @@
 <script setup lang="ts">
 import { RouterLink, RouterView } from 'vue-router'
-import HelloWorld from './components/HelloWorld.vue'
+// @ts-ignore
 import ElementBanner from './components/elements/ElementBanner.vue'
+import ElementNavigation from './components/elements/ElementNavigation.vue';
+
+import { useElementSize } from '@vueuse/core';
+import { onMounted, ref, useTemplateRef, watch } from 'vue';
+
+const navOpen = ref(false);
+</script>
+
+<script>
+
 </script>
 
 <template>
+
   <header>
-    <ElementBanner />
+    <ElementBanner @menuOpen="navOpen = true"/>
   </header>
 
   <RouterView />
+
+  <div
+    class="nav-background"
+    :style="{
+      opacity: navOpen ? '100%' : '0%', 
+      visibility: navOpen ? 'visible' : 'hidden'
+    }"
+    @click="navOpen = false">
+  </div>
+  
+  <ElementNavigation
+    class="nav-bar"
+    :style="{ left: navOpen ? '0px' : '-300px' }"
+    @menuClose="navOpen = false"/>
 </template>
 
 <style scoped>
@@ -27,54 +52,25 @@ header {
   margin: 0 auto 2rem;
 }
 
-nav {
+.nav-bar {
+  position: fixed;
+  top: 0;
+  left: -300px;
+  transition: left 0.3s ease-in-out;
+}
+
+.nav-bar.nav-open {
+  left: 0;
+}
+
+.nav-background {
+  position: fixed;
+  top: 0;
+  left: 0;
   width: 100%;
-  font-size: 12px;
-  text-align: center;
-  margin-top: 2rem;
-}
-
-nav a.router-link-exact-active {
-  color: var(--color-text);
-}
-
-nav a.router-link-exact-active:hover {
-  background-color: transparent;
-}
-
-nav a {
-  display: inline-block;
-  padding: 0 1rem;
-  border-left: 1px solid var(--color-border);
-}
-
-nav a:first-of-type {
-  border: 0;
-}
-
-@media (min-width: 1024px) {
-  header {
-    display: flex;
-    place-items: center;
-  }
-
-  .logo {
-    margin: 0 2rem 0 0;
-  }
-
-  header .wrapper {
-    display: flex;
-    place-items: flex-start;
-    flex-wrap: wrap;
-  }
-
-  nav {
-    text-align: left;
-    margin-left: -1rem;
-    font-size: 1rem;
-
-    padding: 1rem 0;
-    margin-top: 1rem;
-  }
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  opacity: 40%;
+  transition: opacity 0.3s ease-in-out, visibility 0.3s ease-in-out;
 }
 </style>
