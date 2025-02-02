@@ -10,10 +10,6 @@ import { onMounted, ref, useTemplateRef, watch } from 'vue';
 const navOpen = ref(false);
 </script>
 
-<script>
-
-</script>
-
 <template>
 
   <header>
@@ -34,10 +30,12 @@ const navOpen = ref(false);
   <ElementNavigation
     class="nav-bar"
     :style="{ left: navOpen ? '0px' : '-300px' }"
-    @menuClose="navOpen = false"/>
+    @menuClose="navOpen = false"
+    />
 </template>
 
 <style scoped>
+
 header {
   position: fixed;
   top: 0;
@@ -70,7 +68,7 @@ header {
   width: 100%;
   height: 100%;
   background: rgba(0, 0, 0, 0.5);
-  opacity: 40%;
+  opacity: 100%;
   transition: opacity 0.3s ease-in-out, visibility 0.3s ease-in-out;
 }
 </style>

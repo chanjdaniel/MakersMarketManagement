@@ -1,22 +1,22 @@
 <script setup lang="ts">
-    import ElementNavigationItem from './ElementNavigationItem.vue';
+import ElementNavigationItem from './ElementNavigationItem.vue';
 </script>
 
 <template>
-    <div class="nav-bar">
+    <div class="nav-bar" ref="nav-bar">
         <button class="close-button" @click="$emit('menuClose')">
             <img alt="Close button" class="close-icon" src="@/assets/close_round.svg"/>
         </button>
 
         <div class="nav">
-            <ElementNavigationItem>
+            <ElementNavigationItem to="welcome">
                 <template #icon>
                     <img alt="Settings" class="nav-icon" src="@/assets/settings-icon.svg"/>
                 </template>
                 <h3>Manage Tables</h3>
             </ElementNavigationItem>
 
-            <ElementNavigationItem>
+            <ElementNavigationItem to="vendors">
                 <template #icon>
                     <img alt="Vendors" class="nav-icon" src="@/assets/vendors-icon.svg"/>
                 </template>
@@ -26,7 +26,7 @@
                 </h3>
             </ElementNavigationItem>
 
-            <ElementNavigationItem>
+            <ElementNavigationItem to="vendors">
                 <template #icon>
                     <img alt="Tables" class="nav-icon" src="@/assets/tables-icon.svg"/>
                 </template>
@@ -36,14 +36,14 @@
                 </h3>
             </ElementNavigationItem>
 
-            <ElementNavigationItem>
+            <ElementNavigationItem to="vendors">
                 <template #icon>
                     <img alt="Discord" class="nav-icon" src="@/assets/tools-icon.svg"/>
                 </template>
                 <h3>Discord Tools</h3>
             </ElementNavigationItem>
 
-            <ElementNavigationItem>
+            <ElementNavigationItem to="vendors">
                 <template #icon>
                     <img alt="Change Log" class="nav-icon" src="@/assets/log-icon.svg"/>
                 </template>
