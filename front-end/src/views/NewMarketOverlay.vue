@@ -1,9 +1,20 @@
 <script setup lang="ts">
 import ElementFileDrop from '@/components/elements/ElementFileDrop.vue';
+import { ref } from 'vue';
+import { useRouter } from 'vue-router';
 
 defineProps<{
   newOpen: boolean;
 }>();
+
+const router = useRouter();
+const uploadedFiles = ref([]);
+
+const handleFileUploaded = (files: any) => {
+  uploadedFiles.value = files;
+
+  router.push('/market-setup');
+};
 </script>
 
 <template>
@@ -13,7 +24,7 @@ defineProps<{
             @click="$emit('newClose')"
             :style="{ opacity: newOpen ? '100%' : '0%' }">
         </div>
-        <ElementFileDrop :isOpen="newOpen"></ElementFileDrop>
+        <ElementFileDrop :isOpen="newOpen" @file-uploaded="handleFileUploaded"></ElementFileDrop>
     </div>
 </template>
 

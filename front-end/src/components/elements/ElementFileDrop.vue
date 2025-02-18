@@ -3,14 +3,17 @@ import IconImport from '@/components/icons/IconImport.vue';
 
 import { useDropZone } from '@vueuse/core'
 import { useFileDialog } from '@vueuse/core'
-import { shallowRef, useTemplateRef } from 'vue';
+import { shallowRef, useTemplateRef, ref, defineEmits } from 'vue';
 
 defineProps<{
   isOpen: boolean;
 }>();
 
+const emit = defineEmits(['file-uploaded']);
+
 const filesData = shallowRef<{ name: string, size: number, type: string, lastModified: number }[]>([])
 const dropZoneRef = useTemplateRef<HTMLElement>('dropZoneRef')
+
 
 function onDrop(files: File[] | null) {
     filesData.value = []
@@ -21,6 +24,7 @@ function onDrop(files: File[] | null) {
       type: file.type,
       lastModified: file.lastModified,
     }))
+    uploadSuccess(filesData.value);
   }
 }
 
@@ -40,8 +44,14 @@ onChange((files) => {
       type: file.type,
       lastModified: file.lastModified,
     }))
+    uploadSuccess(filesData.value);
   }
 })
+
+function uploadSuccess(fileData: Array<{ name: string; size: number; type: string; lastModified: number }>) {
+  emit('file-uploaded', fileData);
+}
+
 </script>
 
 <template>
@@ -99,12 +109,9 @@ onChange((files) => {
     width: 120px;
     height: 25px;
 
-    /* MMGreen */
     background: var(--mm-green);
     border-radius: 5px;
     border: none;
-
-    /* Text */
 
     font-family: 'Merge One';
     font-style: normal;
