@@ -19,8 +19,8 @@
     justify-content: center;
     position: relative;
 
-    width: 100vw;
-    height: 5vh;
+    /* width: 100vw;
+    height: 5vh; */
 
     min-height: 30px;
     max-height: 100px;

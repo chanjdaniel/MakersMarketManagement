@@ -11,35 +11,50 @@ const navOpen = ref(false);
 </script>
 
 <template>
+  <div class="app-container">
+    <header>
+      <ElementBanner @menuOpen="navOpen = true"/>
+    </header>
 
-  <header>
-    <ElementBanner @menuOpen="navOpen = true"/>
-  </header>
+    <RouterView class="router-view"/>
 
-  <RouterView />
-
-  <div
-    class="nav-background"
-    :style="{
-      opacity: navOpen ? '100%' : '0%', 
-      visibility: navOpen ? 'visible' : 'hidden'
-    }"
-    @click="navOpen = false">
+    <div
+      class="nav-background"
+      :style="{
+        opacity: navOpen ? '100%' : '0%', 
+        visibility: navOpen ? 'visible' : 'hidden'
+      }"
+      @click="navOpen = false">
+    </div>
+    
+    <ElementNavigation
+      class="nav-bar"
+      :style="{ left: navOpen ? '0px' : '-300px' }"
+      @menuClose="navOpen = false"
+      />
   </div>
-  
-  <ElementNavigation
-    class="nav-bar"
-    :style="{ left: navOpen ? '0px' : '-300px' }"
-    @menuClose="navOpen = false"
-    />
 </template>
 
 <style scoped>
 
-header {
-  position: fixed;
-  top: 0;
+.app-container {
+  width: 100vw;
+  height: 100vh;
+  background-color: white;
+  padding: 0px;
+  margin: 0px;
+  position: absolute;
   left: 0;
+  top: 0;
+
+  display: flex;
+  flex-direction: column;
+}
+
+header {
+  /* position: fixed;
+  top: 0;
+  left: 0; */
   width: 100%;
   line-height: 1.5;
   max-height: 100vh;
@@ -70,5 +85,16 @@ header {
   background: rgba(0, 0, 0, 0.5);
   opacity: 100%;
   transition: opacity 0.3s ease-in-out, visibility 0.3s ease-in-out;
+}
+
+.banner {
+
+  width: 100vw;
+  height: 5vh;
+}
+
+.router-view {
+  width: 100vw;
+  height: 95vh;
 }
 </style>

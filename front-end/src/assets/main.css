@@ -40,3 +40,8 @@ a {
   font-family: 'Merge One';
   src: url('/fonts/MergeOne-Regular.ttf') format('truetype');
 }
+
+@font-face {
+  font-family: 'Outfit Regular';
+  src: url('/fonts/Outfit/static/Outfit-Regular.ttf') format('truetype');
+}

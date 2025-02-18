@@ -116,7 +116,7 @@ function uploadSuccess(fileData: Array<{ name: string; size: number; type: strin
     font-family: 'Merge One';
     font-style: normal;
     font-weight: 400;
-    font-size: 13px;
+    font-size: 15px;
     line-height: 15px;
     text-align: center;
 
