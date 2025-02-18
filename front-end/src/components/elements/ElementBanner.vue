@@ -1,11 +1,11 @@
 <script setup lang="ts">
-
+    import IconMenu from '../icons/IconMenu.vue';
 </script>
 
 <template>
     <div class="banner">
         <button class="menu-button" @click="$emit('menuOpen')">
-            <img alt="Menu button" class="menu-icon" src="@/assets/menu-icon.svg"/>
+            <IconMenu class="menu-icon" />
         </button>
         <img alt="MM logo" class="mm-logo" src="@/assets/mm-logo.png"/>
     </div>
@@ -60,7 +60,7 @@
 
 .menu-button:hover {
     background-color: #ececec;
-    color: white;
+    /* color: white; */
 }
 
 .menu-icon {

@@ -1,24 +1,30 @@
 <script setup lang="ts">
 import ElementNavigationItem from './ElementNavigationItem.vue';
+import IconSettings from '../icons/IconSettings.vue';
+import IconVendors from '../icons/IconVendors.vue';
+import IconTables from '../icons/IconTables.vue';
+import IconTools from '../icons/IconTools.vue';
+import IconLog from '../icons/IconLog.vue';
+import IconCloseRound from '../icons/IconCloseRound.vue';
 </script>
 
 <template>
     <div class="nav-bar" ref="nav-bar">
         <button class="close-button" @click="$emit('menuClose')">
-            <img alt="Close button" class="close-icon" src="@/assets/close_round.svg"/>
+            <IconCloseRound class="close-icon" />
         </button>
 
         <div class="nav">
             <ElementNavigationItem to="welcome">
                 <template #icon>
-                    <img alt="Settings" class="nav-icon" src="@/assets/settings-icon.svg"/>
+                    <IconSettings class="nav-icon" />
                 </template>
                 <h3>Manage Tables</h3>
             </ElementNavigationItem>
 
             <ElementNavigationItem to="vendors">
                 <template #icon>
-                    <img alt="Vendors" class="nav-icon" src="@/assets/vendors-icon.svg"/>
+                    <IconVendors class="nav-icon" />
                 </template>
                 <h3>
                     <span>View </span>
@@ -28,7 +34,7 @@ import ElementNavigationItem from './ElementNavigationItem.vue';
 
             <ElementNavigationItem to="vendors">
                 <template #icon>
-                    <img alt="Tables" class="nav-icon" src="@/assets/tables-icon.svg"/>
+                    <IconTables class="nav-icon" />
                 </template>
                 <h3>
                     <span>View </span>
@@ -38,14 +44,14 @@ import ElementNavigationItem from './ElementNavigationItem.vue';
 
             <ElementNavigationItem to="vendors">
                 <template #icon>
-                    <img alt="Discord" class="nav-icon" src="@/assets/tools-icon.svg"/>
+                    <IconTools class="nav-icon" />
                 </template>
                 <h3>Discord Tools</h3>
             </ElementNavigationItem>
 
             <ElementNavigationItem to="vendors">
                 <template #icon>
-                    <img alt="Change Log" class="nav-icon" src="@/assets/log-icon.svg"/>
+                    <IconLog class="nav-icon" />
                 </template>
                 <h3>View Change Log</h3>
             </ElementNavigationItem>
@@ -61,7 +67,8 @@ font-family: 'Merge One';
 font-style: normal;
 font-size: 16px;
 
-color: #ffffff;
+/* color: #ffffff; */
+color: var(--mm-black);
 }
 
 .nav-bar {
@@ -115,17 +122,18 @@ gap: 10px;
 }
 
 .vendors-1 {
-    color: #49B096;
+    color: var(--mm-black);
 }
 
 .tables-1 {
-    color: #E4A629;
+    color: var(--mm-black);
 }
 
 .nav-icon {
     height: 24px;
     aspect-ratio: 1;
     margin: 6px;
+    color: var(--mm-black);
 }
 
 

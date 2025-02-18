@@ -25,9 +25,15 @@ defineProps<{
   width: 100%;
   height: 36px;
 
-  background: #272323;
-  box-shadow: 0px 0px 4px 2px rgba(0, 0, 0, 0.25);
-  border-radius: 10px;
+  border-bottom: 1.75px solid #2723237c;
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+  transition: background-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+}
+
+.item:hover {
+  background-color: var(--hover-grey);
+  box-shadow: 0px -1.5px 5px 1.5px var(--hover-grey);
 }
 
 h3 {

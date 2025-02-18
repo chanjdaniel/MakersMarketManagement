@@ -1,5 +1,8 @@
 <script setup lang="ts">
+  import IconAddSquare from '@/components/icons/IconAddSquare.vue';
+  import IconUpload from '@/components/icons/IconUpload.vue';
   import ElementInitButton from '@/components/elements/ElementInitButton.vue';
+  import NewMarketOverlay from './NewMarketOverlay.vue';
   import LoadMarketOverlay from './LoadMarketOverlay.vue';
   import { ref } from 'vue';
 
@@ -9,14 +12,14 @@
 
 <template>
     <div class="init-view">
-      <ElementInitButton>
+      <ElementInitButton @click="newOpen = true">
         <h3>
           <span>Set Up </span>
           <span class="text-new">New </span>
           <span>Market</span>
         </h3>
         <template #icon>
-          <img alt="Settings" class="nav-icon" src="@/assets/add-square-icon.svg"/>
+          <IconAddSquare class="nav-icon" />
         </template>
       </ElementInitButton>
 
@@ -27,10 +30,11 @@
           <span>Market</span>
         </h3>
         <template #icon>
-          <img alt="Settings" class="nav-icon" src="@/assets/upload-icon.svg"/>
+          <IconUpload class="nav-icon" />
         </template>
       </ElementInitButton>
 
+      <NewMarketOverlay @newClose="newOpen = false" :newOpen="newOpen"/>
       <LoadMarketOverlay @loadClose="loadOpen = false" :loadOpen="loadOpen"/>
     </div>
 </template>
@@ -60,10 +64,14 @@ color: #ffffff;
 }
 
 .text-new {
-  color: #49B096;
+  color: var(--mm-green);
 }
 
 .text-existing {
-  color: #E4A629;
+  color: var(--mm-yellow);
+}
+
+.nav-icon {
+  color: white;
 }
 </style>

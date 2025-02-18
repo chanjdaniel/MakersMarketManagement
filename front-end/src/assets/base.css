@@ -19,6 +19,12 @@
   --vt-c-text-light-2: rgba(60, 60, 60, 0.66);
   --vt-c-text-dark-1: var(--vt-c-white);
   --vt-c-text-dark-2: rgba(235, 235, 235, 0.64);
+
+  --mm-black: #272323;
+  --mm-green: #49B096;
+  --mm-yellow: #E4A629;
+  --mm-beige: #E9E6E1;
+  --hover-grey: rgba(192, 192, 192, 0.486);
 }
 
 /* semantic color variables for this project */
