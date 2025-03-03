@@ -4,16 +4,61 @@ import { RouterLink, RouterView } from 'vue-router'
 import ElementBanner from './components/elements/ElementBanner.vue'
 import ElementNavigation from './components/elements/ElementNavigation.vue';
 
-import { useElementSize } from '@vueuse/core';
-import { onMounted, ref, useTemplateRef, watch } from 'vue';
+import { onMounted, ref, provide, computed, watch } from 'vue';
+import { useRoute, useRouter } from "vue-router";
+
+const hostname = import.meta.env.VITE_FLASK_HOST
 
 const navOpen = ref(false);
+const route = useRoute();
+const router = useRouter();
+const isLogin = computed(() => route.path === "/login");
+
+const user: any = ref(null);
+const setUser = (user_data: any) => {
+  user.value = user_data;
+};
+
+provide("user", user);
+provide("setUser", setUser);
+
+onMounted(async () => {
+  try {
+    const response = await fetch(`${hostname}/check-session`, {
+      method: "GET",
+      credentials: "include",
+    });
+
+    const data = await response.json();
+    console.log(data);
+
+    const storedUser = localStorage.getItem("user");
+    if (storedUser) {
+      user.value = JSON.parse(storedUser);
+    } else {
+      user.value = null;
+    }
+
+  } catch (error) {
+    console.error("Check session failed", error);
+    localStorage.removeItem("user");
+    setUser(null);
+    router.push("/login");
+  }
+});
+
+watch(isLogin, (newValue) => {
+  if (newValue) {
+    navOpen.value = false;
+  }
+});
+
 </script>
 
 <template>
   <div class="app-container">
     <header>
-      <ElementBanner @menuOpen="navOpen = true"/>
+      <ElementBanner @menuOpen="navOpen = true" :isLogin="isLogin"/>
     </header>
 
     <RouterView class="router-view"/>

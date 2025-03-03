@@ -12,6 +12,8 @@ const uploadedFiles = ref([]);
 
 const handleFileUploaded = (files: any) => {
   uploadedFiles.value = files;
+  localStorage.removeItem("upload");
+  localStorage.setItem("upload", JSON.stringify(files));
 
   router.push('/market-setup');
 };

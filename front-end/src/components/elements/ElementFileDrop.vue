@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import Papa from 'papaparse';
+
 import IconImport from '@/components/icons/IconImport.vue';
 
 import { useDropZone } from '@vueuse/core'
@@ -11,22 +13,8 @@ defineProps<{
 
 const emit = defineEmits(['file-uploaded']);
 
-const filesData = shallowRef<{ name: string, size: number, type: string, lastModified: number }[]>([])
+const filesData = shallowRef<{ name: string, size: number, type: string, lastModified: number, data: any }[]>([])
 const dropZoneRef = useTemplateRef<HTMLElement>('dropZoneRef')
-
-
-function onDrop(files: File[] | null) {
-    filesData.value = []
-  if (files) {
-    filesData.value = files.map(file => ({
-      name: file.name,
-      size: file.size,
-      type: file.type,
-      lastModified: file.lastModified,
-    }))
-    uploadSuccess(filesData.value);
-  }
-}
 
 const { isOverDropZone } = useDropZone(dropZoneRef, { dataTypes: ['text/csv'], onDrop: onDrop })
 
@@ -35,22 +23,52 @@ const { files, open, reset, onCancel, onChange } = useFileDialog({
   directory: false,
 })
 
-onChange((files) => {
-    filesData.value = []
-  if (files) {
-    filesData.value = Array.from(files).map(file => ({
-      name: file.name,
-      size: file.size,
-      type: file.type,
-      lastModified: file.lastModified,
-    }))
-    uploadSuccess(filesData.value);
-  }
-})
-
-function uploadSuccess(fileData: Array<{ name: string; size: number; type: string; lastModified: number }>) {
-  emit('file-uploaded', fileData);
+interface FileData {
+  name: string;
+  size: number;
+  type: string;
+  lastModified: number;
+  data: any;
 }
+
+function onDrop(files: File[] | null) {
+  handleUpload(files);
+}
+
+onChange((files: FileList | null) => {
+  const fileArray: File[] | null = files ? Array.from(files) : null;
+  handleUpload(fileArray);
+});
+
+async function handleUpload(files: File[] | null) {
+  if (files) {
+
+    filesData.value = await Promise.all(
+      files.map(async (file): Promise<FileData> => ({
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        lastModified: file.lastModified,
+        data: await readCSVFile(file),
+      }))
+    );
+
+    emit('file-uploaded', filesData.value);
+  } 
+}
+
+const readCSVFile = (file: File) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text: string = reader.result ? reader.result as string : "";
+      const result = Papa.parse(text, { header: true });
+      resolve(result);
+    };
+    reader.onerror = (error) => reject(error);
+    reader.readAsText(file);
+  });
+};
 
 </script>
 
