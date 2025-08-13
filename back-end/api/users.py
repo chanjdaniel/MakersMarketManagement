@@ -1,36 +1,6 @@
 from flask import request, jsonify
-from flask_login import UserMixin
-import json
-
-USER_AUTH_PATH = "./data/users.json"
-
-# users
-class User(UserMixin):
-    def __init__(self, user):
-        self.email = user["email"]
-        self.organizations = user["organizations"]
-        self.markets = user["markets"]
-
-    def get_id(self):
-        return self.email
-
-def load_users():
-    try:
-        with open(USER_AUTH_PATH, "r") as file:
-            return json.load(file)
-    except FileNotFoundError:
-        return {}
-    
-def save_users(users):
-    with open(USER_AUTH_PATH, "w") as file:
-        json.dump(users, file, indent=4)
-
-def load_user(email):
-    users = load_users()
-    for user in users.values():
-        if str(user["email"]) == str(email):
-            return User(user)
-    return None
+from models import db, User, Organization, user_organization
+from sqlalchemy.exc import IntegrityError
 
 # curl -k -X POST https://127.0.0.1:5000/register-user \
 #      -H "Content-Type: application/json" \
