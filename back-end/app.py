@@ -21,6 +21,11 @@ SESSION_MAX_AGE = 7200
 
 app = Flask(__name__)
 
+# Database configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///market_management.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Session configuration
 app.config["SESSION_TYPE"] = "filesystem"
 app.config["SESSION_PERMANENT"] = True
 app.config["PERMANENT_SESSION_LIFETIME"] = SESSION_MAX_AGE
@@ -30,6 +35,9 @@ app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config['SECRET_KEY'] = 'TEMP_KEY'
 
+# Initialize extensions
+db.init_app(app)
+migrate = Migrate(app, db)
 Session(app)
 bcrypt = Bcrypt(app)
 login_manager = LoginManager()
@@ -97,3 +105,4 @@ cleanup_sessions()
 
 if __name__ == '__main__':
     app.run(debug=True)
+
