@@ -4,18 +4,21 @@ from sqlalchemy.exc import IntegrityError
 
 def load_market_request(current_user, request):
     data = request.json
-
     name = data.get("name")
 
-    market = load_market(name)
-    if market is None:
+    if not name:
+        return jsonify({"msg": "Market name required"}), 400
+
+    # Find market by name
+    market = Market.query.filter_by(name=name).first()
+    if not market:
         return jsonify({"msg": "Market not found"}), 404
 
-    if current_user.email in market.viewers:
-        return jsonify({"msg": "Market successfully loaded", "market": market}), 200
-        
-    else:
+    # Check if user has permission to view this market
+    if not market.user_can_view(current_user):
         return jsonify({"msg": "Unauthorized user"}), 401
+
+    return jsonify({"msg": "Market successfully loaded", "market": market.to_dict()}), 200
 
 def save_market_request(current_user, request):
     data = request.json
@@ -41,3 +44,4 @@ def save_market_request(current_user, request):
         return jsonify({"msg": "Market successfully saved"}), 201
 
 # def assign():
+
