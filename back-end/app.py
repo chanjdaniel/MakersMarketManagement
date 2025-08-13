@@ -2,12 +2,14 @@
 import api.users as UsersApi
 import api.organizations as OrgsApi
 import api.markets as MarketsApi
+from models import db, User, Organization, Market, Vendor, Assignment, AttendanceRecord
 
 from flask import Flask, request, jsonify
 from flask_session import Session
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user
 from flask_bcrypt import Bcrypt
 from flask_cors import CORS
+from flask_migrate import Migrate
 from datetime import timedelta
 import json
 import os
