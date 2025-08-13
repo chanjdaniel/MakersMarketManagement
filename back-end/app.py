@@ -48,8 +48,8 @@ CORS(app, supports_credentials=True)
 # users
 
 @login_manager.user_loader
-def load_user(email):
-    return UsersApi.load_user(email)
+def load_user(user_id):
+    return User.query.get(int(user_id))
 
 # curl -k -X POST https://127.0.0.1:5000/register-user \
 #      -H "Content-Type: application/json" \
@@ -105,4 +105,5 @@ cleanup_sessions()
 
 if __name__ == '__main__':
     app.run(debug=True)
+
 
