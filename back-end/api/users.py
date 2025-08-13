@@ -68,3 +68,4 @@ def check_session(current_user):
     return jsonify({"email": current_user.email}), 200
 
 
+
