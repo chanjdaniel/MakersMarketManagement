@@ -2,12 +2,14 @@
 import api.users as UsersApi
 import api.organizations as OrgsApi
 import api.markets as MarketsApi
+from models import db, User, Organization, Market, Vendor, Assignment, AttendanceRecord
 
 from flask import Flask, request, jsonify
 from flask_session import Session
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user
 from flask_bcrypt import Bcrypt
 from flask_cors import CORS
+from flask_migrate import Migrate
 from datetime import timedelta
 import json
 import os
@@ -19,6 +21,11 @@ SESSION_MAX_AGE = 7200
 
 app = Flask(__name__)
 
+# Database configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///market_management.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Session configuration
 app.config["SESSION_TYPE"] = "filesystem"
 app.config["SESSION_PERMANENT"] = True
 app.config["PERMANENT_SESSION_LIFETIME"] = SESSION_MAX_AGE
@@ -28,6 +35,9 @@ app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config['SECRET_KEY'] = 'TEMP_KEY'
 
+# Initialize extensions
+db.init_app(app)
+migrate = Migrate(app, db)
 Session(app)
 bcrypt = Bcrypt(app)
 login_manager = LoginManager()
@@ -38,8 +48,8 @@ CORS(app, supports_credentials=True)
 # users
 
 @login_manager.user_loader
-def load_user(email):
-    return UsersApi.load_user(email)
+def load_user(user_id):
+    return User.query.get(int(user_id))
 
 # curl -k -X POST https://127.0.0.1:5000/register-user \
 #      -H "Content-Type: application/json" \
@@ -93,5 +103,12 @@ def cleanup_sessions():
 
 cleanup_sessions()
 
+# Initialize database
+with app.app_context():
+    db.create_all()
+
 if __name__ == '__main__':
     app.run(debug=True)
+
+
+
