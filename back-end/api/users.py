@@ -9,22 +9,33 @@ def register_user(bcrypt, request):
     data = request.json
     email = data.get("email")
     password = data.get("password")
-    organizations = data.get("organizations")
-    markets = data.get("markets")
-
-    users = load_users()
+    organizations = data.get("organizations", [])
+    markets = data.get("markets", [])
 
     if not email or not password:
-        return jsonify({"msg": "Email, password, and organization required"}), 400
+        return jsonify({"msg": "Email, password required"}), 400
 
-    if email in users:
+    # Check if user already exists
+    existing_user = User.query.filter_by(email=email).first()
+    if existing_user:
         return jsonify({"msg": "User already exists"}), 400
 
-    hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
-    users[email] = { "email": email, "password": hashed_password, "organizations": organizations, "markets": markets }
-    save_users(users)
+    try:
+        # Create new user
+        hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+        new_user = User(email=email, password_hash=hashed_password)
+        
+        db.session.add(new_user)
+        db.session.commit()
 
-    return jsonify({"msg": "User registered successfully"}), 201
+        return jsonify({"msg": "User registered successfully"}), 201
+    
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"msg": "User already exists"}), 400
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": f"Registration failed: {str(e)}"}), 500
 
 def login(bcrypt, login_user, request):
     data = request.json
@@ -50,3 +61,4 @@ def logout(logout_user):
 
 def check_session(current_user):
     return jsonify({"email": current_user.email}), 200
+
