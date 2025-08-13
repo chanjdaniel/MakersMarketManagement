@@ -41,16 +41,21 @@ def login(bcrypt, login_user, request):
     data = request.json
     email, password = data.get('email'), data.get('password')
 
-    users = load_users()
-    user = users.get(email)
-    if email in users and bcrypt.check_password_hash(users[email]["password"], password):
-        user_email = user["email"]
-        user_organizations = user["organizations"]
-        user_markets = user["markets"]
-        user_obj = User(user)
-        login_user(user_obj, remember=True)
+    if not email or not password:
+        return jsonify({"msg": "Email and password required"}), 400
 
-        user_data = { "email": user_email, "organizations": user_organizations, "markets": user_markets }
+    # Find user by email
+    user = User.query.filter_by(email=email).first()
+    
+    if user and bcrypt.check_password_hash(user.password_hash, password):
+        login_user(user, remember=True)
+
+        # Prepare user data for response
+        user_data = {
+            "email": user.email,
+            "organizations": [org.to_dict() for org in user.organizations],
+            "markets": [market.name for market in user.owned_markets]
+        }
         return jsonify({"message": "Login successful", "user_data": user_data}), 200
 
     return jsonify({"msg": "Invalid credentials"}), 401
@@ -61,4 +66,5 @@ def logout(logout_user):
 
 def check_session(current_user):
     return jsonify({"email": current_user.email}), 200
+
 
