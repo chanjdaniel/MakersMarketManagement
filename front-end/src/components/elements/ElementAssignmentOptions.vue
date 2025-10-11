@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { ref, toRef, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { type SetupObject, type SectionObject } from '@/assets/types/datatypes'
-import IconAddRound from '@/components/icons/IconAddRound.vue';
-import IconCloseRound from '@/components/icons/IconCloseRound.vue';
 import { type LocationObject } from '@/assets/types/datatypes';
 
 const props = defineProps<{ setupObject: SetupObject }>();
@@ -13,85 +11,39 @@ const updateSetupObject = () => {
 };
 
 const setupObject = toRef(props, "setupObject");
-const locationObjects = toRef(setupObject.value, "locations");
+const assignmentOptions = toRef(setupObject.value, "assignmentOptions");
 
 const container = ref<HTMLElement | null>(null);
-const columnTitles = ref<HTMLElement | null>(null);
 const rows = ref<HTMLElement | null>(null);
 
-const rowsMaxHeight = ref<string | null>(null);
-
-const setHeight = () => {
-    rowsMaxHeight.value = "0px";
-    nextTick(() => {
-        if (container.value && columnTitles.value && rows.value) {
-            rowsMaxHeight.value = `${container.value.clientHeight - columnTitles.value.clientHeight - 15}px`;
-        }
-    });
-};
-
-const resizeObserver = new ResizeObserver(setHeight);
-
-onMounted(() => {
-    setHeight();
-    nextTick(() => {
-        resizeObserver.observe(document.body);
-    })
-});
-
-onUnmounted(() => {
-    resizeObserver.disconnect();
-});
-
 watch(
-    () => setupObject.value.locations,
+    () => setupObject.value.assignmentOptions,
     () => {
         emit("update:setupObject", setupObject.value);
     },
     { deep: true }
 );
 
-const hoverIndex = ref<number | null>(null);
-
-const addRow = () => {
-    const newLocation: LocationObject = {
-        name: "",
-    }
-    locationObjects.value.push(newLocation);
-    setHeight();
-}
-
-const removeRow = (index: number | null) => {
-    if (index != null) {
-        locationObjects.value.splice(index, 1);
-    }
-    setHeight();
-}
 </script>
 
 <template>
     <div class="container" ref="container">
-        <div class="column-titles row-container" ref="columnTitles">
-            <h3>Location Name</h3>
-            <h3></h3>
-        </div>
         <div class="rows" ref="rows">
-            <div class="row-container row" v-for="(item, index) in locationObjects" :key="index" @mouseover="hoverIndex = index"
-                @mouseleave="hoverIndex = null">
+            <div class="row-container row">
                 <div class="row-item">
                     <div class="input-container">
-                        <input type="text" v-model="locationObjects[index].name"
+                        <input type="text" v-model="assignmentOptions.MAX_ASSIGNMENTS_PER_VENDOR"
                             style="all: unset; font-size: 14px; width: 100%;" />
                     </div>
                 </div>
-                <div
-                    style="padding: none; display: flex; flex-direction: row; align-items: center; justify-content: center;">
-                    <IconCloseRound :class="{ 'hidden-icon': hoverIndex !== index }" class="icon-close-round"
-                        @click="removeRow(index)" />
-                </div>
             </div>
-            <div class="add-container">
-                <IconAddRound class="icon-add-round" @click="addRow" />
+            <div class="row-container row">
+                <div class="row-item">
+                    <div class="input-container">
+                        <input type="text" v-model="assignmentOptions.MAX_HALF_TABLE_PROPORTION_PER_SECTION"
+                            style="all: unset; font-size: 14px; width: 100%;" />
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -110,17 +62,10 @@ const removeRow = (index: number | null) => {
     /* gap: 15px; */
 }
 
-.column-titles {
-    display: grid;
-    grid-template-columns: 95% 5%;
-    margin-bottom: 15px;
-}
-
 .rows {
     display: flex;
     flex-direction: column;
     width: 100%;
-    max-height: v-bind(rowsMaxHeight);
 
     align-items: center;
 
