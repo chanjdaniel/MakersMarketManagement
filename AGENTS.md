@@ -16,9 +16,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Release type is `simple` (conventional-commits-driven; no per-language package file parsing).
 - Workflow triggers on push to `main` (`.github/workflows/release-please.yml`).
 - When `dev` is promoted to `main`, release-please opens a Release PR with version bump + CHANGELOG.
-- Merging the Release PR creates a git tag (e.g., `v0.2.0`) and a GitHub Release.
+- Merging the Release PR creates a git tag (e.g., `v0.1.0`) and a GitHub Release.
 - All commits MUST follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, etc.).
-- Baseline version: `0.1.0` (seeded in `.release-please-manifest.json`).
+- Baseline seed: `0.0.0` in `.release-please-manifest.json`, so the first `dev` → `main` promotion produces `v0.1.0`.
 - Full release docs: `docs/RELEASING.md`.
 
 ## Tech Stack

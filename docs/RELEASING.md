@@ -50,20 +50,20 @@ Release management is handled by [release-please](https://github.com/googleapis/
    - An updated `CHANGELOG.md` with all changes since the last release
 4. **A maintainer reviews and merges the Release PR.**
    On merge, release-please automatically:
-   - Creates a **git tag** (e.g., `v0.2.0`)
+   - Creates a **git tag** (e.g., `v0.1.0`)
    - Creates a **GitHub Release** with the changelog content
    - The deploy pipeline picks up the tag and deploys
 
 ### Bootstrapping Note
 
 The release-please workflow becomes active once it reaches `main` (via the first `dev` → `main` promotion after this config is merged to `dev`).
-The first release to be generated will be `v0.1.0` (the baseline version).
+The manifest is seeded at `0.0.0`, so the first release to be generated will be `v0.1.0`.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `release-please-config.json` | Configures release-please behavior (release type, tag format) |
-| `.release-please-manifest.json` | Tracks current version per package (auto-updated by release-please) |
+| `.release-please-manifest.json` | Tracks current version per package (auto-updated by release-please); seeded at the `0.0.0` baseline so the first release is `v0.1.0` |
 | `.github/workflows/release-please.yml` | GitHub Actions workflow that runs release-please on pushes to `main` |
 | `CHANGELOG.md` | Auto-generated changelog (created on first release) |
