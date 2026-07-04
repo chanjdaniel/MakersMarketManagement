@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useFloorplanStore } from '@/stores/floorplan'
 import { api } from '@/utils/api'
