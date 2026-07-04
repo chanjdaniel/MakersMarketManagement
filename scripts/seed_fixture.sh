@@ -5,10 +5,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 FIXTURES_DIR="$SCRIPT_DIR/fixtures"
 COOKIE_JAR="$(mktemp /tmp/conventioner_seed.XXXXXX)"
-BACKEND_URL="${BACKEND_URL:-https://localhost:5000}"
 TEST_EMAIL="${TEST_EMAIL:-e2e@example.com}"
 TEST_PASSWORD="${TEST_PASSWORD:-e2epassword123}"
 CSV_FILE="${FIXTURES_DIR}/vendors.csv"
+
+# ── Detect worktree vs primary checkout ──
+SLOT="$(printf '%s' "$PROJECT_DIR" | sed -nE 's#.*/\.treehouse/[^/]+/([0-9]+)/.*#\1#p')"
+if [[ "$SLOT" =~ ^[0-9]+$ ]] && [ -x "$PROJECT_DIR/scripts/th-compose.sh" ]; then
+  DOCKER_CMD=("$PROJECT_DIR/scripts/th-compose.sh")
+  BACKEND_PORT=$((5000 + SLOT * 10))
+  FRONTEND_PORT=$((5173 + SLOT * 10))
+  echo "Worktree slot: $SLOT (ports: backend=$BACKEND_PORT, frontend=$FRONTEND_PORT)"
+else
+  DOCKER_CMD=(docker compose)
+  BACKEND_PORT=5000
+  FRONTEND_PORT=5173
+  echo "Primary checkout (default ports)"
+fi
+
+BACKEND_URL="https://localhost:${BACKEND_PORT}"
+FRONTEND_URL="http://localhost:${FRONTEND_PORT}"
 
 cleanup() {
   rm -f "$COOKIE_JAR"
@@ -21,9 +37,9 @@ echo ""
 # ── 1. Ensure Docker stack is running ──
 echo "[1/5] Ensuring Docker stack is up..."
 cd "$PROJECT_DIR"
-if ! docker compose ps --format '{{.Service}}' 2>/dev/null | grep -q 'backend'; then
+if ! "${DOCKER_CMD[@]}" ps --format '{{.Service}}' 2>/dev/null | grep -q 'backend'; then
   echo "  Bringing up Docker stack..."
-  docker compose up -d --wait 2>&1 | sed 's/^/  /'
+  "${DOCKER_CMD[@]}" up -d --wait 2>&1 | sed 's/^/  /'
 else
   echo "  Docker stack already running."
 fi
@@ -40,8 +56,8 @@ done
 
 # ── 2. Create test user ──
 echo "[2/5] Creating test user ($TEST_EMAIL)..."
-docker compose exec -T backend python /app/reset_database.py 2>&1 | sed 's/^/  /'
-docker compose exec -T backend python /app/create_test_user.py "$TEST_EMAIL" "$TEST_PASSWORD" 2>&1 | sed 's/^/  /'
+"${DOCKER_CMD[@]}" exec -T backend python /app/reset_database.py 2>&1 | sed 's/^/  /'
+"${DOCKER_CMD[@]}" exec -T backend python /app/create_test_user.py "$TEST_EMAIL" "$TEST_PASSWORD" 2>&1 | sed 's/^/  /'
 
 # ── 3. Login and get session ──
 echo "[3/5] Logging in..."
@@ -92,11 +108,11 @@ echo "  $UPLOAD_RESPONSE"
 # ── Done ──
 echo ""
 echo "=== Seed complete ==="
-echo "Frontend:  http://localhost:5173"
+echo "Frontend:  $FRONTEND_URL"
 echo "Backend:   $BACKEND_URL"
 echo "Email:     $TEST_EMAIL"
 echo "Password:  $TEST_PASSWORD"
 echo "Market ID: $MARKET_ID"
 echo ""
-echo "Next: open http://localhost:5173/login and log in to configure the market."
+echo "Next: open $FRONTEND_URL/login and log in to configure the market."
 echo "      The CSV has already been uploaded — go to Market Setup to configure columns."

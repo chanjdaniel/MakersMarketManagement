@@ -1,4 +1,20 @@
 import { defineConfig, devices } from '@playwright/test';
+import { execSync } from 'child_process';
+
+function detectFrontendPort(): number {
+  const envPort = process.env.FRONTEND_PORT;
+  if (envPort) return parseInt(envPort, 10);
+
+  const cwd = process.cwd();
+  const match = cwd.match(/\.treehouse\/[^/]+\/(\d+)\//);
+  if (match) {
+    const slot = parseInt(match[1], 10);
+    return 5173 + slot * 10;
+  }
+  return 5173;
+}
+
+const BASE_PORT = detectFrontendPort();
 
 export default defineConfig({
   testDir: './e2e',
@@ -10,7 +26,7 @@ export default defineConfig({
   workers: 1,
   reporter: 'list',
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: `http://localhost:${BASE_PORT}`,
     trace: 'on-first-retry',
   },
   projects: [
@@ -21,7 +37,7 @@ export default defineConfig({
   ],
   webServer: {
     command: 'echo "Web server is managed externally (docker compose)"',
-    port: 5173,
+    port: BASE_PORT,
     reuseExistingServer: true,
   },
 });
