@@ -69,6 +69,10 @@ docker ps -aq --filter name=conventioner- | xargs -r docker rm -f
 
 ## Notes / gotchas
 
+- **Returning a slot wipes its DB/volumes.** `th-return.sh` runs `docker compose
+  down -v`, which removes the worktree's isolated mongodb, backend sessions, and
+  CSV export volumes. A re-leased worktree always starts with a fresh DB — this
+  is intentional for per-slot isolation.
 - **Use `th-lease.sh`, not raw `treehouse get`.** treehouse v2.0.0 parses but does
   not invoke the `post_create` hook, so a raw worktree would be missing `.env` and
   `node_modules`. All pre-warming is driven by the wrapper.
