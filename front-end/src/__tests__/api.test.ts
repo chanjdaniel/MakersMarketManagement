@@ -17,7 +17,11 @@ describe('api client interceptor', () => {
 
     const testConfig = { headers: new axios.AxiosHeaders() };
 
-    const interceptors = (api.interceptors.request as any).handlers;
+    const interceptors = (
+      api.interceptors.request as unknown as {
+        handlers: { fulfilled: (config: unknown) => unknown }[];
+      }
+    ).handlers;
     if (interceptors.length > 0) {
       await interceptors[0].fulfilled(testConfig);
     }
@@ -34,7 +38,11 @@ describe('api client interceptor', () => {
 
     const testConfig = { headers: new axios.AxiosHeaders() };
 
-    const interceptors = (api.interceptors.request as any).handlers;
+    const interceptors = (
+      api.interceptors.request as unknown as {
+        handlers: { fulfilled: (config: unknown) => unknown }[];
+      }
+    ).handlers;
     if (interceptors.length > 0) {
       await interceptors[0].fulfilled(testConfig);
     }
@@ -51,7 +59,11 @@ describe('api client interceptor', () => {
 
     const testConfig = { headers: new axios.AxiosHeaders() };
 
-    const interceptors = (api.interceptors.request as any).handlers;
+    const interceptors = (
+      api.interceptors.request as unknown as {
+        handlers: { fulfilled: (config: unknown) => unknown }[];
+      }
+    ).handlers;
     if (interceptors.length > 0) {
       await interceptors[0].fulfilled(testConfig);
     }
