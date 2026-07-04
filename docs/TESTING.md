@@ -21,13 +21,14 @@ TEST_EMAIL=myuser@example.com TEST_PASSWORD=mypass ./scripts/seed_fixture.sh
 
 ```bash
 cd back-end
+pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ```
 
 57 tests covering the assignment algorithm, statistics, Discord webhook, attendance,
 column mapping, schema generation, and role validation.
 
-Requirements: `pytest` (listed in `requirements.txt`), no database connection needed
+Requirements: `pytest` (listed in `requirements-dev.txt`), no database connection needed
 (tests use in-memory fakes).
 
 ## Front-End Unit Tests
@@ -63,7 +64,7 @@ Email: `e2e@example.com` (default, change via `TEST_EMAIL` env var when seeding)
 
 ## CI Pipeline
 
-Pushes and PRs to `main` trigger `.github/workflows/test.yml`:
+Pushes and PRs to `main` or `dev` trigger `.github/workflows/test.yml`:
 - Back-end: install dependencies + pytest
 - Front-end: npm ci + type-check + lint + unit tests
 - Docker build verification

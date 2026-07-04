@@ -170,7 +170,7 @@ This document outlines the complete technology stack used in the Conventioner ap
 
 ### Continuous Integration
 - **GitHub Actions** - CI pipeline (`.github/workflows/test.yml`)
-  - Runs on pushes and pull requests to `main`
+  - Runs on pushes and pull requests to `main` or `dev`
   - Jobs: back-end pytest, front-end type-check + lint + unit tests, Docker build verification
 
 ## Authentication Flow
