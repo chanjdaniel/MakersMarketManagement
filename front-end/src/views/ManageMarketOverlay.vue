@@ -59,9 +59,7 @@ async function fetchMarket(showLoading = true) {
     if (showLoading) loading.value = true;
     errorMessage.value = '';
     try {
-        const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
-        const response = await api.get(`/markets/${encodeURIComponent(marketData.value.id)}`, {
-        });
+        const response = await api.get(`/markets/${encodeURIComponent(marketData.value.id)}`);
         const m = response.data.market;
         marketData.value = parseMarketFromApi(m);
         renameValue.value = marketData.value.name;
@@ -93,9 +91,7 @@ function getAvailableOrgsForAdd(): Array<{ id: string; name: string }> {
 
 async function fetchUserOrgs() {
     try {
-        const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
-        const response = await api.get('/organizations', {
-        });
+        const response = await api.get('/organizations');
         userOrgs.value = response.data.organizations || [];
     } catch {
         userOrgs.value = [];
@@ -113,7 +109,6 @@ async function handleAddUser() {
     if (!marketData.value || !newUserEmail.value.trim()) return;
     addUserError.value = '';
     try {
-        const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         await api.post(
             `/markets/${encodeURIComponent(marketData.value.name)}/roles`,
             { user_email: newUserEmail.value.trim(), role: newUserRole.value },
@@ -130,7 +125,6 @@ async function handleAddUser() {
 async function handleRemoveUser(userId: string) {
     if (!marketData.value) return;
     try {
-        const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         await api.delete(
             `/markets/${encodeURIComponent(marketData.value.id)}/roles/${encodeURIComponent(userId)}`,
         );
@@ -143,7 +137,6 @@ async function handleRemoveUser(userId: string) {
 async function handleRoleChange(userId: string, newRole: MarketRole) {
     if (!marketData.value) return;
     try {
-        const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         await api.put(
             `/markets/${encodeURIComponent(marketData.value.id)}/roles/${encodeURIComponent(userId)}`,
             { role: newRole },
@@ -158,12 +151,10 @@ async function handleAddOrg() {
     if (!marketData.value || !newOrgName.value.trim()) return;
     addOrgError.value = '';
     try {
-        const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         const org = userOrgs.value.find((o) => o.name === newOrgName.value.trim());
         const orgId = org?.id ?? newOrgName.value.trim();
         const updated = { ...marketData.value, organizationId: orgId };
-        await api.put(`/markets/${encodeURIComponent(marketData.value.id)}`, updated, {
-        });
+        await api.put(`/markets/${encodeURIComponent(marketData.value.id)}`, updated);
         marketData.value = { ...marketData.value, organizationId: orgId, organizationName: org?.name ?? newOrgName.value.trim() };
         showAddOrgForm.value = false;
         newOrgName.value = '';
@@ -176,10 +167,8 @@ async function handleAddOrg() {
 async function handleRemoveOrg() {
     if (!marketData.value) return;
     try {
-        const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         const updated = { ...marketData.value, organizationId: null };
-        await api.put(`/markets/${encodeURIComponent(marketData.value.id)}`, updated, {
-        });
+        await api.put(`/markets/${encodeURIComponent(marketData.value.id)}`, updated);
         marketData.value = { ...marketData.value, organizationId: undefined, organizationName: undefined };
         await fetchMarket(false);
     } catch (err: any) {
@@ -197,10 +186,8 @@ async function handleRename() {
     if (!marketData.value || renameValue.value.trim() === marketData.value.name) return;
     renameError.value = '';
     try {
-        const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         const updated = { ...marketData.value, name: renameValue.value.trim() };
-        await api.put(`/markets/${encodeURIComponent(marketData.value.id)}`, updated, {
-        });
+        await api.put(`/markets/${encodeURIComponent(marketData.value.id)}`, updated);
         marketData.value = { ...marketData.value, name: renameValue.value.trim() };
     } catch (err: any) {
         const msg = err.response?.data?.error || '';
@@ -212,9 +199,7 @@ async function handleDeleteConfirm() {
     if (!marketData.value) return;
     deleteError.value = '';
     try {
-        const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
-        await api.delete(`/markets/${encodeURIComponent(marketData.value.id)}`, {
-        });
+        await api.delete(`/markets/${encodeURIComponent(marketData.value.id)}`);
         emit('manageClose');
     } catch (err: any) {
         deleteError.value = err.response?.data?.error || 'Failed to delete market';

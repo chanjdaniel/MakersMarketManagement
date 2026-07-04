@@ -6,8 +6,8 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 FIXTURES_DIR="$SCRIPT_DIR/fixtures"
 COOKIE_JAR="$(mktemp /tmp/conventioner_seed.XXXXXX)"
 BACKEND_URL="${BACKEND_URL:-https://localhost:5000}"
-TEST_EMAIL="${TEST_EMAIL:-test@example.com}"
-TEST_PASSWORD="${TEST_PASSWORD:-testpassword123}"
+TEST_EMAIL="${TEST_EMAIL:-e2e@example.com}"
+TEST_PASSWORD="${TEST_PASSWORD:-e2epassword123}"
 CSV_FILE="${FIXTURES_DIR}/vendors.csv"
 
 cleanup() {

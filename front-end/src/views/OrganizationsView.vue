@@ -34,9 +34,7 @@ async function fetchOrganizations() {
     loading.value = true;
     errorMessage.value = '';
     try {
-        const userEmail = JSON.parse(localStorage.getItem("user") || "null");
-        const response = await api.get('/organizations', {
-        });
+        const response = await api.get('/organizations');
         organizations.value = (response.data.organizations || []).map(parseOrgFromApi);
     } catch (err: any) {
         errorMessage.value = err.response?.data?.error || 'Failed to load organizations';
@@ -54,9 +52,7 @@ async function handleCreateOrg() {
     if (!newOrgName.value.trim()) return;
     newOrgError.value = '';
     try {
-        const userEmail = JSON.parse(localStorage.getItem("user") || "null");
-        await api.post('/organizations', { name: newOrgName.value.trim() }, {
-        });
+        await api.post('/organizations', { name: newOrgName.value.trim() });
         newOpen.value = false;
         newOrgName.value = '';
         await fetchOrganizations();

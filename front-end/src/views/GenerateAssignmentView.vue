@@ -355,10 +355,8 @@ const handleDone = async () => {
         return;
     }
     market = { ...market, isDraft: false };
-    const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
     try {
-        await api.put(`/markets/${encodeURIComponent(market.id)}`, market, {
-        });
+        await api.put(`/markets/${encodeURIComponent(market.id)}`, market);
         localStorage.setItem('market', JSON.stringify(market));
         const slug = marketNameToKebabSlug(market.name);
         if (slug) {

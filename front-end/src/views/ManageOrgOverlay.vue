@@ -60,9 +60,7 @@ async function handleRename() {
     if (!orgData.value || renameValue.value.trim() === orgData.value.name) return;
     renameError.value = '';
     try {
-        const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
-        await api.put(`/organizations/${encodeURIComponent(orgData.value.id)}`, { name: renameValue.value.trim() }, {
-        });
+        await api.put(`/organizations/${encodeURIComponent(orgData.value.id)}`, { name: renameValue.value.trim() });
         orgData.value = { ...orgData.value, name: renameValue.value.trim() };
     } catch (err: any) {
         renameError.value = err.response?.data?.error || 'Failed to rename';
@@ -73,9 +71,7 @@ async function handleAddAdmin() {
     if (!orgData.value || !newAdminEmail.value.trim()) return;
     addAdminError.value = '';
     try {
-        const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
-        await api.post(`/organizations/${encodeURIComponent(orgData.value.id)}/admins`, { user_email: newAdminEmail.value.trim() }, {
-        });
+        await api.post(`/organizations/${encodeURIComponent(orgData.value.id)}/admins`, { user_email: newAdminEmail.value.trim() });
         showAddAdminForm.value = false;
         newAdminEmail.value = '';
         emit('manageClose');
@@ -88,9 +84,7 @@ async function handleAddMember() {
     if (!orgData.value || !newMemberEmail.value.trim()) return;
     addMemberError.value = '';
     try {
-        const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
-        await api.post(`/organizations/${encodeURIComponent(orgData.value.id)}/members`, { user_email: newMemberEmail.value.trim() }, {
-        });
+        await api.post(`/organizations/${encodeURIComponent(orgData.value.id)}/members`, { user_email: newMemberEmail.value.trim() });
         showAddMemberForm.value = false;
         newMemberEmail.value = '';
         emit('manageClose');
@@ -102,9 +96,7 @@ async function handleAddMember() {
 async function handleRemoveUser(userId: string) {
     if (!orgData.value) return;
     try {
-        const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
-        await api.delete(`/organizations/${encodeURIComponent(orgData.value.id)}/users/${encodeURIComponent(userId)}`, {
-        });
+        await api.delete(`/organizations/${encodeURIComponent(orgData.value.id)}/users/${encodeURIComponent(userId)}`);
         emit('manageClose');
     } catch (err: any) {
         errorMessage.value = err.response?.data?.error || 'Failed to remove user';
@@ -121,9 +113,7 @@ async function handleDeleteConfirm() {
     if (!orgData.value) return;
     deleteError.value = '';
     try {
-        const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
-        await api.delete(`/organizations/${encodeURIComponent(orgData.value.id)}`, {
-        });
+        await api.delete(`/organizations/${encodeURIComponent(orgData.value.id)}`);
         emit('manageClose');
     } catch (err: any) {
         deleteError.value = err.response?.data?.error || 'Failed to delete organization';
