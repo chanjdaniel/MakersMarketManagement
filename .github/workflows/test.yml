@@ -58,7 +58,7 @@ jobs:
           else
             BASE="origin/main"
           fi
-          FILES=$(git diff --name-only "$BASE"...HEAD -- '*.ts' '*.vue' '*.tsx' | tr '\n' ' ')
+          FILES=$(git diff --name-only "$BASE"...HEAD -- '*.ts' '*.vue' '*.tsx' | sed 's|^front-end/||' | tr '\n' ' ')
           echo "files=$FILES" >> "$GITHUB_OUTPUT"
       - name: Lint changed files
         if: steps.changed.outputs.files != ''
