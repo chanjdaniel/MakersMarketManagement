@@ -16,7 +16,6 @@ import { api } from '@/utils/api';
 
 const router = useRouter();
 
-const settingsBodyHeight = ref(null);
 const showPathChoice = ref(false);
 
 const market = ref<Market | null>(null);
@@ -101,11 +100,11 @@ onMounted(() => {
         const uploadObject = JSON.parse(uploadObjectJSON);
         const uploadColNames = uploadObject.data.meta.fields;
         const uploadRows = uploadObject.data.data;
-        let colValuesList: string[][] = [];
-        let enumPriorityOrder: string[][] = [];
+        const colValuesList: string[][] = [];
+        const enumPriorityOrder: string[][] = [];
         for (let i = 0; i < colNames.length; i++) {
 
-            let columnValues: string[] = [];
+            const columnValues: string[] = [];
             for (let j = 0; j < uploadRows.length; j++) {
                 const uploadColName = uploadColNames[i];
                 const uploadRow = uploadObject.data.data[j];

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import { type Organization, type OrganizationRoleType } from '@/assets/types/datatypes';
-import { api } from '@/utils/api';
+import { api, getApiErrorMessage } from '@/utils/api';
 
 const props = defineProps<{
     manageOpen: boolean;
@@ -13,7 +13,6 @@ const emit = defineEmits<{
 }>();
 
 const orgData = ref<Organization | null>(null);
-const loading = ref(false);
 const errorMessage = ref('');
 const renameValue = ref('');
 const renameError = ref('');
@@ -62,8 +61,8 @@ async function handleRename() {
     try {
         await api.put(`/organizations/${encodeURIComponent(orgData.value.id)}`, { name: renameValue.value.trim() });
         orgData.value = { ...orgData.value, name: renameValue.value.trim() };
-    } catch (err: any) {
-        renameError.value = err.response?.data?.error || 'Failed to rename';
+    } catch (err) {
+        renameError.value = getApiErrorMessage(err, 'Failed to rename');
     }
 }
 
@@ -75,8 +74,8 @@ async function handleAddAdmin() {
         showAddAdminForm.value = false;
         newAdminEmail.value = '';
         emit('manageClose');
-    } catch (err: any) {
-        addAdminError.value = err.response?.data?.error || 'Failed to add admin';
+    } catch (err) {
+        addAdminError.value = getApiErrorMessage(err, 'Failed to add admin');
     }
 }
 
@@ -88,8 +87,8 @@ async function handleAddMember() {
         showAddMemberForm.value = false;
         newMemberEmail.value = '';
         emit('manageClose');
-    } catch (err: any) {
-        addMemberError.value = err.response?.data?.error || 'Failed to add member';
+    } catch (err) {
+        addMemberError.value = getApiErrorMessage(err, 'Failed to add member');
     }
 }
 
@@ -98,8 +97,8 @@ async function handleRemoveUser(userId: string) {
     try {
         await api.delete(`/organizations/${encodeURIComponent(orgData.value.id)}/users/${encodeURIComponent(userId)}`);
         emit('manageClose');
-    } catch (err: any) {
-        errorMessage.value = err.response?.data?.error || 'Failed to remove user';
+    } catch (err) {
+        errorMessage.value = getApiErrorMessage(err, 'Failed to remove user');
     }
 }
 
@@ -115,8 +114,8 @@ async function handleDeleteConfirm() {
     try {
         await api.delete(`/organizations/${encodeURIComponent(orgData.value.id)}`);
         emit('manageClose');
-    } catch (err: any) {
-        deleteError.value = err.response?.data?.error || 'Failed to delete organization';
+    } catch (err) {
+        deleteError.value = getApiErrorMessage(err, 'Failed to delete organization');
     }
 }
 

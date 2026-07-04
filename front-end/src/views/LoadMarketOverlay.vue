@@ -12,7 +12,6 @@ defineProps<{
 
 const router = useRouter();
 const markets = ref<Market[]>([]);
-const next = ref(false);
 
 onMounted(async () => {
     const response = await api.get('/markets');

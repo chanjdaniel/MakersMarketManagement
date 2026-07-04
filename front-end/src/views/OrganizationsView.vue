@@ -1,8 +1,30 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import { type Organization } from '@/assets/types/datatypes';
-import { api } from '@/utils/api';
+import {
+    type Organization,
+    type OrganizationRoleType,
+    type ThemeObject,
+} from '@/assets/types/datatypes';
+import { api, getApiErrorMessage } from '@/utils/api';
 import ManageOrgOverlay from './ManageOrgOverlay.vue';
+
+type RawOrganization = {
+    id: string;
+    name: string;
+    owner: string;
+    admins?: string[];
+    members?: string[];
+    markets?: string[];
+    ownerEmail?: string;
+    owner_email?: string;
+    adminEmails?: string[];
+    admin_emails?: string[];
+    memberEmails?: string[];
+    member_emails?: string[];
+    theme?: ThemeObject;
+    userRole?: OrganizationRoleType;
+    user_role?: OrganizationRoleType;
+};
 
 const organizations = ref<Organization[]>([]);
 const loading = ref(true);
@@ -13,7 +35,7 @@ const manageOrg = ref<Organization | null>(null);
 const newOrgName = ref('');
 const newOrgError = ref('');
 
-function parseOrgFromApi(org: any): Organization {
+function parseOrgFromApi(org: RawOrganization): Organization {
     const userRole = org.userRole ?? org.user_role;
     return {
         id: org.id,
@@ -36,8 +58,8 @@ async function fetchOrganizations() {
     try {
         const response = await api.get('/organizations');
         organizations.value = (response.data.organizations || []).map(parseOrgFromApi);
-    } catch (err: any) {
-        errorMessage.value = err.response?.data?.error || 'Failed to load organizations';
+    } catch (err) {
+        errorMessage.value = getApiErrorMessage(err, 'Failed to load organizations');
         organizations.value = [];
     } finally {
         loading.value = false;
@@ -56,8 +78,8 @@ async function handleCreateOrg() {
         newOpen.value = false;
         newOrgName.value = '';
         await fetchOrganizations();
-    } catch (err: any) {
-        newOrgError.value = err.response?.data?.error || 'Failed to create organization';
+    } catch (err) {
+        newOrgError.value = getApiErrorMessage(err, 'Failed to create organization');
     }
 }
 
