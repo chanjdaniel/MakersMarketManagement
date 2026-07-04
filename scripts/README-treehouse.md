@@ -51,6 +51,22 @@ elsewhere.
 - `treehouse destroy <path> --yes` — remove a specific worktree
 - `max_trees` is set in `treehouse.toml` (default 4; each tree is hundreds of MB)
 
+> **⚠️ `treehouse prune` and `treehouse destroy` do NOT tear down per-slot docker
+> stacks.** Docker teardown lives only in `th-return.sh`. If you `prune` (it
+> auto-removes stale idle worktrees) or `destroy` a worktree whose stack is still
+> up, its offset-port containers keep running and can collide when that slot is
+> reused. Always `scripts/th-return.sh "$path"` first, or run the cleanup below.
+
+### Kill lingering worktree stacks
+
+Worktree containers are named `conventioner-<slot>-*` (dash); the primary checkout
+uses `conventioner_*` (underscore), so this prefix filter never touches it:
+
+```sh
+# Remove every lingering per-worktree container (leaves the primary checkout alone):
+docker ps -aq --filter name=conventioner- | xargs -r docker rm -f
+```
+
 ## Notes / gotchas
 
 - **Use `th-lease.sh`, not raw `treehouse get`.** treehouse v2.0.0 parses but does
@@ -60,5 +76,7 @@ elsewhere.
   The pinned deps don't build on the Python versions installed here.
 - Reused worktrees don't auto-update node deps when a lockfile changes — run
   `npm install` yourself, or `treehouse destroy` the tree to force a fresh warm.
-- If you `treehouse destroy` a worktree without returning it first, its docker
-  stack may linger — run `scripts/th-compose.sh down -v` in it beforehand.
+- If you `treehouse destroy` or `treehouse prune` a worktree without returning it
+  first, its docker stack lingers (only `th-return.sh` tears stacks down) — run
+  `scripts/th-compose.sh down -v` in the worktree beforehand, or see
+  [Kill lingering worktree stacks](#kill-lingering-worktree-stacks) above.
