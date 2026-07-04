@@ -1,5 +1,4 @@
 import { defineConfig, devices } from '@playwright/test';
-import { execSync } from 'child_process';
 
 function detectFrontendPort(): number {
   const envPort = process.env.FRONTEND_PORT;

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { ref, watch, onUnmounted } from 'vue'
 import { useDropZone, useFileDialog } from '@vueuse/core'
 import { api } from '@/utils/api'
