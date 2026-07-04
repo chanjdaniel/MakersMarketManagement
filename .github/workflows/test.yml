@@ -65,7 +65,7 @@ jobs:
         run: npx eslint ${{ steps.changed.outputs.files }}
       - name: Type-check changed files
         if: steps.changed.outputs.files != ''
-        run: npx vue-tsc --noEmit ${{ steps.changed.outputs.files }}
+        run: npx vue-tsc --noEmit --project tsconfig.app.json
 
   docker-build:
     runs-on: ubuntu-latest
