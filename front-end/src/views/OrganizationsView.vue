@@ -36,7 +36,6 @@ async function fetchOrganizations() {
     try {
         const userEmail = JSON.parse(localStorage.getItem("user") || "null");
         const response = await api.get('/organizations', {
-            headers: { 'X-Owner-Email': userEmail },
         });
         organizations.value = (response.data.organizations || []).map(parseOrgFromApi);
     } catch (err: any) {
@@ -57,7 +56,6 @@ async function handleCreateOrg() {
     try {
         const userEmail = JSON.parse(localStorage.getItem("user") || "null");
         await api.post('/organizations', { name: newOrgName.value.trim() }, {
-            headers: { 'X-Owner-Email': userEmail },
         });
         newOpen.value = false;
         newOrgName.value = '';

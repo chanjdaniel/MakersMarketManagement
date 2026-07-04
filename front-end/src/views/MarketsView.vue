@@ -20,12 +20,7 @@ async function fetchMarkets() {
     loading.value = true;
     errorMessage.value = '';
     try {
-        const userEmail = JSON.parse(localStorage.getItem("user") || "null");
-        const response = await api.get('/markets', {
-            headers: {
-                'X-Owner-Email': userEmail
-            }
-        });
+        const response = await api.get('/markets');
         markets.value = (response.data.markets || []).map(parseMarketFromApi);
     } catch (err: any) {
         errorMessage.value = err.response?.data?.error || 'Failed to load markets';

@@ -67,7 +67,6 @@ async function loadSourceData() {
 
     try {
         const res = await api.get(`/source-data/${encodeURIComponent(market.id)}`, {
-            headers: { 'X-Owner-Email': userEmail },
         });
         const rows = res.data?.data;
         if (Array.isArray(rows) && rows.length > 0) {

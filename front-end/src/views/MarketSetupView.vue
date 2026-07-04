@@ -147,12 +147,7 @@ onMounted(() => {
 
 const updateMarket = async () => {
     localStorage.setItem("market", JSON.stringify(market.value));
-    const userEmail = JSON.parse(localStorage.getItem("user") || "null");
-    await api.put('/markets/' + market.value!.id, market.value, {
-        headers: {
-            'X-Owner-Email': userEmail
-        }
-    });
+    await api.put('/markets/' + market.value!.id, market.value);
 }
 
 const handleDiscordWebhookInput = (event: Event) => {
@@ -189,12 +184,7 @@ const handleAssign = async () => {
     }
     await updateMarket();
 
-    const userEmail = JSON.parse(localStorage.getItem("user") || "null");
-    const response = await api.get('/markets/' + market.value!.id + '/assignment', {
-        headers: {
-            'X-Owner-Email': userEmail
-        }
-    })
+    const response = await api.get('/markets/' + market.value!.id + '/assignment')
 
     const assignedMarket: Market = response.data;
     market.value = assignedMarket;

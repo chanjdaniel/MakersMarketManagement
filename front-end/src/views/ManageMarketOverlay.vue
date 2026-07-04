@@ -61,7 +61,6 @@ async function fetchMarket(showLoading = true) {
     try {
         const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         const response = await api.get(`/markets/${encodeURIComponent(marketData.value.id)}`, {
-            headers: { 'X-Owner-Email': userEmail },
         });
         const m = response.data.market;
         marketData.value = parseMarketFromApi(m);
@@ -96,7 +95,6 @@ async function fetchUserOrgs() {
     try {
         const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         const response = await api.get('/organizations', {
-            headers: { 'X-Owner-Email': userEmail },
         });
         userOrgs.value = response.data.organizations || [];
     } catch {
@@ -119,7 +117,6 @@ async function handleAddUser() {
         await api.post(
             `/markets/${encodeURIComponent(marketData.value.name)}/roles`,
             { user_email: newUserEmail.value.trim(), role: newUserRole.value },
-            { headers: { 'X-Owner-Email': userEmail } }
         );
         showAddUserForm.value = false;
         newUserEmail.value = '';
@@ -136,7 +133,6 @@ async function handleRemoveUser(userId: string) {
         const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         await api.delete(
             `/markets/${encodeURIComponent(marketData.value.id)}/roles/${encodeURIComponent(userId)}`,
-            { headers: { 'X-Owner-Email': userEmail } }
         );
         await fetchMarket(false);
     } catch (err: any) {
@@ -151,7 +147,6 @@ async function handleRoleChange(userId: string, newRole: MarketRole) {
         await api.put(
             `/markets/${encodeURIComponent(marketData.value.id)}/roles/${encodeURIComponent(userId)}`,
             { role: newRole },
-            { headers: { 'X-Owner-Email': userEmail } }
         );
         await fetchMarket(false);
     } catch (err: any) {
@@ -168,7 +163,6 @@ async function handleAddOrg() {
         const orgId = org?.id ?? newOrgName.value.trim();
         const updated = { ...marketData.value, organizationId: orgId };
         await api.put(`/markets/${encodeURIComponent(marketData.value.id)}`, updated, {
-            headers: { 'X-Owner-Email': userEmail },
         });
         marketData.value = { ...marketData.value, organizationId: orgId, organizationName: org?.name ?? newOrgName.value.trim() };
         showAddOrgForm.value = false;
@@ -185,7 +179,6 @@ async function handleRemoveOrg() {
         const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         const updated = { ...marketData.value, organizationId: null };
         await api.put(`/markets/${encodeURIComponent(marketData.value.id)}`, updated, {
-            headers: { 'X-Owner-Email': userEmail },
         });
         marketData.value = { ...marketData.value, organizationId: undefined, organizationName: undefined };
         await fetchMarket(false);
@@ -207,7 +200,6 @@ async function handleRename() {
         const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         const updated = { ...marketData.value, name: renameValue.value.trim() };
         await api.put(`/markets/${encodeURIComponent(marketData.value.id)}`, updated, {
-            headers: { 'X-Owner-Email': userEmail },
         });
         marketData.value = { ...marketData.value, name: renameValue.value.trim() };
     } catch (err: any) {
@@ -222,7 +214,6 @@ async function handleDeleteConfirm() {
     try {
         const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         await api.delete(`/markets/${encodeURIComponent(marketData.value.id)}`, {
-            headers: { 'X-Owner-Email': userEmail },
         });
         emit('manageClose');
     } catch (err: any) {

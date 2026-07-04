@@ -62,7 +62,6 @@ async function handleRename() {
     try {
         const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         await api.put(`/organizations/${encodeURIComponent(orgData.value.id)}`, { name: renameValue.value.trim() }, {
-            headers: { 'X-Owner-Email': userEmail },
         });
         orgData.value = { ...orgData.value, name: renameValue.value.trim() };
     } catch (err: any) {
@@ -76,7 +75,6 @@ async function handleAddAdmin() {
     try {
         const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         await api.post(`/organizations/${encodeURIComponent(orgData.value.id)}/admins`, { user_email: newAdminEmail.value.trim() }, {
-            headers: { 'X-Owner-Email': userEmail },
         });
         showAddAdminForm.value = false;
         newAdminEmail.value = '';
@@ -92,7 +90,6 @@ async function handleAddMember() {
     try {
         const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         await api.post(`/organizations/${encodeURIComponent(orgData.value.id)}/members`, { user_email: newMemberEmail.value.trim() }, {
-            headers: { 'X-Owner-Email': userEmail },
         });
         showAddMemberForm.value = false;
         newMemberEmail.value = '';
@@ -107,7 +104,6 @@ async function handleRemoveUser(userId: string) {
     try {
         const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         await api.delete(`/organizations/${encodeURIComponent(orgData.value.id)}/users/${encodeURIComponent(userId)}`, {
-            headers: { 'X-Owner-Email': userEmail },
         });
         emit('manageClose');
     } catch (err: any) {
@@ -127,7 +123,6 @@ async function handleDeleteConfirm() {
     try {
         const userEmail = JSON.parse(localStorage.getItem('user') || 'null');
         await api.delete(`/organizations/${encodeURIComponent(orgData.value.id)}`, {
-            headers: { 'X-Owner-Email': userEmail },
         });
         emit('manageClose');
     } catch (err: any) {

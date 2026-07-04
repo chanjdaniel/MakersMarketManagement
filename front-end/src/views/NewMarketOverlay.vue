@@ -53,19 +53,13 @@ const handleSubmit = async () => {
             },
         }
         
-        const createResponse = await api.post('/markets', newMarket, {
-            headers: {
-                'X-Owner-Email': userEmail
-            }
-        });
+        const createResponse = await api.post('/markets', newMarket);
         const marketId = createResponse.data.market_id;
 
         const formData = new FormData();
         if (uploadedSourceData.value.length > 0) {
             formData.append('file', uploadedSourceData.value[0]);
-            await api.post(`/source-data/${marketId}`, formData, {
-                headers: { 'X-Owner-Email': userEmail },
-            });
+            await api.post(`/source-data/${marketId}`, formData);
         }
 
         localStorage.removeItem("upload");
