@@ -6,7 +6,8 @@
     ".": {
       "release-type": "simple",
       "changelog-path": "CHANGELOG.md",
-      "include-component-in-tag": false
+      "include-component-in-tag": false,
+      "release-as": "0.1.0"
     }
   }
 }
