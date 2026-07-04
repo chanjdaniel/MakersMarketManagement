@@ -17,7 +17,7 @@ WT="${1:-}"
 
 # Best-effort docker teardown (only if a worktree path was given and it looks
 # like a treehouse worktree with a compose file).
-if [ -n "$WT" ] && [ -f "$WT/docker-compose.yml" ]; then
+if [ -n "$WT" ] && [ -f "$WT/docker-compose.yml" ] && command -v docker >/dev/null 2>&1; then
   if ! TH_DIR="$WT" "$REPO/scripts/th-compose.sh" down -v --remove-orphans >/dev/null 2>&1; then
     echo "[treehouse] WARNING: docker teardown failed for $WT — lingering containers may hold offset ports" >&2
   fi
