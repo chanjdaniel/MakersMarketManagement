@@ -119,7 +119,7 @@ onUnmounted(() => {
         <i class="pi pi-cloud-upload drop-zone-icon" />
         <p class="drop-zone-text">Drag &amp; drop a floorplan image or PDF here</p>
         <p class="drop-zone-subtitle">or</p>
-        <button class="browse-button" @click="openFileDialog">
+        <button class="browse-button" @click="() => openFileDialog()">
           Browse Files
         </button>
         <p class="drop-zone-formats">PNG, JPG, WebP, PDF</p>

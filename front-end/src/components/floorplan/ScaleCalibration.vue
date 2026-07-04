@@ -91,7 +91,7 @@ async function loadImage() {
       const i = new Image()
       i.onload = () => resolve(i)
       i.onerror = () => reject(new Error('Image failed to decode'))
-      i.src = imageObjectUrl
+      i.src = imageObjectUrl!
     })
     if (img.width === 0 || img.height === 0) {
       throw new Error('Image has zero dimensions')
