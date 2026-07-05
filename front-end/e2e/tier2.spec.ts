@@ -144,12 +144,10 @@ test.describe('Tier 2 - Market role management', () => {
 });
 
 test.describe('Tier 2 - Assignment CSV export', () => {
-  let marketName: string;
   let marketId: string;
 
   test.beforeAll(async ({ request }) => {
     const seed = await seedAssignedMarket(request, BACKEND_URL, TEST_USER.email, TEST_USER.password);
-    marketName = seed.marketName;
     marketId = seed.marketId;
   });
 
@@ -202,13 +200,11 @@ test.describe('Tier 2 - Assignment CSV export', () => {
 });
 
 test.describe('Tier 2 - Publish market', () => {
-  let marketName: string;
   let marketId: string;
   let slug: string;
 
   test.beforeAll(async ({ request }) => {
     const seed = await seedAssignedMarket(request, BACKEND_URL, TEST_USER.email, TEST_USER.password);
-    marketName = seed.marketName;
     marketId = seed.marketId;
     slug = seed.slug;
   });
