@@ -86,13 +86,12 @@ export class MarketSetupPage {
   // --- Page 0: Market Dates ---
 
   /** Add a new market date row and configure it. */
-  async addMarketDate(date: string, columnIndex: number): Promise<void> {
+  async addMarketDate(date: string, columnIndex: number, index: number = 0): Promise<void> {
     await this.datesAddButton.click();
-    // Wait for the new row to appear (date input at index 0 if it was the first)
-    const dateInput = this.page.getByTestId('setup-dates-date-input-0');
+    const dateInput = this.page.getByTestId(`setup-dates-date-input-${index}`);
     await dateInput.waitFor({ state: 'visible' });
     await dateInput.fill(date);
-    const colSelect = this.page.getByTestId('setup-dates-column-select-0');
+    const colSelect = this.page.getByTestId(`setup-dates-column-select-${index}`);
     await colSelect.selectOption(String(columnIndex));
   }
 

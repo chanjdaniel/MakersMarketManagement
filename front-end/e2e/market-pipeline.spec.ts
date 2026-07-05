@@ -47,7 +47,7 @@ test.describe('Market pipeline E2E', () => {
 
     // Add a market date: map the "day_1" column (index 4) to a date.
     // This also seeds tier names from the date column values ("Gold", "Silver").
-    await setupPage.addMarketDate('2026-07-15', 4);
+    await setupPage.addMarketDate('2026-07-15', 4, 0);
 
     // Advance to page 1
     await setupPage.clickNext();
