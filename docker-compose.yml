@@ -67,7 +67,7 @@ services:
       - VITE_BACKEND_URL=https://backend:5000
       - VITE_RECAPTCHA_SITE_KEY=${RECAPTCHA_SITE_KEY:-}
     ports:
-      - "5183:5173"
+      - "5173:5173"
     volumes:
       - ./front-end:/app
       - /app/node_modules

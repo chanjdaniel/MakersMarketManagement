@@ -115,8 +115,19 @@ test.describe('Authentication journeys', () => {
       });
     });
 
-    test.skip('resets password with a known token', async ({ page }) => {
+    test('resets password with a known token', async ({ page }) => {
       const hardcodedToken = 'e2e-reset-token-123';
+
+      // App.vue calls GET /check-session on mount and redirects to
+      // /login when it fails (regardless of whether the route is public).
+      // Intercept it so the reset page can render.
+      await page.route('**/check-session', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ email: 'e2e@example.com' }),
+        });
+      });
 
       // Intercept the reset-password API call to verify it is sent correctly.
       let resetPayload: Record<string, unknown> | null = null;
@@ -134,7 +145,7 @@ test.describe('Authentication journeys', () => {
       );
 
       const resetPage = new PasswordResetPage(page);
-      await expect(resetPage.resetForm).toBeVisible();
+      await expect(resetPage.resetForm).toBeVisible({ timeout: 10000 });
       await resetPage.resetPassword(NEW_PASSWORD);
 
       await expect(resetPage.resetSuccessMessage).toBeVisible({
