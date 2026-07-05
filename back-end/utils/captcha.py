@@ -24,16 +24,10 @@ def verify_recaptcha(token: str, ip_address: Optional[str] = None) -> Tuple[bool
         - score: reCAPTCHA score (0.0 to 1.0)
     """
     # Explicit test-mode bypass: DISABLE_CAPTCHA env var skips verification.
-    # Only honored in non-production environments. Also activated by a
-    # .disable_captcha sentinel file in the application directory for
-    # environments where env-var injection is impractical.
+    # Only honored in non-production environments.
     if os.getenv("FLASK_ENV", "") != "production":
         if os.getenv("DISABLE_CAPTCHA", "").lower() in ("true", "1"):
             print("Warning: DISABLE_CAPTCHA is enabled - captcha verification skipped")
-            return True, 1.0
-        sentinel = os.path.join(os.path.dirname(__file__), "..", ".disable_captcha")
-        if os.path.isfile(sentinel):
-            print("Warning: .disable_captcha sentinel found - captcha verification skipped")
             return True, 1.0
 
     if not RECAPTCHA_SECRET_KEY:

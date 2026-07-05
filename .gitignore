@@ -21,7 +21,3 @@ users.json
 # Logs
 *.log
 tmux-*.log
-
-# Test environment sentinel files
-.disable_email
-.disable_captcha

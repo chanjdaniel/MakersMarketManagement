@@ -29,16 +29,12 @@ logger.info(f"Email configuration: FROM_EMAIL={FROM_EMAIL}, FRONTEND_URL={FRONTE
 def _email_disabled() -> bool:
     """Return True when email sending is explicitly disabled for testing.
 
-    Only honored in non-production environments. Activated by either
-    the DISABLE_EMAIL env var or the presence of a .disable_email
-    sentinel file in the application directory.
+    Only honored in non-production environments. Activated by the
+    DISABLE_EMAIL env var.
     """
     if os.getenv("FLASK_ENV", "") == "production":
         return False
-    if os.getenv("DISABLE_EMAIL", "").lower() in ("true", "1"):
-        return True
-    sentinel = os.path.join(os.path.dirname(__file__), "..", ".disable_email")
-    return os.path.isfile(sentinel)
+    return os.getenv("DISABLE_EMAIL", "").lower() in ("true", "1")
 
 
 def send_verification_email(email: str, token: str) -> bool:
