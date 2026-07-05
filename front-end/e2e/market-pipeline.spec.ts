@@ -1,6 +1,6 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { test, expect, TEST_USER, MarketSetupPage, AssignmentResultsPage, NewMarketPage } from './fixtures';
+import { test, expect, MarketSetupPage, AssignmentResultsPage, NewMarketPage } from './fixtures';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CSV_PATH = path.resolve(__dirname, 'fixtures', 'test-vendors.csv');
