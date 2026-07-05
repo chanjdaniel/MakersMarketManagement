@@ -82,6 +82,9 @@ jobs:
       - name: Run Playwright tests
         working-directory: front-end
         run: npx playwright test
+      - name: Docker compose logs
+        if: always()
+        run: docker compose logs
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
