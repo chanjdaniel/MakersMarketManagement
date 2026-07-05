@@ -1,4 +1,4 @@
-import type { Locator, Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
 
 /**
  * Page object for the Market Setup wizard view.
@@ -115,12 +115,10 @@ export class MarketSetupPage {
 
   /** Verify that N column rows are visible. */
   async expectColumnCount(count: number): Promise<void> {
-    await this.page.locator('.setup-row').first().waitFor({ state: 'visible' });
-    const rows = this.page.locator('.setup-row');
-    // Only count rows within the ElementSetupColumns component (the first double-column-body)
-    // The setup-row class is used across multiple components; scope to the first container.
+    // The setup-row class is used across multiple components; scope to the columns container.
     const colRows = this.page.locator('.double-column-body .setup-row');
     await colRows.first().waitFor({ state: 'visible' });
+    await expect(colRows).toHaveCount(count);
   }
 
   // --- Page 1: Path choice ---
@@ -161,9 +159,19 @@ export class MarketSetupPage {
     await nameInput.waitFor({ state: 'visible' });
     await nameInput.fill(name);
     await this.page.getByTestId(`setup-section-location-select-${index}`).selectOption({ label: locationOptionLabel });
-    // Use index-based selection to preserve the TierObject reference with its id field.
-    // Index 0 is the disabled placeholder ("Select a tier"), so real options start at index 1.
-    await this.page.getByTestId(`setup-section-tier-select-${index}`).selectOption({ index: 1 });
+    // Resolve the tier option matching the requested label, then select by index.
+    // Index-based selection preserves the bound TierObject reference (with its id field);
+    // index 0 is the disabled placeholder ("Select a tier"), so real options start at 1.
+    const tierSelect = this.page.getByTestId(`setup-section-tier-select-${index}`);
+    const tierOptionIndex = await tierSelect.locator('option').evaluateAll(
+      (options, label) =>
+        options.findIndex((option) => (option.textContent ?? '').trim() === label),
+      tierOptionLabel,
+    );
+    if (tierOptionIndex < 1) {
+      throw new Error(`Tier option "${tierOptionLabel}" not found in section tier select`);
+    }
+    await tierSelect.selectOption({ index: tierOptionIndex });
     await this.page.getByTestId(`setup-section-count-input-${index}`).fill(String(count));
   }
 
