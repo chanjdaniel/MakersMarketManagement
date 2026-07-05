@@ -1,4 +1,4 @@
-import { test as base, type Page } from '@playwright/test';
+import { test as base, type Page, type APIRequestContext } from '@playwright/test';
 import { LoginPage } from './pages/LoginPage';
 
 export const TEST_USER = {
@@ -35,3 +35,21 @@ export { TablesPage } from './pages/TablesPage';
 export { AttendanceStatusPage } from './pages/AttendanceStatusPage';
 export { OrganizationsPage } from './pages/OrganizationsPage';
 export { ManageMarketPage } from './pages/ManageMarketPage';
+export { PasswordResetPage } from './pages/PasswordResetPage';
+
+export async function getResetToken(
+  request: APIRequestContext,
+  email: string,
+): Promise<string> {
+  const res = await request.get(`${BACKEND_URL}/test/latest-reset-token`, {
+    params: { email },
+    ignoreHTTPSErrors: true,
+  });
+  if (!res.ok()) {
+    throw new Error(
+      `Failed to get reset token: ${res.status()} ${await res.text()}`,
+    );
+  }
+  const body = (await res.json()) as { token: string };
+  return body.token;
+}

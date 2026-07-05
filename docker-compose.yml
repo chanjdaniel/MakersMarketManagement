@@ -24,7 +24,7 @@ services:
     build:
       context: ./back-end
       dockerfile: Dockerfile
-    container_name: conventioner_backend
+    container_name: conventioner_backend_worktree
     restart: unless-stopped
     environment:
       - FLASK_APP=app.py
@@ -40,10 +40,11 @@ services:
       - FROM_EMAIL=${FROM_EMAIL:-onboarding@resend.dev}
       - RECAPTCHA_SECRET_KEY=${RECAPTCHA_SECRET_KEY:-}
       - DISABLE_CAPTCHA=${DISABLE_CAPTCHA:-}
+      - DISABLE_EMAIL=${DISABLE_EMAIL:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     ports:
-      - "5000:5000"
+      - "5001:5000"
     volumes:
       - ./back-end:/app
       - backend_sessions:/app/flask_session
@@ -59,14 +60,14 @@ services:
     build:
       context: ./front-end
       dockerfile: Dockerfile
-    container_name: conventioner_frontend
+    container_name: conventioner_frontend_worktree
     restart: unless-stopped
     environment:
       - VITE_FLASK_HOST=/api
       - VITE_BACKEND_URL=https://backend:5000
       - VITE_RECAPTCHA_SITE_KEY=${RECAPTCHA_SITE_KEY:-}
     ports:
-      - "5173:5173"
+      - "5183:5173"
     volumes:
       - ./front-end:/app
       - /app/node_modules

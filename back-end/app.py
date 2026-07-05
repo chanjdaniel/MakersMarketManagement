@@ -149,6 +149,53 @@ def delete_user() -> Response:
     
     return UsersApi.delete_user(request, requesting_user_email)
 
+# Test-only endpoints (never available in production)
+@app.route('/test/latest-reset-token', methods=['GET'])
+def get_latest_reset_token():
+    """Return the latest password-reset token for a user (test-only).
+
+    Only available when FLASK_ENV is not 'production'. Returns the raw
+    token so E2E tests can drive the full password-reset flow without
+    intercepting email.
+    """
+    if os.getenv("FLASK_ENV", "") == "production":
+        return jsonify({"error": "Not available in production"}), 404
+    email = request.args.get("email", "")
+    if not email:
+        return jsonify({"error": "Email query parameter required"}), 400
+    user_doc = UsersApi.users_collection.find_one({"email": email})
+    if not user_doc:
+        return jsonify({"error": "User not found"}), 404
+    token = user_doc.get("password_reset_token")
+    if not token:
+        return jsonify({"error": "No reset token found for this user"}), 404
+    return jsonify({
+        "token": token,
+        "expires": user_doc.get("password_reset_token_expires"),
+    }), 200
+
+
+@app.route('/test/verify-user', methods=['POST'])
+def test_verify_user():
+    """Mark a user as email-verified (test-only).
+
+    Only available when FLASK_ENV is not 'production'. Used by E2E tests
+    to create verified users without going through the email flow.
+    """
+    if os.getenv("FLASK_ENV", "") == "production":
+        return jsonify({"error": "Not available in production"}), 404
+    data = request.json or {}
+    email = data.get("email", "")
+    if not email:
+        return jsonify({"error": "Email required in request body"}), 400
+    result = UsersApi.users_collection.update_one(
+        {"email": email},
+        {"$set": {"email_verified": True}},
+    )
+    if result.matched_count == 0:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({"msg": "User verified"}), 200
+
 # organizations
 
 @app.route('/organizations', methods=['GET'])
