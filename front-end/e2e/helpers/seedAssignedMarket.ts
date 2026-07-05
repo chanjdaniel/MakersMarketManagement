@@ -58,6 +58,7 @@ export async function seedAssignedMarket(
       'X-Owner-Email': email,
     },
     data: {
+      id: seed.marketId,
       name: seed.marketName,
       creationDate: new Date().toISOString(),
       roles: { [seed.userId]: 'owner' },

@@ -18,8 +18,11 @@ test.describe('Tier 2 - Organization CRUD', () => {
         data: { email: user.email, password: user.password },
         headers: { 'Content-Type': 'application/json' },
       });
-      if (!res.ok() && res.status() !== 409) {
-        throw new Error(`Failed to create user ${user.email}: ${res.status()} ${await res.text()}`);
+      if (!res.ok()) {
+        const body = await res.text();
+        if (res.status() !== 409 && !body.includes('already exists')) {
+          throw new Error(`Failed to create user ${user.email}: ${res.status()} ${body}`);
+        }
       }
     }
   });
@@ -74,8 +77,11 @@ test.describe('Tier 2 - Market role management', () => {
       data: { email: SECOND_USER.email, password: SECOND_USER.password },
       headers: { 'Content-Type': 'application/json' },
     });
-    if (!userRes.ok() && userRes.status() !== 409) {
-      throw new Error(`Failed to create second user: ${userRes.status()} ${await userRes.text()}`);
+    if (!userRes.ok()) {
+      const body = await userRes.text();
+      if (userRes.status() !== 409 && !body.includes('already exists')) {
+        throw new Error(`Failed to create second user: ${userRes.status()} ${body}`);
+      }
     }
 
     const loginRes = await request.post(`${BACKEND_URL}/login`, {
@@ -182,10 +188,16 @@ test.describe('Tier 2 - Assignment CSV export', () => {
     const csvContent = Buffer.concat(chunks).toString('utf-8');
     const headerLine = csvContent.split('\n')[0].trim();
 
-    const expectedColumns = ['table', 'vendor', 'date', 'section', 'tier'];
+    // The export is a wide-format CSV: the included source columns followed by
+    // one column per market date (the date string itself). Each date cell holds
+    // the vendor's "<table_code> - <table_choice>" assignment.
+    const expectedColumns = ['email', 'vendor_name', 'table_choice', 'buddy_email', 'day_1', '2025-06-01'];
     for (const col of expectedColumns) {
       expect(headerLine.toLowerCase()).toContain(col.toLowerCase());
     }
+
+    // The engine's assignments must land in the date column cells.
+    expect(csvContent.toLowerCase()).toContain('hall a');
   });
 });
 
@@ -222,7 +234,7 @@ test.describe('Tier 2 - Publish market', () => {
     await page.waitForURL(`**/${slug}`, { timeout: 10000 });
 
     await page.goto(`/${slug}/check-in`);
-    await expect(page.locator('.attendance-checkin-view')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.attendance-view')).toBeVisible({ timeout: 10000 });
     await expect(page.getByTestId('attendance-checkin-email-input')).toBeVisible({ timeout: 5000 });
   });
 });
