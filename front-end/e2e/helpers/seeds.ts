@@ -260,7 +260,7 @@ export async function seedPublishedMarketWithAssignments(
   }
   const assignedMarket = await assignRes.json() as Record<string, unknown>;
 
-  await request.put(`${baseURL}/markets/${marketId}`, {
+  const storeRes = await request.put(`${baseURL}/markets/${marketId}`, {
     headers: {
       'Content-Type': 'application/json',
       'X-Owner-Email': email,
@@ -272,6 +272,9 @@ export async function seedPublishedMarketWithAssignments(
       isDraft: false,
     },
   });
+  if (!storeRes.ok()) {
+    throw new Error(`Assignment store failed: ${storeRes.status()} ${await storeRes.text()}`);
+  }
 
   return { marketId, userId, marketName, marketSlug };
 }
