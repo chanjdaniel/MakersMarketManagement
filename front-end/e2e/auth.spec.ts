@@ -6,6 +6,7 @@ import {
   PasswordResetPage,
   AssignmentResultsPage,
 } from './fixtures';
+import { execSync } from 'child_process';
 
 const REGISTER_PASSWORD = 'E2eRegister123!';
 const NEW_PASSWORD = 'E2eNewPass456!';
@@ -115,47 +116,93 @@ test.describe('Authentication journeys', () => {
       });
     });
 
-    test('resets password with a known token', async ({ page }) => {
-      const hardcodedToken = 'e2e-reset-token-123';
+    test('completes full reset flow using real token from DB', async ({
+      page,
+      request,
+    }) => {
+      const email = uniqueEmail();
 
-      // App.vue calls GET /check-session on mount and redirects to
-      // /login when it fails (regardless of whether the route is public).
-      // Intercept it so the reset page can render.
-      await page.route('**/check-session', async (route) => {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ email: 'e2e@example.com' }),
+      // Step 1: Create a user via the back-end API (no CAPTCHA).
+      const regRes = await request.post('/api/register-user', {
+        data: { email, password: REGISTER_PASSWORD, organizations: [] },
+        headers: { 'Content-Type': 'application/json' },
+      });
+      expect(regRes.ok()).toBeTruthy();
+
+      try {
+        // Step 2: Request a password reset via the back-end API to
+        // store a real token in MongoDB.
+        const resetReqRes = await request.post(
+          '/api/request-password-reset',
+          {
+            data: { email },
+            headers: { 'Content-Type': 'application/json' },
+          },
+        );
+        expect(resetReqRes.ok()).toBeTruthy();
+
+        // Step 3: Read the reset token directly from MongoDB.
+        const mongoContainer =
+          process.env.E2E_MONGO_CONTAINER || 'conventioner_mongodb';
+        const token = execSync(
+          `docker exec ${mongoContainer} mongosh --quiet ` +
+            `-u admin -p secret --authenticationDatabase admin ` +
+            `--eval "db.getSiblingDB('conventioner').users.findOne({email:'${email}'}).password_reset_token"`,
+          { encoding: 'utf-8', timeout: 10000 },
+        )
+          .trim()
+          .replace(/^"/, '')
+          .replace(/"$/, '');
+        expect(token).toBeTruthy();
+        expect(token.length).toBeGreaterThanOrEqual(10);
+
+        // Step 4: Navigate to the reset page with the real token.
+        // App.vue's onMounted calls /check-session and redirects on
+        // failure; intercept it so the reset page can render.
+        await page.route('**/check-session', async (route) => {
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ email }),
+          });
         });
-      });
 
-      // Intercept the reset-password API call to verify it is sent correctly.
-      let resetPayload: Record<string, unknown> | null = null;
-      await page.route('**/reset-password', async (route) => {
-        resetPayload = route.request().postDataJSON();
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ msg: 'Password reset successfully!' }),
+        // Intercept the reset-password API call to verify the correct
+        // payload is sent and to return success.
+        let resetPayload: Record<string, unknown> | null = null;
+        await page.route('**/reset-password', async (route) => {
+          resetPayload = route.request().postDataJSON();
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ msg: 'Password reset successfully!' }),
+          });
         });
-      });
 
-      await page.goto(
-        `/reset-password?token=${encodeURIComponent(hardcodedToken)}`,
-      );
+        await page.goto(
+          `/reset-password?token=${encodeURIComponent(token)}`,
+        );
 
-      const resetPage = new PasswordResetPage(page);
-      await expect(resetPage.resetForm).toBeVisible({ timeout: 10000 });
-      await resetPage.resetPassword(NEW_PASSWORD);
+        const resetPage = new PasswordResetPage(page);
+        await expect(resetPage.resetForm).toBeVisible({ timeout: 10000 });
+        await resetPage.resetPassword(NEW_PASSWORD);
 
-      await expect(resetPage.resetSuccessMessage).toBeVisible({
-        timeout: 10000,
-      });
-      await expect(resetPage.resetSuccessMessage).toContainText('successfully');
+        await expect(resetPage.resetSuccessMessage).toBeVisible({
+          timeout: 10000,
+        });
+        await expect(resetPage.resetSuccessMessage).toContainText(
+          'successfully',
+        );
 
-      expect(resetPayload).toBeDefined();
-      expect(resetPayload!.token).toBe(hardcodedToken);
-      expect(resetPayload!.new_password).toBe(NEW_PASSWORD);
+        expect(resetPayload).toBeDefined();
+        expect(resetPayload!.token).toBe(token);
+        expect(resetPayload!.new_password).toBe(NEW_PASSWORD);
+      } finally {
+        await request.post('/api/delete-user', {
+          data: { email },
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
     });
   });
 
