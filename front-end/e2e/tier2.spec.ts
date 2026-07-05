@@ -6,14 +6,21 @@ const SECOND_USER = {
   password: 'e2esecond123',
 };
 
+const THIRD_USER = {
+  email: 'e2e-third@example.com',
+  password: 'e2ethird123',
+};
+
 test.describe('Tier 2 - Organization CRUD', () => {
   test.beforeAll(async ({ request }) => {
-    const res = await request.post(`${BACKEND_URL}/register-user`, {
-      data: { email: SECOND_USER.email, password: SECOND_USER.password },
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!res.ok() && res.status() !== 409) {
-      throw new Error(`Failed to create second user: ${res.status()} ${await res.text()}`);
+    for (const user of [SECOND_USER, THIRD_USER]) {
+      const res = await request.post(`${BACKEND_URL}/register-user`, {
+        data: { email: user.email, password: user.password },
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok() && res.status() !== 409) {
+        throw new Error(`Failed to create user ${user.email}: ${res.status()} ${await res.text()}`);
+      }
     }
   });
 
@@ -36,7 +43,7 @@ test.describe('Tier 2 - Organization CRUD', () => {
 
     await manageButton.click();
     await orgsPage.waitForManageOverlay();
-    await orgsPage.addMember(SECOND_USER.email);
+    await orgsPage.addMember(THIRD_USER.email);
     await page.waitForTimeout(500);
 
     await manageButton.click();
