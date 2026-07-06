@@ -232,8 +232,16 @@ async function handleSave() {
           <!-- Body -->
           <div class="save-dialog-body">
             <!-- Success / Error messages -->
-            <p v-if="successMessage" class="save-dialog-success" data-testid="floorplan-save-success">{{ successMessage }}</p>
-            <p v-if="error" class="save-dialog-error" data-testid="floorplan-save-error">{{ error }}</p>
+            <p
+              v-if="successMessage"
+              class="save-dialog-success"
+              data-testid="floorplan-save-success"
+            >
+              {{ successMessage }}
+            </p>
+            <p v-if="error" class="save-dialog-error" data-testid="floorplan-save-error">
+              {{ error }}
+            </p>
 
             <!-- Summary stats -->
             <div class="save-summary-stats">
@@ -272,11 +280,7 @@ async function handleSave() {
                 <span class="save-section-subtitle">— click to edit names &amp; locations</span>
               </h3>
               <div class="save-sections-grid">
-                <div
-                  v-for="section in sectionSummary"
-                  :key="section.id"
-                  class="save-section-card"
-                >
+                <div v-for="section in sectionSummary" :key="section.id" class="save-section-card">
                   <div class="save-section-card-field">
                     <label class="save-section-card-label" :for="`sec-name-${section.id}`">
                       Section Name
@@ -288,8 +292,7 @@ async function handleSave() {
                       :value="section.name"
                       :disabled="saving"
                       @input="
-                        (e) =>
-                          updateSectionName(section.id, (e.target as HTMLInputElement).value)
+                        (e) => updateSectionName(section.id, (e.target as HTMLInputElement).value)
                       "
                     />
                   </div>

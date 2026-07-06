@@ -217,16 +217,8 @@ const selectOptions = [
     <!-- ── Type list ────────────────────────────────────────────── -->
     <div class="tt-type-list">
       <TransitionGroup name="tt-list">
-        <div
-          v-for="tt in store.tableTypes"
-          :key="tt.id"
-          class="tt-type-card"
-        >
-          <span
-            class="tt-color-swatch"
-            :style="{ background: tt.color }"
-            aria-hidden="true"
-          />
+        <div v-for="tt in store.tableTypes" :key="tt.id" class="tt-type-card">
+          <span class="tt-color-swatch" :style="{ background: tt.color }" aria-hidden="true" />
           <div class="tt-type-info">
             <strong class="tt-type-name">{{ tt.name }}</strong>
             <span class="tt-type-dims">
@@ -254,12 +246,7 @@ const selectOptions = [
         </div>
       </TransitionGroup>
 
-      <p
-        v-if="store.tableTypes.length === 0"
-        class="tt-empty"
-      >
-        No table types defined yet.
-      </p>
+      <p v-if="store.tableTypes.length === 0" class="tt-empty">No table types defined yet.</p>
     </div>
 
     <!-- ── Add button ─────────────────────────────────────────────-->
@@ -275,7 +262,7 @@ const selectOptions = [
     <!-- ── Inline add form ──────────────────────────────────────── -->
     <Transition name="tt-form">
       <div v-if="showForm" class="tt-inline-form">
-          <div class="tt-field">
+        <div class="tt-field">
           <label class="tt-label" for="tt-name">Name</label>
           <InputText
             id="tt-name"
@@ -319,16 +306,8 @@ const selectOptions = [
 
         <div class="tt-field">
           <label class="tt-label" for="tt-unit">Unit</label>
-          <select
-            id="tt-unit"
-            v-model="selectedUnit"
-            class="tt-input"
-          >
-            <option
-              v-for="u in UNIT_OPTIONS"
-              :key="u.value"
-              :value="u.value"
-            >
+          <select id="tt-unit" v-model="selectedUnit" class="tt-input">
+            <option v-for="u in UNIT_OPTIONS" :key="u.value" :value="u.value">
               {{ u.label }}
             </option>
           </select>
@@ -418,16 +397,8 @@ const selectOptions = [
 
         <div class="tt-field">
           <label class="tt-label" for="tt-edit-unit">Unit</label>
-          <select
-            id="tt-edit-unit"
-            v-model="editUnit"
-            class="tt-input"
-          >
-            <option
-              v-for="u in UNIT_OPTIONS"
-              :key="u.value"
-              :value="u.value"
-            >
+          <select id="tt-edit-unit" v-model="editUnit" class="tt-input">
+            <option v-for="u in UNIT_OPTIONS" :key="u.value" :value="u.value">
               {{ u.label }}
             </option>
           </select>
@@ -449,12 +420,7 @@ const selectOptions = [
 
       <template #footer>
         <div class="tt-dialog-actions">
-          <button
-            class="tt-btn tt-btn--secondary"
-            @click="cancelEdit"
-          >
-            Cancel
-          </button>
+          <button class="tt-btn tt-btn--secondary" @click="cancelEdit">Cancel</button>
           <button
             class="tt-btn tt-btn--primary"
             :disabled="!editForm.name.trim() || !editWidthMm || !editHeightMm"
