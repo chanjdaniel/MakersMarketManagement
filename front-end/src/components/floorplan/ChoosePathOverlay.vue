@@ -41,7 +41,7 @@ defineEmits<{
         </div>
 
         <!-- ─── Floorplan AI Card ─── -->
-        <div class="path-card card-floorplan" @click="$emit('select', 'floorplan')">
+        <div class="path-card card-floorplan" @click="$emit('select', 'floorplan')" data-testid="choose-path-floorplan">
           <span class="beta-badge">BETA</span>
 
           <div class="card-icon-wrapper">

@@ -412,6 +412,7 @@ onUnmounted(() => {
         @click="toggleGroupMode"
         :title="groupMode ? 'Exit group mode' : 'Group tables into sections'"
         :aria-pressed="groupMode"
+        data-testid="floorplan-section-group-toggle"
       >
         {{ groupMode ? 'Done Grouping' : 'Group Sections' }}
       </button>
@@ -494,6 +495,7 @@ onUnmounted(() => {
                 type="text"
                 placeholder="e.g. A"
                 autofocus
+                data-testid="floorplan-section-dialog-name-input"
                 @keyup.enter="confirmSection"
               />
             </label>
@@ -505,6 +507,7 @@ onUnmounted(() => {
                 class="sg-field-input"
                 type="text"
                 placeholder="e.g. Main Hall"
+                data-testid="floorplan-section-dialog-location-input"
                 @keyup.enter="confirmSection"
               />
             </label>
@@ -528,12 +531,13 @@ onUnmounted(() => {
             </p>
 
             <div class="sg-dialog-actions">
-              <button class="sg-btn sg-btn--cancel" @click="cancelSection">
+              <button class="sg-btn sg-btn--cancel" data-testid="floorplan-section-dialog-cancel-btn" @click="cancelSection">
                 Cancel
               </button>
               <button
                 class="sg-btn sg-btn--confirm"
                 :disabled="!dialogSectionName.trim()"
+                data-testid="floorplan-section-dialog-assign-btn"
                 @click="confirmSection"
               >
                 Assign Section

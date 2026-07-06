@@ -453,7 +453,7 @@ onUnmounted(() => {
     <!-- ── Main calibration UI ────────────────────────────────────── -->
     <template v-else>
       <!-- Konva stage -->
-      <div class="cal-stage-wrapper">
+      <div class="cal-stage-wrapper" data-testid="scale-calibration-stage">
         <v-stage
           ref="stageRef"
           :config="stageConfig"
@@ -522,6 +522,7 @@ onUnmounted(() => {
               class="cal-input"
               placeholder="e.g. 3.5"
               autofocus
+              data-testid="scale-calibration-length-input"
               @keydown.enter.prevent="confirmCalibration"
             />
           </div>
@@ -548,6 +549,7 @@ onUnmounted(() => {
           <div class="cal-dialog-actions">
             <button
               class="cal-btn cal-btn--secondary"
+              data-testid="scale-calibration-btn-redraw"
               @click="resetCalibration"
               :disabled="isSubmitting"
             >
@@ -555,6 +557,7 @@ onUnmounted(() => {
             </button>
             <button
               class="cal-btn cal-btn--primary"
+              data-testid="scale-calibration-btn-calibrate"
               @click="confirmCalibration"
               :disabled="isSubmitting"
             >
@@ -606,12 +609,14 @@ onUnmounted(() => {
           <div class="cal-dialog-actions">
             <button
               class="cal-btn cal-btn--secondary"
+              data-testid="scale-calibration-btn-redraw"
               @click="resetCalibration"
             >
               Redraw
             </button>
             <button
               class="cal-btn cal-btn--primary"
+              data-testid="scale-calibration-btn-done"
               @click="acceptCalibration"
             >
               Done

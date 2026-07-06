@@ -154,6 +154,7 @@ function onSaved(payload: { market_id: string }) {
       <button
         v-if="step > 0"
         class="nav-btn nav-btn--back"
+        data-testid="floorplan-workflow-back-btn"
         @click="step--"
       >
         ← Back
@@ -162,6 +163,7 @@ function onSaved(payload: { market_id: string }) {
         v-if="step < 4"
         class="nav-btn nav-btn--next"
         :disabled="!canProceed"
+        data-testid="floorplan-workflow-next-btn"
         @click="step++"
       >
         Next →

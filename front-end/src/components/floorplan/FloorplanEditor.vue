@@ -515,9 +515,9 @@ watch(
 </script>
 
 <template>
-  <div class="floorplan-editor" ref="containerRef">
+  <div class="floorplan-editor" ref="containerRef" data-testid="floorplan-editor-stage">
     <Transition name="fade">
-      <div v-if="errorMsg" class="editor-error-banner">
+      <div v-if="errorMsg" class="editor-error-banner" data-testid="floorplan-editor-error">
         {{ errorMsg }}
       </div>
     </Transition>
@@ -578,6 +578,7 @@ watch(
     <div class="editor-toolbar">
       <button
         class="toolbar-btn"
+        data-testid="floorplan-editor-zoom-in"
         @click="zoomIn"
         title="Zoom in"
         aria-label="Zoom in"
@@ -586,6 +587,7 @@ watch(
       </button>
       <button
         class="toolbar-btn"
+        data-testid="floorplan-editor-zoom-out"
         @click="zoomOut"
         title="Zoom out"
         aria-label="Zoom out"
@@ -594,6 +596,7 @@ watch(
       </button>
       <button
         class="toolbar-btn"
+        data-testid="floorplan-editor-fit"
         @click="fitToScreen"
         title="Fit to screen"
         aria-label="Fit to screen"
@@ -603,6 +606,7 @@ watch(
       <button
         class="toolbar-btn"
         :class="{ 'is-active': showGrid }"
+        data-testid="floorplan-editor-grid"
         @click="toggleGrid"
         title="Toggle grid"
         aria-label="Toggle grid"

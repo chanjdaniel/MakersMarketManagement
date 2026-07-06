@@ -133,6 +133,7 @@ async function triggerAutoPlace() {
     <button
       class="auto-place-btn"
       :disabled="isDisabled"
+      data-testid="floorplan-auto-place-btn"
       :title="
         store.tableTypes.length === 0
           ? 'Define at least one table type first'
@@ -167,7 +168,7 @@ async function triggerAutoPlace() {
     </button>
 
     <!-- Error display -->
-    <div v-if="errorMessage && !isLoading" class="placement-error">
+    <div v-if="errorMessage && !isLoading" class="placement-error" data-testid="floorplan-auto-place-error">
       {{ errorMessage }}
     </div>
   </div>

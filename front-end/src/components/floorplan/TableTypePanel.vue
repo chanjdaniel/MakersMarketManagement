@@ -266,6 +266,7 @@ const selectOptions = [
     <button
       v-if="!showForm"
       class="tt-add-btn"
+      data-testid="floorplan-table-type-add-btn"
       @click="openForm"
     >
       + Add Table Type
@@ -274,13 +275,14 @@ const selectOptions = [
     <!-- ── Inline add form ──────────────────────────────────────── -->
     <Transition name="tt-form">
       <div v-if="showForm" class="tt-inline-form">
-        <div class="tt-field">
+          <div class="tt-field">
           <label class="tt-label" for="tt-name">Name</label>
           <InputText
             id="tt-name"
             v-model="form.name"
             class="tt-input"
             placeholder="e.g. 6ft Rectangle"
+            data-testid="floorplan-table-type-name-input"
             :class="{ 'tt-input--error': !!formError }"
             @keydown.enter="saveType"
           />
@@ -294,6 +296,7 @@ const selectOptions = [
               v-model="formWidthMm"
               class="tt-input"
               placeholder="Width"
+              data-testid="floorplan-table-type-width-input"
               :min="1"
               :max="10000"
               :class="{ 'tt-input--error': !!formError }"
@@ -306,6 +309,7 @@ const selectOptions = [
               v-model="formHeightMm"
               class="tt-input"
               placeholder="Height"
+              data-testid="floorplan-table-type-height-input"
               :min="1"
               :max="10000"
               :class="{ 'tt-input--error': !!formError }"
@@ -346,6 +350,7 @@ const selectOptions = [
         <div class="tt-form-actions">
           <button
             class="tt-btn tt-btn--secondary"
+            data-testid="floorplan-table-type-cancel-btn"
             @click="cancelForm"
           >
             Cancel
@@ -353,6 +358,7 @@ const selectOptions = [
           <button
             class="tt-btn tt-btn--primary"
             :disabled="!form.name.trim() || !formWidthMm || !formHeightMm"
+            data-testid="floorplan-table-type-save-btn"
             @click="saveType"
           >
             Save
