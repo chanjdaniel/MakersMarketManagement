@@ -116,6 +116,7 @@ async function loadBackgroundImage(gridfsId: string) {
         ...(store.sections.length > 0 ? { sections: store.sections } : {}),
         ...(store.walls.length > 0 ? { walls: store.walls } : {}),
         ...(store.obstacles.length > 0 ? { obstacles: store.obstacles } : {}),
+        ...(store.scalePxPerMm !== 1 ? { scalePxPerUnit: store.scalePxPerMm } : {}),
       })
     } else {
       store.floorplan.imageGridfsId = gridfsId
