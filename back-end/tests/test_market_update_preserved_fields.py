@@ -12,13 +12,18 @@ class FakeMarketsCollection:
     def __init__(self, doc):
         self.doc = doc
         self.last_update = None
+        self.inserted = None
 
     def find_one(self, _query):
-        return dict(self.doc)
+        return dict(self.doc) if self.doc is not None else None
 
     def update_one(self, _filter, update):
         self.last_update = update
         return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
+
+    def insert_one(self, document):
+        self.inserted = document
+        return SimpleNamespace(inserted_id="mongo-id")
 
 
 def _stored_market(**overrides):
@@ -103,3 +108,36 @@ def test_update_writes_conventioner_fields_the_body_does_carry(collection):
 
     written = collection.last_update["$set"]
     assert written["applicationForm"]["fields"][0]["label"] == "Website"
+
+
+def test_update_clears_conventioner_fields_the_body_explicitly_nulls(monkeypatch):
+    fake = FakeMarketsCollection(
+        _stored_market(
+            applicationForm={
+                "fields": [
+                    {"key": "shop_name", "label": "Shop name", "type": "text", "required": True}
+                ]
+            },
+            reviewConfig={"reviewers": ["a@example.com"]},
+            discordGuildId="guild-1",
+        )
+    )
+    monkeypatch.setattr(MarketsApi, "markets_collection", fake)
+    monkeypatch.setattr(PermissionsApi, "user_has_permission", lambda *_args, **_kwargs: True)
+
+    body = _client_market(application_form=None, review_config=None, discord_guild_id=None)
+    MarketsApi.update_market("market-123", body, "user-1")
+
+    written = fake.last_update["$set"]
+    assert written["applicationForm"] is None
+    assert written["reviewConfig"] is None
+    assert written["discordGuildId"] is None
+
+
+def test_create_pins_phase_to_draft_regardless_of_the_client_body(monkeypatch):
+    fake = FakeMarketsCollection(None)
+    monkeypatch.setattr(MarketsApi, "markets_collection", fake)
+
+    MarketsApi.create_market(_client_market(phase=MarketPhase.ARCHIVED), "user-1@example.com")
+
+    assert fake.inserted["phase"] == MarketPhase.DRAFT.value
