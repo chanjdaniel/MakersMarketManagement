@@ -16,7 +16,7 @@ from datatypes import (
     phase_from_market_document,
 )
 from assignment.assignment import assign_market
-from assignment.utils import convert_keys_to_snake_case, convert_keys_to_camel_case
+from assignment.utils import convert_keys_to_snake_case, convert_keys_to_camel_case, snake_to_camel
 import api.applications as ApplicationsApi
 import api.source_data as SourceDataApi
 import api.permissions as PermissionsApi
@@ -205,6 +205,34 @@ def _normalized_application_form(
 
 def _application_form_dump(market: Market) -> Optional[Dict[str, Any]]:
     return market.application_form.model_dump() if market.application_form else None
+
+
+def market_doc_field(document: Dict[str, Any], field: str, default: Any = None) -> Any:
+    """Read a model field off a raw stored market document.
+
+    Every write camel-cases the whole document (``convert_keys_to_camel_case`` in
+    ``create_market`` and ``update_market``), so ``organization_id`` is persisted as
+    ``organizationId``; documents last written before that convention still carry the
+    snake_case spelling. Nothing about a raw Mongo document announces which one it uses,
+    so reads that skip ``convert_keys_to_snake_case`` go through here instead of naming a
+    key by hand and silently matching nothing.
+    """
+    camel_key = snake_to_camel(field)
+    if camel_key in document:
+        return document[camel_key]
+    return document.get(field, default)
+
+
+def market_doc_filter(field: str, condition: Any) -> Dict[str, Any]:
+    """Mongo filter matching a market field under either persisted spelling.
+
+    Counterpart to :func:`market_doc_field` for queries, which cannot fall back after the
+    fact the way a dict read can.
+    """
+    camel_key = snake_to_camel(field)
+    if camel_key == field:
+        return {field: condition}
+    return {"$or": [{camel_key: condition}, {field: condition}]}
 
 
 def _strip_persisted_assignment_statistics(market_dict: Dict[str, Any]) -> None:
@@ -445,12 +473,13 @@ def _decorate_market_summary(market: Dict[str, Any], user_role: Optional[str]) -
     market['_id'] = str(market['_id'])
     market['user_role'] = user_role
     market['phase'] = phase_from_market_document(market).value
-    if market.get('organization_id'):
-        org = OrgsApi.get_organization(market['organization_id'])
+    organization_id = market_doc_field(market, 'organization_id')
+    if organization_id:
+        org = OrgsApi.get_organization(organization_id)
         if org:
             market['organization_name'] = org.get('name')
     role_emails = {}
-    for uid in (market.get('roles') or {}).keys():
+    for uid in (market_doc_field(market, 'roles') or {}).keys():
         u = UsersApi.get_user_by_id(uid)
         if u:
             role_emails[uid] = u.email
@@ -488,9 +517,9 @@ def get_markets_for_user(user_email: str) -> List[Dict[str, Any]]:
     org_ids = [org['id'] for org in user_orgs]
 
     if org_ids:
-        org_markets = markets_collection.find({
-            "organization_id": {"$in": org_ids}
-        })
+        org_markets = markets_collection.find(
+            market_doc_filter("organization_id", {"$in": org_ids})
+        )
         for market in org_markets:
             mid = market["id"]
             if mid not in seen_ids:

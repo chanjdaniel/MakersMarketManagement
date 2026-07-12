@@ -4,6 +4,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
+
+import guards
 from datatypes import (
     ApplicationForm, AssignmentObject, FormField, Market, MarketPhase, MarketRole,
 )
@@ -171,6 +174,52 @@ class TestTransitionGuards:
             assert "form_has_fields" in guard_ids, (
                 f"{transition} enters applications_open without FormHasFieldsGuard"
             )
+
+
+class TestRegistrySelfCheck:
+    """The registry has to catch the two ways a one-file edit can silently drop a guard."""
+
+    def _validate(self, monkeypatch, valid_transitions, transition_guards):
+        monkeypatch.setattr(guards, "VALID_TRANSITIONS", valid_transitions)
+        monkeypatch.setattr(guards, "TRANSITION_GUARDS", transition_guards)
+        guards._validate_registry()
+
+    def test_shipped_registry_is_consistent(self):
+        guards._validate_registry()
+
+    def test_guard_on_a_nonexistent_edge_is_rejected(self, monkeypatch):
+        """A typo'd key would otherwise park the guard on an edge nobody can take."""
+        with pytest.raises(RuntimeError, match="not in VALID_TRANSITIONS"):
+            self._validate(
+                monkeypatch,
+                {("draft", "applications_open")},
+                {("draft", "application_open"): [FormHasFieldsGuard()]},
+            )
+
+    def test_unguarded_inbound_edge_is_rejected(self, monkeypatch):
+        """This is the reopen-edge hole: one route into a phase skipping its precondition."""
+        with pytest.raises(RuntimeError, match="Inbound edges into 'applications_open'"):
+            self._validate(
+                monkeypatch,
+                {
+                    ("draft", "applications_open"),
+                    ("applications_closed", "applications_open"),
+                },
+                {("draft", "applications_open"): [FormHasFieldsGuard()]},
+            )
+
+    def test_uniformly_guarded_inbound_edges_are_accepted(self, monkeypatch):
+        self._validate(
+            monkeypatch,
+            {
+                ("draft", "applications_open"),
+                ("applications_closed", "applications_open"),
+            },
+            {
+                ("draft", "applications_open"): [FormHasFieldsGuard()],
+                ("applications_closed", "applications_open"): [FormHasFieldsGuard()],
+            },
+        )
 
 
 class TestGuardDesignProperties:

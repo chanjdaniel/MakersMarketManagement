@@ -96,6 +96,49 @@ TRANSITION_GUARDS: dict[tuple[str, str], list] = {
 }
 
 
+# ── Registry self-check ─────────────────────────────────────────────────
+
+
+def _validate_registry() -> None:
+    """Fail at import if the two tables above disagree.
+
+    ``VALID_TRANSITIONS`` and ``TRANSITION_GUARDS`` are hand-maintained, and both ways
+    of getting them out of sync fail silently at runtime: ``evaluate_transition`` looks
+    guards up by edge, so a guard listed on a non-existent edge never runs, and an edge
+    that forgot a guard simply reports no blockers. Editing this file is only safe if the
+    file catches both, so it checks them here rather than trusting a reviewer to.
+    """
+    unreachable = set(TRANSITION_GUARDS) - VALID_TRANSITIONS
+    if unreachable:
+        raise RuntimeError(
+            "TRANSITION_GUARDS lists edges that are not in VALID_TRANSITIONS: "
+            f"{sorted(unreachable)}. Guards on an edge that cannot be taken never run."
+        )
+
+    guard_ids_by_edge_into: dict[str, dict[str, frozenset]] = {}
+    for from_phase, to_phase in VALID_TRANSITIONS:
+        guards = TRANSITION_GUARDS.get((from_phase, to_phase), [])
+        guard_ids_by_edge_into.setdefault(to_phase, {})[from_phase] = frozenset(
+            guard.id for guard in guards
+        )
+
+    for to_phase, guard_ids_by_from in guard_ids_by_edge_into.items():
+        if len(set(guard_ids_by_from.values())) > 1:
+            detail = ", ".join(
+                f"{from_phase} -> {to_phase}: {sorted(ids) or 'no guards'}"
+                for from_phase, ids in sorted(guard_ids_by_from.items())
+            )
+            raise RuntimeError(
+                f"Inbound edges into '{to_phase}' enforce different preconditions "
+                f"({detail}). A precondition is a property of the target phase, so every "
+                "edge into a phase must carry the same guards or the invariant is only "
+                "enforced on the route the author happened to think about."
+            )
+
+
+_validate_registry()
+
+
 # ── Evaluation helpers ──────────────────────────────────────────────────
 
 
