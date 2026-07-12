@@ -10,7 +10,8 @@ No ABC, no DSL, no runtime mutation. Read this file to understand every
 precondition in the system.
 
 Phase 1 guards implemented:
-  - ``FormHasFieldsGuard``  for ``draft -> applications_open``
+  - ``FormHasFieldsGuard``  on every edge into ``applications_open``
+    (``draft -> applications_open`` and ``applications_closed -> applications_open``)
 
 Skeleton guards for later phases are intentionally omitted.
 They will be added with their phases (one-file edit, proven by this PR).
@@ -76,13 +77,22 @@ VALID_TRANSITIONS: set[tuple[str, str]] = {
     ("applications_closed", "applications_open"),
 }
 
+# Guards are stateless, so one instance is shared by every edge that enforces it.
+_FORM_HAS_FIELDS = FormHasFieldsGuard()
+
 # (from_phase, to_phase) -> list of guard instances.
 # Transitions in VALID_TRANSITIONS but absent here have no preconditions
 # (admin authority -- the organiser decides when to advance).
 # ADDING A GUARD = append to the list. REMOVING = delete from the list.
 # No other file changes. Not the endpoint. Not the frontend.
+#
+# A precondition is a property of the TARGET phase, so it must be listed on
+# EVERY edge into that phase. `applications_open` has two inbound edges and
+# both carry FormHasFieldsGuard: a market cannot sit in applications_open with
+# an empty form regardless of the route it took to get there.
 TRANSITION_GUARDS: dict[tuple[str, str], list] = {
-    ("draft", "applications_open"): [FormHasFieldsGuard()],
+    ("draft", "applications_open"): [_FORM_HAS_FIELDS],
+    ("applications_closed", "applications_open"): [_FORM_HAS_FIELDS],
 }
 
 

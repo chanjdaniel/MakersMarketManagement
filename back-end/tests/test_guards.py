@@ -105,6 +105,26 @@ class TestEvaluateTransition:
         blockers = evaluate_transition(market, "applications_closed", None)
         assert blockers == []
 
+    def test_reopen_blocked_when_form_was_emptied(self):
+        market = _make_market(
+            phase=MarketPhase.APPLICATIONS_CLOSED,
+            application_form=ApplicationForm(fields=[]),
+        )
+        blockers = evaluate_transition(market, "applications_open", None)
+        assert len(blockers) == 1
+        assert blockers[0].id == "form_has_fields"
+        assert blockers[0].passed is False
+
+    def test_reopen_allowed_when_form_has_fields(self):
+        market = _make_market(
+            phase=MarketPhase.APPLICATIONS_CLOSED,
+            application_form=ApplicationForm(
+                fields=[FormField(key="name", label="Name", type="text")],
+            ),
+        )
+        blockers = evaluate_transition(market, "applications_open", None)
+        assert blockers == []
+
     def test_returns_empty_for_nonexistent_transition(self):
         market = _make_market(phase=MarketPhase.DRAFT)
         blockers = evaluate_transition(market, "archived", None)
@@ -134,9 +154,23 @@ class TestTransitionGuards:
         assert len(guards) == 1
         assert isinstance(guards[0], FormHasFieldsGuard)
 
+    def test_reopen_edge_has_form_guard(self):
+        guards = TRANSITION_GUARDS.get(("applications_closed", "applications_open"), [])
+        assert len(guards) == 1
+        assert isinstance(guards[0], FormHasFieldsGuard)
+
     def test_unguarded_transitions_not_in_registry(self):
         assert ("applications_open", "applications_closed") not in TRANSITION_GUARDS
-        assert ("applications_closed", "applications_open") not in TRANSITION_GUARDS
+
+    def test_every_edge_into_applications_open_is_guarded(self):
+        """The form invariant belongs to the target phase, so no edge may skip it."""
+        inbound = [t for t in VALID_TRANSITIONS if t[1] == "applications_open"]
+        assert inbound
+        for transition in inbound:
+            guard_ids = {g.id for g in TRANSITION_GUARDS.get(transition, [])}
+            assert "form_has_fields" in guard_ids, (
+                f"{transition} enters applications_open without FormHasFieldsGuard"
+            )
 
 
 class TestGuardDesignProperties:

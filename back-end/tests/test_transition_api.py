@@ -121,12 +121,24 @@ class TestTransitionSuccess:
         assert response.status_code == 200
 
     def test_unguarded_transition_needs_no_preconditions(self, client, markets):
-        markets(_market_doc(phase="applications_closed"))
+        markets(_market_doc(phase="applications_open"))
+
+        response = _post(client, {"toPhase": "applications_closed"})
+
+        assert response.status_code == 200
+        assert response.get_json() == {"phase": "applications_closed"}
+
+    def test_reopen_succeeds_when_form_has_fields(self, client, markets):
+        collection = markets(_market_doc(
+            phase="applications_closed",
+            fields=[{"key": "name", "label": "Name", "type": "text"}],
+        ))
 
         response = _post(client, {"toPhase": "applications_open"})
 
         assert response.status_code == 200
         assert response.get_json() == {"phase": "applications_open"}
+        assert collection.doc["phase"] == "applications_open"
 
     def test_guards_receive_the_database_handle(self, client, markets, monkeypatch):
         markets(_market_doc(fields=[{"key": "name", "label": "Name", "type": "text"}]))
@@ -183,6 +195,21 @@ class TestTransitionBlocked:
         assert blocker["resolutionLink"] == "/markets/market-1/form-builder"
 
         assert collection.doc["phase"] == "draft"
+
+    def test_empty_form_blocks_reopen(self, client, markets):
+        collection = markets(_market_doc(phase="applications_closed", fields=[]))
+
+        response = _post(client, {"toPhase": "applications_open"})
+
+        assert response.status_code == 409
+        body = response.get_json()
+        assert body["error"] == "preconditions_not_met"
+        assert body["currentPhase"] == "applications_closed"
+        assert body["targetPhase"] == "applications_open"
+        assert body["blockers"][0]["id"] == "form_has_fields"
+        assert body["blockers"][0]["resolutionLink"] == "/markets/market-1/form-builder"
+
+        assert collection.doc["phase"] == "applications_closed"
 
     def test_phase_changed_underneath_returns_conflict(self, client, markets):
         collection = markets(_market_doc(fields=[{"key": "name", "label": "Name", "type": "text"}]))
