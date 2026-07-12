@@ -526,7 +526,7 @@ watch(pageIdx, (newIdx) => {
                     </template>
                 </div>
             </div>
-            <div class="discord-webhook-row">
+            <div v-if="activeTab === 'setup'" class="discord-webhook-row">
                 <label class="discord-webhook-label" for="discord-webhook-url">Discord webhook URL</label>
                 <input
                     id="discord-webhook-url"

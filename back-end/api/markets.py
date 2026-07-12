@@ -132,14 +132,20 @@ def _normalized_select_options(field: FormField, key: str) -> List[str]:
     return options
 
 
-def _normalized_application_form(application_form: ApplicationForm) -> ApplicationForm:
+def _normalized_application_form(
+    application_form: ApplicationForm, published_at: Optional[str] = None
+) -> ApplicationForm:
     """Validate a form and return it exactly as it will be persisted.
 
-    Validation and normalization are one step so a stored value can never differ from the value
-    that was checked. Field keys are the primary key of every applicant's answers: they must be
-    present, unique, and addressable as Mongo document keys. ``order`` is renormalized to the
-    array position, which is the display order every writer already implies, so the builder and
-    the applicant's form can never disagree about it.
+    Every writer of ``Market.application_form`` goes through here, so no form can reach storage
+    unvalidated. Validation and normalization are one step so a stored value can never differ
+    from the value that was checked. Field keys are the primary key of every applicant's answers:
+    they must be present, unique, and addressable as Mongo document keys. ``order`` is
+    renormalized to the array position, which is the display order every writer already implies,
+    so the builder and the applicant's form can never disagree about it.
+
+    ``published_at`` is lock-bearing lifecycle state (D9). It is taken from the server's stored
+    form and any value in the payload is discarded, so a client can never forge it.
     """
     if not application_form.fields:
         raise ValueError("Application form must include at least one field")
@@ -184,7 +190,7 @@ def _normalized_application_form(application_form: ApplicationForm) -> Applicati
             "order": index,
         }))
 
-    return application_form.model_copy(update={"fields": fields})
+    return application_form.model_copy(update={"fields": fields, "published_at": published_at})
 
 
 def _application_form_dump(market: Market) -> Optional[Dict[str, Any]]:
@@ -467,10 +473,19 @@ def _convert_roles_keys_to_user_ids(roles: Dict[str, str]) -> Dict[str, str]:
 
 
 def create_market(market: Market, owner_email: str) -> tuple:
-    """Create a new market."""
+    """Create a new market.
+
+    A create body may carry an application form, so it passes through the same validation and
+    normalization as ``save_application_form``: one contract for every writer of the form.
+    """
     market_dict = market.model_dump()
     _strip_persisted_assignment_statistics(market_dict)
     market_dict["phase"] = MarketPhase.DRAFT.value
+    market_dict["application_form"] = (
+        _normalized_application_form(market.application_form).model_dump()
+        if market.application_form
+        else None
+    )
     roles = market_dict.get('roles', {})
     roles = _convert_roles_keys_to_user_ids(roles)
     market_dict["roles"] = roles
@@ -1156,8 +1171,9 @@ def delete_market(market_id: str, requesting_user: str) -> DeleteResult:
 def save_application_form(market_id: str, application_form_data: dict, requesting_user: str) -> dict:
     """Save or update the application form for a market.
 
-    The single writer of ``Market.application_form``: ``update_market`` preserves the stored form
-    rather than accepting one from a market body, so every write passes the lock below.
+    The only writer of ``Market.application_form`` on an existing market: ``update_market``
+    preserves the stored form rather than accepting one from a market body, so every write
+    passes the lock below.
 
     Returns the saved ``ApplicationForm`` as a camelCase dict on success.
 
@@ -1175,7 +1191,11 @@ def save_application_form(market_id: str, application_form_data: dict, requestin
     except Exception as e:
         raise ValueError(f"Invalid application form data: {e}")
 
-    application_form = _normalized_application_form(application_form)
+    stored_form = market.application_form
+    application_form = _normalized_application_form(
+        application_form,
+        published_at=stored_form.published_at if stored_form else None,
+    )
 
     form_dict = convert_keys_to_camel_case(application_form.model_dump())
     markets_collection.update_one(

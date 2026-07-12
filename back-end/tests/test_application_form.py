@@ -337,6 +337,88 @@ class TestNormalization:
         assert fields[0]["options"] == []
 
 
+class TestPublishedAtIsServerOwned:
+    """``published_at`` is lock-bearing lifecycle state (D9); a client must never write it."""
+
+    def test_a_client_supplied_published_at_is_discarded(self, markets, applications):
+        MarketsApi.save_application_form(
+            "market-123", {**VALID_FORM, "published_at": "2026-01-01T00:00:00Z"}, "user-1"
+        )
+
+        assert markets.last_update["$set"]["applicationForm"]["publishedAt"] is None
+
+    def test_the_stored_published_at_survives_a_save(self, monkeypatch, applications):
+        fake = FakeMarketsCollection(
+            stored_market(
+                applicationForm={**STORED_FORM, "publishedAt": "2026-02-02T00:00:00Z"}
+            )
+        )
+        monkeypatch.setattr(MarketsApi, "markets_collection", fake)
+        monkeypatch.setattr(PermissionsApi, "user_has_permission", lambda *_a, **_kw: True)
+
+        MarketsApi.save_application_form(
+            "market-123", {**VALID_FORM, "published_at": None}, "user-1"
+        )
+
+        assert fake.last_update["$set"]["applicationForm"]["publishedAt"] == "2026-02-02T00:00:00Z"
+
+
+class TestCreateMarketWritesTheFormThroughTheSameContract:
+    """A create body may carry a form, so it must pass the validation every other writer does."""
+
+    @pytest.fixture
+    def created(self, monkeypatch):
+        fake = FakeMarketsCollection(None)
+        monkeypatch.setattr(MarketsApi, "markets_collection", fake)
+        return fake
+
+    def _create(self, form: ApplicationForm | None):
+        MarketsApi.create_market(
+            client_market(application_form=form), "user-1@example.com"
+        )
+
+    def test_a_valid_form_is_normalized_on_create(self, created, applications):
+        self._create(ApplicationForm(fields=[
+            FormField(key=" shop_name ", label="  Shop name  ", type="text", order=9),
+        ]))
+
+        written = created.inserted["applicationForm"]
+        assert written["fields"] == [{
+            "key": "shop_name", "label": "Shop name", "type": "text",
+            "required": False, "options": [], "helpText": None, "order": 0,
+        }]
+        assert written["publishedAt"] is None
+
+    def test_duplicate_keys_are_refused_on_create(self, created, applications):
+        with pytest.raises(ValueError, match="Duplicate field key"):
+            self._create(ApplicationForm(fields=[
+                FormField(key="a", label="A", type="text"),
+                FormField(key="a", label="Also A", type="text"),
+            ]))
+
+        assert created.inserted is None
+
+    @pytest.mark.parametrize("key", ["a.b", "$where", "Shop Name"])
+    def test_unaddressable_keys_are_refused_on_create(self, created, applications, key):
+        with pytest.raises(ValueError, match="Invalid field key"):
+            self._create(ApplicationForm(fields=[FormField(key=key, label="L", type="text")]))
+
+        assert created.inserted is None
+
+    def test_a_client_supplied_published_at_is_discarded_on_create(self, created, applications):
+        self._create(ApplicationForm(
+            fields=[FormField(key="a", label="A", type="text")],
+            published_at="2026-01-01T00:00:00Z",
+        ))
+
+        assert created.inserted["applicationForm"]["publishedAt"] is None
+
+    def test_a_market_created_without_a_form_has_none(self, created, applications):
+        self._create(None)
+
+        assert created.inserted["applicationForm"] is None
+
+
 class TestGetApplicationForm:
     def test_returns_camel_case_form_and_editable_state(self, markets, applications):
         MarketsApi.save_application_form("market-123", VALID_FORM, "user-1")
