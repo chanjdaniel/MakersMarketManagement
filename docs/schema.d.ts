@@ -4,6 +4,8 @@
  */
 
 export interface MarketSchema {
+  applicationForm?: {
+  };
   assignmentObject: {
     assignmentDate: string;
     vendorAssignments: {
@@ -17,6 +19,7 @@ export interface MarketSchema {
     }[];
   };
   creationDate: string;
+  discordGuildId?: string;
   discordWebhookUrl?: string;
   id: string;
   isDraft?: boolean;
@@ -24,6 +27,9 @@ export interface MarketSchema {
   }[];
   name: string;
   organizationId?: string;
+  phase?: string;
+  reviewConfig?: {
+  };
   roles: Record<string, string>;
   setupObject: null | {
     assignmentOptions: {
@@ -34,10 +40,10 @@ export interface MarketSchema {
       tableChoiceColNameIdx?: number;
       tableShareEmailColNameIdx?: number;
     };
-    colInclude: boolean[];
-    colNames: string[];
-    colValues: string[][];
-    enumPriorityOrder: string[][];
+    colInclude?: boolean[];
+    colNames?: string[];
+    colValues?: string[][];
+    enumPriorityOrder?: string[][];
     floorplans?: {
       id?: string;
       imageGridfsId?: string;
@@ -90,12 +96,12 @@ export interface MarketSchema {
       name: string;
     }[];
     marketDates: {
-      colName: string;
-      colNameIdx: number;
+      colName?: string;
+      colNameIdx?: number;
       date: string;
     }[];
     priority: {
-      colNameIdx: number;
+      colNameIdx?: number;
       dataType: string;
       id: number;
       sortingOrder: string;
