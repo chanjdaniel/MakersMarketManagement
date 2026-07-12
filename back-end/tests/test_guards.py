@@ -179,9 +179,20 @@ class TestTransitionGuards:
 class TestRegistrySelfCheck:
     """The registry has to catch the two ways a one-file edit can silently drop a guard."""
 
-    def _validate(self, monkeypatch, valid_transitions, transition_guards):
+    BOTH_INBOUND_EDGES = {
+        ("draft", "applications_open"),
+        ("applications_closed", "applications_open"),
+    }
+
+    def _validate(self, monkeypatch, valid_transitions, transition_guards, entry_invariants=None):
         monkeypatch.setattr(guards, "VALID_TRANSITIONS", valid_transitions)
         monkeypatch.setattr(guards, "TRANSITION_GUARDS", transition_guards)
+        monkeypatch.setattr(
+            guards,
+            "PHASE_ENTRY_INVARIANTS",
+            {"applications_open": [FormHasFieldsGuard()]} if entry_invariants is None
+            else entry_invariants,
+        )
         guards._validate_registry()
 
     def test_shipped_registry_is_consistent(self):
@@ -196,28 +207,47 @@ class TestRegistrySelfCheck:
                 {("draft", "application_open"): [FormHasFieldsGuard()]},
             )
 
-    def test_unguarded_inbound_edge_is_rejected(self, monkeypatch):
+    def test_inbound_edge_missing_an_entry_invariant_is_rejected(self, monkeypatch):
         """This is the reopen-edge hole: one route into a phase skipping its precondition."""
-        with pytest.raises(RuntimeError, match="Inbound edges into 'applications_open'"):
+        with pytest.raises(RuntimeError, match="does not enforce the entry invariants"):
             self._validate(
                 monkeypatch,
-                {
-                    ("draft", "applications_open"),
-                    ("applications_closed", "applications_open"),
-                },
+                self.BOTH_INBOUND_EDGES,
                 {("draft", "applications_open"): [FormHasFieldsGuard()]},
             )
 
-    def test_uniformly_guarded_inbound_edges_are_accepted(self, monkeypatch):
+    def test_every_inbound_edge_carrying_the_invariant_is_accepted(self, monkeypatch):
         self._validate(
             monkeypatch,
-            {
-                ("draft", "applications_open"),
-                ("applications_closed", "applications_open"),
-            },
+            self.BOTH_INBOUND_EDGES,
             {
                 ("draft", "applications_open"): [FormHasFieldsGuard()],
                 ("applications_closed", "applications_open"): [FormHasFieldsGuard()],
+            },
+        )
+
+    def test_edge_specific_guard_beyond_the_invariant_is_allowed(self, monkeypatch):
+        """Entry invariants are a floor, not a ceiling: a route may demand more of its own.
+
+        "Cannot reopen applications once assignments are published" is a rule about the
+        reopen edge and is meaningless on draft -> applications_open, so the check must not
+        insist both edges carry an identical guard list.
+        """
+        class _ReopenOnlyGuard:
+            id = "assignments_not_published"
+            description = "Assignments have not been published"
+
+            def evaluate(self, market, db):
+                return PreconditionResult(id=self.id, passed=True, message="")
+
+        self._validate(
+            monkeypatch,
+            self.BOTH_INBOUND_EDGES,
+            {
+                ("draft", "applications_open"): [FormHasFieldsGuard()],
+                ("applications_closed", "applications_open"): [
+                    FormHasFieldsGuard(), _ReopenOnlyGuard(),
+                ],
             },
         )
 

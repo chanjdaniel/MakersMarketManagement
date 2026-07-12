@@ -80,16 +80,24 @@ VALID_TRANSITIONS: set[tuple[str, str]] = {
 # Guards are stateless, so one instance is shared by every edge that enforces it.
 _FORM_HAS_FIELDS = FormHasFieldsGuard()
 
-# (from_phase, to_phase) -> list of guard instances.
+# Entry invariants: what must hold of a market SITTING IN a phase, regardless of the
+# route it took to get there. Every inbound edge to the phase must enforce these, so
+# listing one here makes it impossible to reach the phase without it.
+PHASE_ENTRY_INVARIANTS: dict[str, list] = {
+    "applications_open": [_FORM_HAS_FIELDS],
+}
+
+# (from_phase, to_phase) -> list of guard instances. This is the table evaluate_transition
+# reads; the map above only states which guards every edge into a phase is obliged to carry.
 # Transitions in VALID_TRANSITIONS but absent here have no preconditions
 # (admin authority -- the organiser decides when to advance).
 # ADDING A GUARD = append to the list. REMOVING = delete from the list.
 # No other file changes. Not the endpoint. Not the frontend.
 #
-# A precondition is a property of the TARGET phase, so it must be listed on
-# EVERY edge into that phase. `applications_open` has two inbound edges and
-# both carry FormHasFieldsGuard: a market cannot sit in applications_open with
-# an empty form regardless of the route it took to get there.
+# Keyed by edge, not by target phase, because a precondition can be specific to the route:
+# "cannot reopen applications once assignments are published" is a rule about
+# applications_closed -> applications_open and is meaningless on draft -> applications_open.
+# An edge carries its phase's entry invariants PLUS whatever else that route demands.
 TRANSITION_GUARDS: dict[tuple[str, str], list] = {
     ("draft", "applications_open"): [_FORM_HAS_FIELDS],
     ("applications_closed", "applications_open"): [_FORM_HAS_FIELDS],
@@ -100,13 +108,13 @@ TRANSITION_GUARDS: dict[tuple[str, str], list] = {
 
 
 def _validate_registry() -> None:
-    """Fail at import if the two tables above disagree.
+    """Fail at import if the tables above disagree.
 
-    ``VALID_TRANSITIONS`` and ``TRANSITION_GUARDS`` are hand-maintained, and both ways
-    of getting them out of sync fail silently at runtime: ``evaluate_transition`` looks
-    guards up by edge, so a guard listed on a non-existent edge never runs, and an edge
-    that forgot a guard simply reports no blockers. Editing this file is only safe if the
-    file catches both, so it checks them here rather than trusting a reviewer to.
+    These tables are hand-maintained, and both ways of getting them out of sync fail
+    silently at runtime: ``evaluate_transition`` looks guards up by edge, so a guard
+    listed on a non-existent edge never runs, and an edge that forgot a phase's entry
+    invariant simply reports no blockers. Editing this file is only safe if the file
+    catches both, so it checks them here rather than trusting a reviewer to.
     """
     unreachable = set(TRANSITION_GUARDS) - VALID_TRANSITIONS
     if unreachable:
@@ -115,24 +123,17 @@ def _validate_registry() -> None:
             f"{sorted(unreachable)}. Guards on an edge that cannot be taken never run."
         )
 
-    guard_ids_by_edge_into: dict[str, dict[str, frozenset]] = {}
-    for from_phase, to_phase in VALID_TRANSITIONS:
-        guards = TRANSITION_GUARDS.get((from_phase, to_phase), [])
-        guard_ids_by_edge_into.setdefault(to_phase, {})[from_phase] = frozenset(
-            guard.id for guard in guards
-        )
-
-    for to_phase, guard_ids_by_from in guard_ids_by_edge_into.items():
-        if len(set(guard_ids_by_from.values())) > 1:
-            detail = ", ".join(
-                f"{from_phase} -> {to_phase}: {sorted(ids) or 'no guards'}"
-                for from_phase, ids in sorted(guard_ids_by_from.items())
-            )
+    for from_phase, to_phase in sorted(VALID_TRANSITIONS):
+        required = {guard.id for guard in PHASE_ENTRY_INVARIANTS.get(to_phase, [])}
+        enforced = {guard.id for guard in TRANSITION_GUARDS.get((from_phase, to_phase), [])}
+        missing = required - enforced
+        if missing:
             raise RuntimeError(
-                f"Inbound edges into '{to_phase}' enforce different preconditions "
-                f"({detail}). A precondition is a property of the target phase, so every "
-                "edge into a phase must carry the same guards or the invariant is only "
-                "enforced on the route the author happened to think about."
+                f"Edge {from_phase} -> {to_phase} does not enforce the entry invariants of "
+                f"'{to_phase}': {sorted(missing)}. An entry invariant holds of every market in "
+                "the phase, so every edge into it must carry the guard - otherwise the "
+                "invariant only holds on the route the author happened to think about. "
+                "(An edge may enforce further guards of its own; only the floor is checked.)"
             )
 
 

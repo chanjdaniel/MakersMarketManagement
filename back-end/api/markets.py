@@ -18,6 +18,7 @@ from datatypes import (
 from assignment.assignment import assign_market
 from assignment.utils import convert_keys_to_snake_case, convert_keys_to_camel_case, snake_to_camel
 import api.applications as ApplicationsApi
+from market_documents import market_doc_field, market_doc_filter
 import api.source_data as SourceDataApi
 import api.permissions as PermissionsApi
 import api.organizations as OrgsApi
@@ -205,34 +206,6 @@ def _normalized_application_form(
 
 def _application_form_dump(market: Market) -> Optional[Dict[str, Any]]:
     return market.application_form.model_dump() if market.application_form else None
-
-
-def market_doc_field(document: Dict[str, Any], field: str, default: Any = None) -> Any:
-    """Read a model field off a raw stored market document.
-
-    Every write camel-cases the whole document (``convert_keys_to_camel_case`` in
-    ``create_market`` and ``update_market``), so ``organization_id`` is persisted as
-    ``organizationId``; documents last written before that convention still carry the
-    snake_case spelling. Nothing about a raw Mongo document announces which one it uses,
-    so reads that skip ``convert_keys_to_snake_case`` go through here instead of naming a
-    key by hand and silently matching nothing.
-    """
-    camel_key = snake_to_camel(field)
-    if camel_key in document:
-        return document[camel_key]
-    return document.get(field, default)
-
-
-def market_doc_filter(field: str, condition: Any) -> Dict[str, Any]:
-    """Mongo filter matching a market field under either persisted spelling.
-
-    Counterpart to :func:`market_doc_field` for queries, which cannot fall back after the
-    fact the way a dict read can.
-    """
-    camel_key = snake_to_camel(field)
-    if camel_key == field:
-        return {field: condition}
-    return {"$or": [{camel_key: condition}, {field: condition}]}
 
 
 def _strip_persisted_assignment_statistics(market_dict: Dict[str, Any]) -> None:

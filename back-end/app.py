@@ -1033,32 +1033,15 @@ def get_market_attendance(market_id: str) -> Response:
         if not requesting_user:
             return jsonify({"error": "User email not provided in headers"}), 400
 
-        from datatypes import MarketRole as _MR
-        import api.permissions as _Permissions
-        import api.organizations as _Orgs
-
-        market_doc = MarketsApi.markets_collection.find_one({"id": market_id})
-        if not market_doc:
+        context = MarketsApi.load_market_context(market_id)
+        if context is None:
             return jsonify({"error": "Market not found"}), 404
-
-        market_snake = convert_keys_to_snake_case(market_doc.copy())
-        try:
-            market_obj = Market(**market_snake)
-        except Exception:
+        if context.market is None:
             return jsonify({"error": "Invalid market data"}), 400
 
-        organization = None
-        if market_obj.organization_id:
-            org_dict = _Orgs.get_organization(market_obj.organization_id)
-            if org_dict:
-                org_dict.pop('_id', None)
-                try:
-                    from datatypes import Organization
-                    organization = Organization(**org_dict)
-                except Exception:
-                    pass
-
-        if not _Permissions.user_has_permission(requesting_user, market_obj, _MR.VIEWER, organization):
+        if not PermissionsApi.user_has_permission(
+            requesting_user, context.market, MarketRole.VIEWER, context.organization
+        ):
             return jsonify({"error": "User does not have permission to view this market"}), 403
 
         result, status_code = AttendanceApi.get_attendance_for_market(market_id)
