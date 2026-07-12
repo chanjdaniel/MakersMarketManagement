@@ -29,6 +29,20 @@ def _strip_persisted_assignment_statistics(market_dict: Dict[str, Any]) -> None:
         assignment_object.pop("assignment_statistics", None)
 
 
+def _preserve_server_owned_fields(market_dict: Dict[str, Any], existing_market: Market) -> None:
+    """Keep market state the update payload does not own.
+
+    `phase` is lifecycle state advanced by the server, never by an update body. The Conventioner
+    fields are carried over whenever the payload leaves them unset, so a client that round-trips a
+    market it fetched cannot null them out.
+    """
+    existing_dict = existing_market.model_dump()
+    market_dict["phase"] = existing_dict["phase"]
+    for field in ("application_form", "review_config", "discord_guild_id"):
+        if market_dict.get(field) is None and existing_dict.get(field) is not None:
+            market_dict[field] = existing_dict[field]
+
+
 def derive_market_table_rows(assigned_market: Market) -> List[MarketTableRow]:
     """Derive one row per table/date with assignment slots."""
     setup_object = assigned_market.setup_object
@@ -331,6 +345,7 @@ def update_market(market_id: str, market: Market, requesting_user: str) -> Updat
     
     market_dict = market.model_dump()
     _strip_persisted_assignment_statistics(market_dict)
+    _preserve_server_owned_fields(market_dict, existing_market)
     market_dict["roles"] = _convert_roles_keys_to_user_ids(market_dict.get("roles", {}))
     market_dict = convert_keys_to_camel_case(market_dict)
     

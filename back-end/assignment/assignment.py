@@ -182,6 +182,10 @@ def _validate_assignment_column_mappings(setup_object: SetupObject) -> None:
     """
     ao = setup_object.assignment_options
     n = len(setup_object.col_names)
+    if n == 0:
+        raise ValueError(
+            "setup_object.col_names is empty; this market has no CSV columns to map"
+        )
 
     def require_idx(field: str, idx: Optional[int]) -> None:
         if idx is None:

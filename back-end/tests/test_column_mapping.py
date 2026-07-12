@@ -155,6 +155,17 @@ def test_priority_without_enum_priority_order_entry_raises(mapping_setup_and_sou
         MarketAssignment(bad, source_data)
 
 
+def test_empty_col_names_raises_a_message_about_the_missing_columns(mapping_setup_and_source):
+    """col_names defaults to [] for application-based markets; the solver must say so plainly."""
+    setup, source_data = mapping_setup_and_source
+    bad = copy.deepcopy(setup)
+    bad.col_names = []
+    with pytest.raises(ValueError, match="col_names is empty"):
+        _validate_assignment_column_mappings(bad)
+    with pytest.raises(ValueError, match="col_names is empty"):
+        MarketAssignment(bad, source_data)
+
+
 def test_valid_priority_mapping_passes(mapping_setup_and_source):
     setup, source_data = mapping_setup_and_source
     setup.priority = [PriorityObject(id=1, col_name_idx=1, data_type=DataType.STRING, sorting_order="asc")]
