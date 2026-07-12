@@ -560,7 +560,13 @@ def get_markets_by_owner_email() -> Response:
 @app.route('/markets', methods=['POST'])
 @login_required
 def create_market() -> Response:
-    """Create a new market."""
+    """Create a new market.
+
+    Every market belongs to an organization: the payload must carry an
+    `organizationId` that names an existing organization the requesting user
+    owns or belongs to (as admin or member). A missing, unknown, or
+    non-member organization is rejected with 400.
+    """
     try:
         data = request.json
         if not data:

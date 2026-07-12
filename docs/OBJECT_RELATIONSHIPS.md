@@ -57,7 +57,7 @@ Represents an organization that can contain multiple users and markets with hier
 
 **Relationships:**
 - **Many-to-Many with User**: Organizations contain multiple users with different roles (owner/admins/members)
-- **One-to-Many with Market**: Organizations can own multiple markets (via `markets` list and `Market.organization` field)
+- **One-to-Many with Market**: Organizations can own multiple markets (via `markets` list and `Market.organization_id` field). Because every new market requires an organization, a user must belong to at least one organization before they can create a market.
 - **Stored in**: MongoDB `organizations` collection
 
 **Role Hierarchy:**
@@ -85,7 +85,7 @@ The central entity representing a market event with configuration, assignments, 
 - `name: str` - Mutable display name
 - `creation_date: str` - ISO format date string when market was created
 - `roles: Dict[str, MarketRole]` - Map of user_id -> role (must contain exactly one OWNER)
-- `organization_id: Optional[str]` - Organization id if market belongs to an organization (None if standalone)
+- `organization_id: Optional[str]` - Organization id the market belongs to. **Required at creation**: `POST /markets` rejects a payload without `organizationId`, with an unknown organization id, or with an organization the requesting user does not belong to (all 400). The field stays `Optional` in the model only so that org-less markets created before this rule remain readable; new markets always have one.
 - `theme: Optional[ThemeObject]` - Market-specific theme (used if no organization, otherwise organization theme takes precedence)
 - `setup_object: Optional[SetupObject]` - Market configuration and setup data
 - `modification_list: List[ModificationObject]` - List of modifications (currently empty structure)
@@ -94,7 +94,7 @@ The central entity representing a market event with configuration, assignments, 
 
 **Relationships:**
 - **Many-to-Many with User**: Markets have multiple users with different roles (via `roles` dict, keys are user ids)
-- **Many-to-One with Organization**: Markets can belong to one organization (via `organization_id` field, optional)
+- **Many-to-One with Organization**: Every market belongs to exactly one organization (via `organization_id` field, enforced at creation)
 - **One-to-One with SetupObject**: Each market has one setup configuration (optional)
 - **One-to-One with AssignmentObject**: Each market has one assignment result object
 - **One-to-One with SourceData**: Each market can have one source data CSV (stored separately in MongoDB)
@@ -587,11 +587,12 @@ SourceData (CSV)
 
 1. **User** creates a new **Market** via API
 2. **Market** must have `roles` dict with exactly one OWNER role
-3. **Market** is stored in MongoDB `markets` collection (identified by `id` UUID)
-4. If market belongs to organization, it's added to `Organization.markets` list
-5. **SourceData** CSV is uploaded separately and stored in `source_data` collection (via `market_id`)
-6. **SetupObject** is configured within the Market
-7. **AssignmentObject** is initialized empty
+3. **Market** must carry an `organizationId`; the API rejects a missing organization id, an organization that does not exist, or an organization the requesting user is not a member of (400). The front-end enforces the same rule up front: the new-market overlay requires an organization to be picked from a dropdown before submission is enabled, and users with no organizations are linked to `/organizations` to create one.
+4. **Market** is stored in MongoDB `markets` collection (identified by `id` UUID)
+5. Market is added to its `Organization.markets` list
+6. **SourceData** CSV is uploaded separately and stored in `source_data` collection (via `market_id`)
+7. **SetupObject** is configured within the Market
+8. **AssignmentObject** is initialized empty
 
 ### Assignment Generation Flow
 
@@ -638,7 +639,7 @@ SourceData (CSV)
 2. Owner can add **Admins** (who can manage Members)
 3. Owner and Admins can add **Members**
 4. All organization users (Owner/Admin/Member) get View permission on organization markets
-5. Markets can be assigned to organization via `Market.organization` field
+5. Markets are assigned to the organization via `Market.organization_id`, chosen when the market is created (an organization is required, so a user with no organization must create one here first)
 6. Organization theme applies to all organization markets
 
 ---
@@ -665,7 +666,7 @@ SourceData (CSV)
 - `SetupObject` is optional (market can exist without configuration)
 - `AssignmentStatistics` is optional (assignment may not have statistics yet)
 - `SectionObject.location` and `tier` are optional (sections can exist independently)
-- `Market.organization_id` is optional (markets can be standalone)
+- `Market.organization_id` is `Optional` in the model but required by `POST /markets`: new markets always belong to an organization, and the optional typing only keeps pre-existing org-less markets readable
 - `Market.theme` and `Organization.theme` are optional
 
 ### 5. Permission Resolution
