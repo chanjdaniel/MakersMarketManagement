@@ -82,6 +82,7 @@ def _load_market_for(market_id: str, requesting_user: str, role: MarketRole, act
         market = Market(**market_dict_snake)
     except Exception as e:
         raise ValueError(f"Invalid market data: {e}")
+    market.phase = phase_from_market_document(market_dict)
 
     organization = _load_organization(market.organization_id)
     if not PermissionsApi.user_has_permission(requesting_user, market, role, organization):

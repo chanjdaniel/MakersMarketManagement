@@ -25,13 +25,13 @@ def test_update_keeps_stored_phase(collection):
 
 
 def test_update_preserves_the_derived_phase_of_a_market_predating_the_migration(monkeypatch):
-    stored = _stored_market()
+    stored = stored_market(phase=MarketPhase.ARCHIVED)
     stored.pop("phase")
     fake = FakeMarketsCollection(stored)
     monkeypatch.setattr(MarketsApi, "markets_collection", fake)
     monkeypatch.setattr(PermissionsApi, "user_has_permission", lambda *_args, **_kwargs: True)
 
-    MarketsApi.update_market("market-123", _client_market(), "user-1")
+    MarketsApi.update_market("market-123", client_market(), "user-1")
 
     assert fake.last_update["$set"]["phase"] == MarketPhase.ARCHIVED.value
 
