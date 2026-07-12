@@ -4,6 +4,12 @@ Every write camel-cases the whole market document, so a read that names ``organi
 by hand matches nothing: the organization name never attached to a list entry, and a user
 whose only access to a market was org membership saw an empty list, even though the detail
 endpoint would happily serve them the same market by id.
+
+camelCase is the one canonical spelling, and ``migrations/migrate_market_keys.py`` rewrites
+the documents that predate it -- so nothing here reads or queries a legacy key. A read-time
+fallback would not converge: a write only refreshes the camelCase key, so a market moved from
+one organization to another keeps its old ``organization_id`` and a filter matching that
+spelling would keep listing it for the organization it left.
 """
 from types import SimpleNamespace
 
@@ -15,13 +21,15 @@ import api.permissions as PermissionsApi
 import api.users as UsersApi
 from datatypes import MarketRole
 from market_documents import market_doc_field, market_doc_filter, market_doc_set
+from migrate_market_keys import migrate
 
 USER_ID = "user-1"
 USER_EMAIL = "member@example.com"
 ORG_ID = "org-1"
+OTHER_ORG_ID = "org-2"
 
 
-def _market(market_id, org_key):
+def _market(market_id, org_key="organizationId", org_id=ORG_ID):
     """A stored market owned by an org, keyed the way the given write path spelled it."""
     return {
         "_id": f"mongo-{market_id}",
@@ -32,7 +40,7 @@ def _market(market_id, org_key):
         "modificationList": [],
         "assignmentObject": {"vendorAssignments": [], "assignmentStatistics": None},
         "isDraft": True,
-        org_key: ORG_ID,
+        org_key: org_id,
     }
 
 
@@ -43,8 +51,6 @@ class FakeMarketsCollection:
         self.docs = docs
 
     def _matches(self, doc, query):
-        if "$or" in query:
-            return any(self._matches(doc, clause) for clause in query["$or"])
         for key, condition in query.items():
             if isinstance(condition, dict) and "$in" in condition:
                 if doc.get(key) not in condition["$in"]:
@@ -58,6 +64,13 @@ class FakeMarketsCollection:
 
     def find_one(self, query):
         return next(self.find(query), None)
+
+    def replace_one(self, query, replacement):
+        for index, doc in enumerate(self.docs):
+            if self._matches(doc, query):
+                self.docs[index] = replacement
+                return SimpleNamespace(modified_count=1)
+        return SimpleNamespace(modified_count=0)
 
     def update_many(self, query, update):
         matched = [doc for doc in self.docs if self._matches(doc, query)]
@@ -73,11 +86,7 @@ class FakeMarketsCollection:
 
 @pytest.fixture
 def collection(monkeypatch):
-    docs = [
-        _market("camel-market", "organizationId"),
-        _market("legacy-market", "organization_id"),
-    ]
-    fake = FakeMarketsCollection(docs)
+    fake = FakeMarketsCollection([_market("camel-market")])
     monkeypatch.setattr(MarketsApi, "markets_collection", fake)
     monkeypatch.setattr(
         UsersApi, "get_user", lambda _email: SimpleNamespace(id=USER_ID, email=USER_EMAIL)
@@ -97,29 +106,44 @@ def collection(monkeypatch):
     return fake
 
 
-@pytest.mark.parametrize("market_id", ["camel-market", "legacy-market"])
-def test_org_membership_alone_lists_the_org_markets(collection, market_id):
+def test_org_membership_alone_lists_the_org_markets(collection):
     listed = {m["id"]: m for m in MarketsApi.get_markets_for_user(USER_EMAIL)}
 
-    assert market_id in listed
-    assert listed[market_id]["user_role"] == MarketRole.VIEWER.value
+    assert listed["camel-market"]["user_role"] == MarketRole.VIEWER.value
 
 
-@pytest.mark.parametrize("market_id", ["camel-market", "legacy-market"])
-def test_org_name_attaches_to_the_list_entry(collection, market_id):
+def test_org_name_attaches_to_the_list_entry(collection):
     listed = {m["id"]: m for m in MarketsApi.get_markets_for_user(USER_EMAIL)}
 
-    assert listed[market_id]["organization_name"] == "Test Org"
+    assert listed["camel-market"]["organization_name"] == "Test Org"
+
+
+def test_migrated_legacy_market_is_listed_by_its_org(collection):
+    legacy = _market("legacy-market", org_key="organization_id")
+    collection.docs.append(legacy)
+
+    migrate(SimpleNamespace(markets=collection))
+    listed = {m["id"]: m for m in MarketsApi.get_markets_for_user(USER_EMAIL)}
+
+    assert listed["legacy-market"]["organization_name"] == "Test Org"
+
+
+def test_market_moved_between_orgs_stops_being_listed_by_the_old_one(collection):
+    """The stale key a legacy write left behind must not keep the market visible to org 1."""
+    moved = _market("moved-market", org_key="organization_id")
+    moved["organizationId"] = OTHER_ORG_ID
+    collection.docs.append(moved)
+
+    migrate(SimpleNamespace(markets=collection))
+    listed = {m["id"] for m in MarketsApi.get_markets_for_user(USER_EMAIL)}
+
+    assert "moved-market" not in listed
 
 
 @pytest.fixture
 def org_delete(monkeypatch):
     """delete_organization wired to a fake markets collection, with its guards satisfied."""
-    docs = [
-        _market("camel-market", "organizationId"),
-        _market("legacy-market", "organization_id"),
-    ]
-    fake = FakeMarketsCollection(docs)
+    fake = FakeMarketsCollection([_market("camel-market")])
     monkeypatch.setattr(OrgsApi, "markets_collection", fake)
     monkeypatch.setattr(
         OrgsApi.organizations_collection, "find_one", lambda _q: {"id": ORG_ID, "owner": USER_ID},
@@ -138,50 +162,44 @@ def org_delete(monkeypatch):
     return fake
 
 
-@pytest.mark.parametrize("market_id", ["camel-market", "legacy-market"])
-def test_deleting_an_org_detaches_its_markets(org_delete, market_id):
+def test_deleting_an_org_detaches_its_markets(org_delete):
     OrgsApi.delete_organization(ORG_ID, USER_EMAIL)
 
-    market = next(doc for doc in org_delete.docs if doc["id"] == market_id)
+    market = next(doc for doc in org_delete.docs if doc["id"] == "camel-market")
     assert market_doc_field(market, "organization_id") is None
 
 
-def test_deleting_an_org_leaves_no_stale_legacy_key(org_delete):
+def test_deleting_an_org_detaches_a_migrated_legacy_market(org_delete):
+    org_delete.docs.append(_market("legacy-market", org_key="organization_id"))
+    migrate(SimpleNamespace(markets=org_delete))
+
     OrgsApi.delete_organization(ORG_ID, USER_EMAIL)
 
-    legacy = next(doc for doc in org_delete.docs if doc["id"] == "legacy-market")
-    assert "organization_id" not in legacy
+    market = next(doc for doc in org_delete.docs if doc["id"] == "legacy-market")
+    assert market_doc_field(market, "organization_id") is None
+    assert "organization_id" not in market
 
 
-@pytest.mark.parametrize("stored_key", ["organizationId", "organization_id"])
-def test_market_doc_field_reads_either_spelling(stored_key):
-    doc = {stored_key: ORG_ID}
-
-    assert market_doc_field(doc, "organization_id") == ORG_ID
+def test_market_doc_field_reads_the_persisted_key():
+    assert market_doc_field({"organizationId": ORG_ID}, "organization_id") == ORG_ID
 
 
 def test_market_doc_field_default_when_absent():
     assert market_doc_field({}, "organization_id", "fallback") == "fallback"
 
 
-def test_market_doc_filter_matches_both_spellings():
-    query = market_doc_filter("organization_id", {"$in": [ORG_ID]})
-    collection = FakeMarketsCollection(
-        [_market("camel-market", "organizationId"), _market("legacy-market", "organization_id")]
-    )
-
-    assert {doc["id"] for doc in collection.find(query)} == {"camel-market", "legacy-market"}
+def test_market_doc_filter_names_the_persisted_key():
+    assert market_doc_filter("organization_id", {"$in": [ORG_ID]}) == {
+        "organizationId": {"$in": [ORG_ID]}
+    }
 
 
 def test_market_doc_filter_leaves_single_word_fields_alone():
     assert market_doc_filter("id", "m-1") == {"id": "m-1"}
 
 
-def test_market_doc_set_writes_the_persisted_key_and_drops_the_legacy_one():
-    assert market_doc_set("organization_id", None) == {
-        "$set": {"organizationId": None},
-        "$unset": {"organization_id": ""},
-    }
+def test_market_doc_set_writes_the_persisted_key():
+    assert market_doc_set("organization_id", None) == {"$set": {"organizationId": None}}
 
 
 def test_market_doc_set_leaves_single_word_fields_alone():

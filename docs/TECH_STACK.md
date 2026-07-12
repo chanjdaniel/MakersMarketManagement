@@ -300,6 +300,7 @@ Conventioner/
    - Example: `python back-end/migrations/add_email_verification.py`
    - `migrate_phase.py` backfills `phase` on existing market documents (`isDraft: true` → `draft`, `isDraft: false` → `archived`). It is idempotent, and `--dry-run` previews the changes without applying them.
    - `create_applications_collection.py` creates the `applications` collection and its `market_id` index on an already-deployed database (`mongo-init.js` only runs on a fresh data volume). The D9 application-form lock counts applications by market on every market write, so that index is load-bearing. It is idempotent, and `--dry-run` previews the changes without applying them.
+   - `migrate_market_keys.py` rewrites market documents under the canonical camelCase keys (`organization_id` → `organizationId`), dropping the legacy snake_case spelling so no document carries both. Writes only ever refresh the camelCase key, so a legacy key left in place holds a value that is stale forever - any query still matching it acts on data no write has touched since. It is idempotent, and `--dry-run` previews the changes without applying them.
 
 ## External Services
 
