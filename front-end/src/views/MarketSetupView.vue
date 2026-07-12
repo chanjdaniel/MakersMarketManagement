@@ -27,25 +27,29 @@ const applicationForm = ref<ApplicationForm | null>(null);
 /**
  * Per-field "the organizer typed this key themselves" flags, positionally aligned with the
  * form's fields. It lives beside the form, whose lifetime it shares, rather than inside the
- * FormBuilder that tabbing away unmounts.
+ * FormBuilder that tabbing away unmounts. It records intent, which a stored key cannot: an
+ * auto-derived key and a hand-typed one are indistinguishable once written. Only a direct edit
+ * of a key input and the stored-form seed in {@link adoptStoredApplicationForm} ever write it.
  */
 const keyTouched = ref<boolean[]>([]);
 const formSaveStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle');
 const formErrorMessage = ref<string | null>(null);
 const formLockReason = ref<string | null>(null);
+const formLoadStatus = ref<'loading' | 'loaded' | 'error'>('loading');
 const formLoadError = ref<string | null>(null);
 const formLocked = computed(() => formLockReason.value !== null);
 /**
- * Only edit a form we know to be editable. A failed load leaves the lock state unknown, and
- * assuming "editable" there invites the organizer to rework a locked form and lose it to a 409.
+ * Only edit a form we know to be editable. Until the server answers - the load is still in
+ * flight, or it failed - the lock state is unknown, and assuming "editable" there invites the
+ * organizer to rework a locked form and lose it to a 409.
  */
-const formEditable = computed(() => !formLocked.value && formLoadError.value === null);
+const formEditable = computed(() => formLoadStatus.value === 'loaded' && !formLocked.value);
 /**
- * A failed load with nothing cached tells us nothing about the market's form - not even whether
- * it has one - so there is nothing we can honestly render but the error and a way to retry.
+ * No answer from the server and nothing cached tells us nothing about the market's form - not
+ * even whether it has one - so there is nothing we can honestly render but the load state.
  */
 const formStateUnknown = computed(
-    () => formLoadError.value !== null && applicationForm.value === null,
+    () => formLoadStatus.value !== 'loaded' && applicationForm.value === null,
 );
 const setupObject = reactive<SetupObject>({
     colNames: [],
@@ -173,32 +177,48 @@ onMounted(() => {
 
     // Paint the cached form immediately, then reconcile with the server, which also
     // tells us whether the form is still editable.
-    adoptApplicationForm(market.value?.applicationForm ?? null);
+    adoptStoredApplicationForm(market.value?.applicationForm ?? null);
     loadApplicationForm();
 });
 
 /**
- * The market document is the single source of truth for the form; keep it in step. Every key on
- * a stored form was accepted by the server as that field's answer key, so re-labelling such a
- * field must never rewrite it - adopting a form marks all of its keys as the organizer's own.
+ * The market document is the single source of truth for the form; keep it in step. The key flags
+ * are the organizer's intent, so they are left exactly as they are: a save hands back the same
+ * fields it was given, and saving does not make an auto-derived key a hand-typed one.
  */
 function adoptApplicationForm(form: ApplicationForm | null) {
     applicationForm.value = form;
-    keyTouched.value = (form?.fields ?? []).map(() => true);
     if (market.value) {
         market.value.applicationForm = form ?? undefined;
         localStorage.setItem("market", JSON.stringify(market.value));
     }
 }
 
+/**
+ * Adopt a form read back from storage, dropping whatever the organizer had in flight. Its keys
+ * are already stored as those fields' answer keys, so re-labelling one must never rewrite it:
+ * seed every flag as the organizer's own. The one place the flags come from field data.
+ */
+function adoptStoredApplicationForm(form: ApplicationForm | null) {
+    adoptApplicationForm(form);
+    keyTouched.value = (form?.fields ?? []).map(() => true);
+}
+
 async function loadApplicationForm() {
-    if (!market.value?.id) return;
+    if (!market.value?.id) {
+        formLoadStatus.value = 'error';
+        formLoadError.value = 'No market is loaded, so its application form is unknown.';
+        return;
+    }
+    formLoadStatus.value = 'loading';
     formLoadError.value = null;
     try {
         const response = await api.get(`/markets/${market.value.id}/application-form`);
-        adoptApplicationForm(response.data?.application_form ?? null);
+        adoptStoredApplicationForm(response.data?.application_form ?? null);
         formLockReason.value = response.data?.lock_reason ?? null;
+        formLoadStatus.value = 'loaded';
     } catch (err: unknown) {
+        formLoadStatus.value = 'error';
         formLoadError.value = getApiErrorMessage(
             err,
             'Could not load the application form. Retry before editing it.',
@@ -359,7 +379,7 @@ watch(pageIdx, (newIdx) => {
                                         {{ formLockReason }}
                                     </div>
                                     <div
-                                        v-else-if="formLoadError"
+                                        v-else-if="formLoadStatus === 'error'"
                                         class="form-load-error-banner"
                                         data-testid="form-builder-load-error"
                                     >
@@ -371,6 +391,13 @@ watch(pageIdx, (newIdx) => {
                                         >
                                             Retry
                                         </button>
+                                    </div>
+                                    <div
+                                        v-else-if="formLoadStatus === 'loading'"
+                                        class="form-loading-banner"
+                                        data-testid="form-builder-loading"
+                                    >
+                                        Loading the application form...
                                     </div>
                                     <FormBuilder
                                         v-if="!formStateUnknown"
@@ -773,6 +800,17 @@ h2 {
     color: #7a5200;
     background: #fff6e0;
     border: 1px solid #f0d089;
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+
+.form-loading-banner {
+    font-family: 'Outfit Regular';
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--mm-grey, #666);
+    background: #f4f4f4;
+    border: 1px solid #e0e0e0;
     border-radius: 6px;
     padding: 10px 12px;
 }
