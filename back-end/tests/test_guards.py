@@ -1,0 +1,151 @@
+"""Unit tests for the guard registry and phase transition evaluation (PR 2)."""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from datatypes import (
+    ApplicationForm, AssignmentObject, FormField, Market, MarketPhase, MarketRole,
+)
+from guards import (
+    FormHasFieldsGuard,
+    PreconditionResult,
+    TRANSITION_GUARDS,
+    VALID_TRANSITIONS,
+    evaluate_transition,
+)
+
+
+def _make_market(**overrides):
+    """Build a minimal valid Market for guard testing."""
+    kwargs = {
+        "name": "Test Market",
+        "creation_date": "2025-01-01",
+        "roles": {"owner-1": MarketRole.OWNER},
+        "modification_list": [],
+        "assignment_object": AssignmentObject(),
+        **overrides,
+    }
+    return Market(**kwargs)
+
+
+class TestPreconditionResult:
+    def test_passed(self):
+        r = PreconditionResult(id="test", passed=True, message="")
+        assert r.passed is True
+        assert r.id == "test"
+
+    def test_failed_with_resolution_link(self):
+        r = PreconditionResult(
+            id="test",
+            passed=False,
+            message="Something is wrong.",
+            resolution_link="/fix-it",
+        )
+        assert r.passed is False
+        assert r.message == "Something is wrong."
+        assert r.resolution_link == "/fix-it"
+
+    def test_failed_without_resolution_link(self):
+        r = PreconditionResult(
+            id="deadline_passed",
+            passed=False,
+            message="Deadline not reached.",
+        )
+        assert r.resolution_link is None
+
+
+class TestFormHasFieldsGuard:
+    def test_passes_when_form_has_fields(self):
+        market = _make_market(
+            application_form=ApplicationForm(
+                fields=[FormField(key="name", label="Name", type="text")],
+            ),
+        )
+        result = FormHasFieldsGuard().evaluate(market, None)
+        assert result.passed is True
+        assert result.id == "form_has_fields"
+
+    def test_fails_when_form_is_none(self):
+        market = _make_market(application_form=None)
+        result = FormHasFieldsGuard().evaluate(market, None)
+        assert result.passed is False
+        assert "no fields" in result.message.lower()
+        assert result.resolution_link is not None
+
+    def test_fails_when_form_has_empty_fields_list(self):
+        market = _make_market(
+            application_form=ApplicationForm(fields=[]),
+        )
+        result = FormHasFieldsGuard().evaluate(market, None)
+        assert result.passed is False
+        assert "no fields" in result.message.lower()
+
+
+class TestEvaluateTransition:
+    def test_returns_blockers_when_guard_fails(self):
+        market = _make_market(phase=MarketPhase.DRAFT, application_form=None)
+        blockers = evaluate_transition(market, "applications_open", None)
+        assert len(blockers) == 1
+        assert blockers[0].id == "form_has_fields"
+        assert blockers[0].passed is False
+
+    def test_returns_empty_when_guard_passes(self):
+        market = _make_market(
+            phase=MarketPhase.DRAFT,
+            application_form=ApplicationForm(
+                fields=[FormField(key="name", label="Name", type="text")],
+            ),
+        )
+        blockers = evaluate_transition(market, "applications_open", None)
+        assert blockers == []
+
+    def test_returns_empty_for_unguarded_transition(self):
+        market = _make_market(phase=MarketPhase.APPLICATIONS_OPEN)
+        blockers = evaluate_transition(market, "applications_closed", None)
+        assert blockers == []
+
+    def test_returns_empty_for_nonexistent_transition(self):
+        market = _make_market(phase=MarketPhase.DRAFT)
+        blockers = evaluate_transition(market, "archived", None)
+        assert blockers == []
+
+
+class TestValidTransitions:
+    def test_phase1_transitions_are_registered(self):
+        assert ("draft", "applications_open") in VALID_TRANSITIONS
+        assert ("applications_open", "applications_closed") in VALID_TRANSITIONS
+        assert ("applications_closed", "applications_open") in VALID_TRANSITIONS
+
+    def test_later_phase_transitions_not_registered(self):
+        assert ("applications_closed", "review") not in VALID_TRANSITIONS
+        assert ("review", "assignment") not in VALID_TRANSITIONS
+        assert ("assignment", "offers") not in VALID_TRANSITIONS
+        assert ("offers", "market_days") not in VALID_TRANSITIONS
+        assert ("market_days", "archived") not in VALID_TRANSITIONS
+
+    def test_reverse_draft_not_registered(self):
+        assert ("applications_open", "draft") not in VALID_TRANSITIONS
+
+
+class TestTransitionGuards:
+    def test_draft_to_applications_open_has_form_guard(self):
+        guards = TRANSITION_GUARDS.get(("draft", "applications_open"), [])
+        assert len(guards) == 1
+        assert isinstance(guards[0], FormHasFieldsGuard)
+
+    def test_unguarded_transitions_not_in_registry(self):
+        assert ("applications_open", "applications_closed") not in TRANSITION_GUARDS
+        assert ("applications_closed", "applications_open") not in TRANSITION_GUARDS
+
+
+class TestGuardDesignProperties:
+    def test_form_has_fields_guard_has_id_and_description(self):
+        guard = FormHasFieldsGuard()
+        assert guard.id == "form_has_fields"
+        assert isinstance(guard.description, str)
+        assert len(guard.description) > 0
+
+    def test_adding_guard_is_only_a_dict_entry(self):
+        guards = TRANSITION_GUARDS[("draft", "applications_open")]
+        assert len(guards) == 1

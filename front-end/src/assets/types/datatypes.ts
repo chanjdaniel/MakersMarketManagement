@@ -226,6 +226,28 @@ export interface Application {
     assignedReviewerId?: string,
 }
 
+export interface PreconditionResult {
+    id: string,
+    passed: boolean,
+    message: string,
+    resolutionLink?: string,
+}
+
+export interface TransitionRequest {
+    toPhase: string,
+}
+
+export interface TransitionResponse {
+    phase: string,
+}
+
+export interface TransitionBlockedResponse {
+    error: string,
+    currentPhase: string,
+    targetPhase: string,
+    blockers: PreconditionResult[],
+}
+
 export interface User {
     id: string,
     email: string,

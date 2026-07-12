@@ -19,8 +19,9 @@ from flask_login import LoginManager, login_user, login_required, logout_user, c
 from flask_bcrypt import Bcrypt
 from flask_cors import CORS
 from datetime import timedelta, datetime, timezone
-from datatypes import Market, MarketRole
+from datatypes import Market, MarketPhase, MarketRole
 from assignment.utils import convert_keys_to_camel_case, convert_keys_to_snake_case
+from guards import VALID_TRANSITIONS, evaluate_transition
 import json
 import os
 import glob
@@ -750,6 +751,113 @@ def delete_market(market_id: str) -> Response:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/markets/<market_id>/transition', methods=['POST'])
+@login_required
+def transition_market(market_id: str) -> Response:
+    """Advance a market to a new lifecycle phase. Evaluates guards server-side.
+
+    Body: { "to_phase": "applications_open" }
+
+    Returns:
+        200 on success with { "phase": "<new_phase>" }
+        409 with blocker list when preconditions are not met
+        400 when the transition is not valid from the current phase
+    """
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        to_phase_raw = data.get("to_phase")
+        if not to_phase_raw:
+            return jsonify({"error": "to_phase is required"}), 400
+
+        try:
+            to_phase = MarketPhase(to_phase_raw)
+        except ValueError:
+            valid = [p.value for p in MarketPhase]
+            return jsonify({
+                "error": f"Unknown phase: '{to_phase_raw}'. Valid phases: {', '.join(valid)}"
+            }), 400
+
+        user_email = request.headers.get("X-Owner-Email")
+        if not user_email:
+            return jsonify({"error": "User email not provided in headers"}), 400
+
+        user = UsersApi.get_user(user_email)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        market_doc = MarketsApi.markets_collection.find_one({"id": market_id})
+        if not market_doc:
+            return jsonify({"error": "Market not found"}), 404
+
+        market_snake = convert_keys_to_snake_case(market_doc.copy())
+        try:
+            market = Market(**market_snake)
+        except Exception:
+            return jsonify({"error": "Invalid market data"}), 400
+
+        organization = None
+        if market.organization_id:
+            org_dict = OrgsApi.get_organization(market.organization_id)
+            if org_dict:
+                org_dict.pop("_id", None)
+                try:
+                    from datatypes import Organization
+                    organization = Organization(**org_dict)
+                except Exception:
+                    pass
+
+        if not PermissionsApi.user_has_permission(
+            user_email, market, MarketRole.ADMIN, organization
+        ):
+            return jsonify({
+                "error": "User does not have permission to manage this market's phase"
+            }), 403
+
+        from_phase = market.phase.value
+
+        if (from_phase, to_phase.value) not in VALID_TRANSITIONS:
+            return jsonify({
+                "error": (
+                    f"Transition from '{from_phase}' to '{to_phase.value}' "
+                    "is not available in the current phase."
+                ),
+            }), 400
+
+        if from_phase == to_phase.value:
+            return jsonify({"phase": to_phase.value}), 200
+
+        blockers = evaluate_transition(market, to_phase.value, None)
+        if blockers:
+            return jsonify({
+                "error": "preconditions_not_met",
+                "current_phase": from_phase,
+                "target_phase": to_phase.value,
+                "blockers": [
+                    {
+                        "id": b.id,
+                        "message": b.message,
+                        "resolution_link": b.resolution_link,
+                    }
+                    for b in blockers
+                ],
+            }), 409
+
+        MarketsApi.markets_collection.update_one(
+            {"id": market_id},
+            {"$set": {"phase": to_phase.value}},
+        )
+
+        return jsonify({"phase": to_phase.value}), 200
+
+    except Exception as e:
+        logger.error(f"Error in transition_market {market_id}: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/markets/<market_id>/assignment', methods=['GET'])
 @login_required
