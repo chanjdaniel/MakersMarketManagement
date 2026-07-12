@@ -7,6 +7,10 @@ FIXTURES_DIR="$SCRIPT_DIR/fixtures"
 COOKIE_JAR="$(mktemp /tmp/conventioner_seed.XXXXXX)"
 TEST_EMAIL="${TEST_EMAIL:-e2e@example.com}"
 TEST_PASSWORD="${TEST_PASSWORD:-e2epassword123}"
+# Verified user deliberately left without any organization, so e2e can exercise
+# the zero-org state of the market-creation org picker.
+NO_ORG_EMAIL="${NO_ORG_EMAIL:-e2e-noorg@example.com}"
+NO_ORG_PASSWORD="${NO_ORG_PASSWORD:-e2enoorg123}"
 CSV_FILE="${FIXTURES_DIR}/vendors.csv"
 
 # ── Detect worktree vs primary checkout ──
@@ -35,7 +39,7 @@ echo "=== Conventioner Seed Fixture ==="
 echo ""
 
 # ── 1. Ensure Docker stack is running ──
-echo "[1/5] Ensuring Docker stack is up..."
+echo "[1/6] Ensuring Docker stack is up..."
 cd "$PROJECT_DIR"
 if ! "${DOCKER_CMD[@]}" ps --format '{{.Service}}' 2>/dev/null | grep -q 'backend'; then
   echo "  Bringing up Docker stack..."
@@ -54,13 +58,14 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# ── 2. Create test user ──
-echo "[2/5] Creating test user ($TEST_EMAIL)..."
+# ── 2. Create test users ──
+echo "[2/6] Creating test users ($TEST_EMAIL, $NO_ORG_EMAIL)..."
 "${DOCKER_CMD[@]}" exec -T backend python /app/reset_database.py 2>&1 | sed 's/^/  /'
 "${DOCKER_CMD[@]}" exec -T backend python /app/create_test_user.py "$TEST_EMAIL" "$TEST_PASSWORD" 2>&1 | sed 's/^/  /'
+"${DOCKER_CMD[@]}" exec -T backend python /app/create_test_user.py "$NO_ORG_EMAIL" "$NO_ORG_PASSWORD" 2>&1 | sed 's/^/  /'
 
 # ── 3. Login and get session ──
-echo "[3/5] Logging in..."
+echo "[3/6] Logging in..."
 LOGIN_RESPONSE=$(curl -k -s -c "$COOKIE_JAR" \
   -X POST "$BACKEND_URL/login" \
   -H "Content-Type: application/json" \
@@ -142,6 +147,7 @@ echo "Frontend:  $FRONTEND_URL"
 echo "Backend:   $BACKEND_URL"
 echo "Email:     $TEST_EMAIL"
 echo "Password:  $TEST_PASSWORD"
+echo "No-org:    $NO_ORG_EMAIL / $NO_ORG_PASSWORD (verified, belongs to no organization)"
 echo "Market ID: $MARKET_ID"
 echo ""
 echo "Next: open $FRONTEND_URL/login and log in to configure the market."

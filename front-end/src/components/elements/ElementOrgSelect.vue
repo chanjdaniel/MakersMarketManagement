@@ -48,9 +48,9 @@ onMounted(() => {
         </select>
         <p v-if="loading" class="org-select-hint">Loading organizations...</p>
         <p v-else-if="errorMessage" class="org-select-error">{{ errorMessage }}</p>
-        <p v-else-if="organizations.length === 0" class="org-select-hint">
+        <p v-else-if="organizations.length === 0" class="org-select-hint" data-testid="org-select-empty-hint">
             No organizations available.
-            <RouterLink to="/organizations" class="org-select-link">Create an organization</RouterLink>
+            <RouterLink to="/organizations" class="org-select-link" data-testid="org-select-create-link">Create an organization</RouterLink>
         </p>
     </div>
 </template>
@@ -84,17 +84,20 @@ onMounted(() => {
     font-size: 12px;
     color: #666;
     margin: 0;
+    text-align: center;
 }
 
 .org-select-error {
     font-size: 12px;
     color: #d32f2f;
     margin: 0;
+    text-align: center;
 }
 
 .org-select-link {
     color: var(--mm-black);
     text-decoration: underline;
     font-weight: 600;
+    white-space: nowrap;
 }
 </style>
