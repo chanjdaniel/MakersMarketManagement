@@ -11,6 +11,7 @@ fallback would not converge: a write only refreshes the camelCase key, so a mark
 one organization to another keeps its old ``organization_id`` and a filter matching that
 spelling would keep listing it for the organization it left.
 """
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -295,6 +296,26 @@ class TestStartupCheck:
 
         with pytest.raises(MarketKeyMigrationUnverifiableError):
             assert_market_key_migration_recorded(DeniedDatabase())
+
+    def test_the_refusal_names_the_command_that_clears_it(self, collection):
+        """A loud failure is only a good failure if the way out is one command to paste."""
+        with pytest.raises(MarketKeyMigrationMissingError) as excinfo:
+            assert_market_key_migration_recorded(FakeDatabase(collection))
+
+        assert (
+            "docker compose run --rm backend python migrations/migrate_market_keys.py"
+            in str(excinfo.value)
+        )
+
+    def test_a_fresh_docker_volume_seeds_the_marker_the_check_reads(self):
+        """mongo-init.js writes the marker in JavaScript, so nothing links it to the constants
+        the check reads: a rename on the Python side would leave a brand-new stack - the one
+        environment that must just work - refusing to boot on a marker nobody looks for."""
+        source = (Path(__file__).resolve().parent.parent / "mongo-init.js").read_text()
+
+        assert f"db.createCollection('{SCHEMA_COLLECTION}')" in source
+        assert f"db.{SCHEMA_COLLECTION}.updateOne(" in source
+        assert f"{{ _id: '{MARKET_KEY_MIGRATION_ID}' }}" in source
 
 
 def test_deleting_an_org_detaches_a_migrated_legacy_market(org_delete):

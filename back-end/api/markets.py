@@ -18,7 +18,7 @@ from datatypes import (
 from assignment.assignment import assign_market
 from assignment.utils import convert_keys_to_snake_case, convert_keys_to_camel_case, snake_to_camel
 import api.applications as ApplicationsApi
-from market_documents import market_doc_field, market_doc_filter
+from market_documents import market_doc_field, market_doc_filter, market_from_document
 import api.source_data as SourceDataApi
 import api.permissions as PermissionsApi
 import api.organizations as OrgsApi
@@ -377,14 +377,11 @@ def load_market_context(market_id: str) -> Optional[MarketContext]:
     if not market_dict:
         return None
 
-    market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
     try:
-        market = Market(**market_dict_snake)
+        market = market_from_document(market_dict)
     except Exception as e:
         logger.warning("Stored market %s failed validation: %s", market_id, e)
         return MarketContext(market_dict, None, None, None)
-
-    market.phase = phase_from_market_document(market_dict)
 
     organization = None
     org_dict = None
@@ -669,8 +666,7 @@ def get_assigned_market(market_id: str, requesting_user: Optional[str] = None) -
 
         # Convert dictionary to Market object
         try:
-            market = Market(**market_dict)
-            market.phase = phase_from_market_document(context.document)
+            market = market_from_document(context.document, market_dict)
             assigned_market = assign_market(market, source_data)
             assigned_market_dict = assigned_market.model_dump()
 

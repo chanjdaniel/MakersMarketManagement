@@ -3,9 +3,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from assignment.assignment import assign_market
 from assignment.utils import convert_keys_to_camel_case, convert_keys_to_snake_case
-from datatypes import Market
 from db_config import get_database
-from market_documents import market_doc_filter
+from market_documents import market_doc_filter, market_from_document
 import api.source_data as SourceDataApi
 
 db = get_database()
@@ -151,7 +150,7 @@ def get_vendor_assignment_summary(market_slug: str, vendor_email: str) -> Tuple[
     }
 
     try:
-        market = Market(**market_snake)
+        market = market_from_document(market_doc, market_snake)
     except Exception:
         return {"error": "Invalid market data"}, 400
 

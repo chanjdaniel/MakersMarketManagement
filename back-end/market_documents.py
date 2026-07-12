@@ -28,7 +28,12 @@ what it does: an unknown migration state is not a migrated one.
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from assignment.utils import convert_keys_to_camel_case, snake_to_camel
+from assignment.utils import (
+    convert_keys_to_camel_case,
+    convert_keys_to_snake_case,
+    snake_to_camel,
+)
+from datatypes import Market, phase_from_market_document
 
 MONGO_ID_KEY = "_id"
 
@@ -37,6 +42,19 @@ SCHEMA_COLLECTION = "schema_migrations"
 MARKET_KEY_MIGRATION_ID = "market_document_keys"
 
 MARKET_KEY_MIGRATION = "migrations/migrate_market_keys.py"
+
+# A refusal to boot is only a good failure if the way out is one command the reader can paste.
+# The migration runs against an existing database and records the marker itself, so it is the
+# single recovery path for every environment - a dev whose Mongo volume predates the marker and
+# an operator deploying to production alike.
+MARKET_KEY_MIGRATION_RECOVERY = (
+    f"To fix this, run the migration against this database and start again. It is idempotent, "
+    f"it rewrites the market documents and records the marker itself, and it is the whole fix:\n"
+    f"  Docker dev stack, from the repository root (works while the back end is crash-looping):\n"
+    f"    docker compose run --rm backend python {MARKET_KEY_MIGRATION}\n"
+    f"  Back end run directly, from back-end/ with the same Mongo environment:\n"
+    f"    python {MARKET_KEY_MIGRATION}"
+)
 
 
 class MarketKeyMigrationError(RuntimeError):
@@ -52,8 +70,7 @@ class MarketKeyMigrationMissingError(MarketKeyMigrationError):
             f"'{MARKET_KEY_MIGRATION_ID}' marker in the '{SCHEMA_COLLECTION}' collection. "
             f"Readers name the canonical camelCase key only, so any market still stored under "
             f"legacy snake_case keys is invisible to the public check-in lookup and to "
-            f"organization-scoped market lists. Run `python {MARKET_KEY_MIGRATION}` against "
-            f"this database, then restart."
+            f"organization-scoped market lists.\n{MARKET_KEY_MIGRATION_RECOVERY}"
         )
 
 
@@ -65,8 +82,8 @@ class MarketKeyMigrationUnverifiableError(MarketKeyMigrationError):
             f"Could not read the '{MARKET_KEY_MIGRATION_ID}' marker from the "
             f"'{SCHEMA_COLLECTION}' collection: {cause!r}. An unknown migration state is not a "
             f"migrated one, so this refuses to serve rather than risk hiding every market "
-            f"stored under legacy keys. Make the database reachable, ensure `python "
-            f"{MARKET_KEY_MIGRATION}` has been run against it, then restart."
+            f"stored under legacy keys. Make the database reachable, then confirm the "
+            f"migration has run against it.\n{MARKET_KEY_MIGRATION_RECOVERY}"
         )
         self.cause = cause
 
@@ -143,6 +160,27 @@ def market_doc_filter(field: str, condition: Any) -> Dict[str, Any]:
 def market_doc_set(field: str, value: Any) -> Dict[str, Any]:
     """Mongo update writing a market field under its persisted spelling."""
     return {"$set": {market_doc_key(field): value}}
+
+
+def market_from_document(
+    document: Dict[str, Any], market_snake: Optional[Dict[str, Any]] = None
+) -> Market:
+    """Parse a raw stored market document into a ``Market`` carrying its effective phase.
+
+    ``Market.phase`` defaults to ``draft``, so a document written before the field existed
+    parses as a draft whatever it actually is. Every parse of a stored document goes through
+    here, so no caller can build a Market that quietly disagrees with the document about what
+    phase the market is in.
+
+    ``market_snake`` lets a caller that has already snake-cased the document and adjusted it
+    (defaulting a field a legacy document omits, say) hand in its own copy rather than have it
+    rebuilt. The phase still comes from the stored document, which is the only thing that
+    knows it.
+    """
+    snake = convert_keys_to_snake_case(dict(document)) if market_snake is None else market_snake
+    market = Market(**snake)
+    market.phase = phase_from_market_document(document)
+    return market
 
 
 def normalize_market_document(document: Dict[str, Any]) -> Dict[str, Any]:

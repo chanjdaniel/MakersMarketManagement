@@ -13,6 +13,7 @@ import api.organizations as OrgsApi
 import api.permissions as PermissionsApi
 import api.users as UsersApi
 from datatypes import MarketPhase, MarketRole
+from market_documents import market_from_document
 
 USER_ID = "user-1"
 USER_EMAIL = "owner@example.com"
@@ -118,6 +119,50 @@ def test_unrecognized_stored_phase_degrades_instead_of_breaking_the_list(collect
 
     assert listed["future-market"]["phase"] == MarketPhase.ARCHIVED.value
     assert listed["draft-market"]["phase"] == MarketPhase.DRAFT.value
+
+
+class TestSharedParser:
+    """Every parse of a stored market goes through one function, so none of them can quietly
+    disagree with the document about what phase the market is in.
+
+    ``Market.phase`` defaults to ``draft``: a path that builds a Market straight from a
+    pre-migration document reads that default as fact, and the first phase check added to that
+    path silently sees a draft. The public check-in lookup and the floorplan save endpoint both
+    parsed documents by hand until they were routed through here.
+    """
+
+    def test_phase_is_derived_not_left_at_the_model_default(self):
+        market = market_from_document(_pre_migration_market("m-1", is_draft=False))
+
+        assert market.phase == MarketPhase.ARCHIVED
+
+    def test_a_callers_adjusted_snake_copy_still_gets_the_documents_phase(self):
+        """The check-in lookup defaults fields a legacy document omits before parsing; the
+        phase still has to come from the document, which is the only thing that knows it."""
+        document = _pre_migration_market("m-2", is_draft=False)
+        snake = {
+            "id": "m-2",
+            "name": "Market m-2",
+            "creation_date": "2026-01-01T00:00:00Z",
+            "roles": {USER_ID: MarketRole.OWNER.value},
+            "modification_list": [],
+            "assignment_object": {"vendor_assignments": [], "assignment_date": ""},
+            "is_draft": False,
+        }
+
+        market = market_from_document(document, snake)
+
+        assert market.phase == MarketPhase.ARCHIVED
+
+    def test_a_stored_phase_is_taken_as_given(self):
+        document = {
+            **_pre_migration_market("m-3", is_draft=True),
+            "phase": MarketPhase.APPLICATIONS_OPEN.value,
+        }
+
+        market = market_from_document(document)
+
+        assert market.phase == MarketPhase.APPLICATIONS_OPEN
 
 
 def test_corrupt_market_document_is_logged(collection, caplog):

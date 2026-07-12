@@ -20,7 +20,7 @@ They will be added with their phases (one-file edit, proven by this PR).
 from dataclasses import dataclass, field
 from typing import Optional
 
-from datatypes import Market
+from datatypes import Market, MarketPhase
 
 
 # ── Wire shape (backend/frontend contract) ──────────────────────────────
@@ -110,17 +110,43 @@ TRANSITION_GUARDS: dict[tuple[str, str], list] = {
 def _validate_registry() -> None:
     """Fail at import if the tables above disagree.
 
-    These tables are hand-maintained, and both ways of getting them out of sync fail
-    silently at runtime: ``evaluate_transition`` looks guards up by edge, so a guard
-    listed on a non-existent edge never runs, and an edge that forgot a phase's entry
-    invariant simply reports no blockers. Editing this file is only safe if the file
-    catches both, so it checks them here rather than trusting a reviewer to.
+    All three tables are hand-maintained and keyed by bare strings, and every way of
+    getting them out of sync fails silently at runtime: a guard listed on an edge that
+    does not exist never runs, a phase misspelled in ``PHASE_ENTRY_INVARIANTS`` makes the
+    lookup below return an empty list so the phase's invariant is dropped without a word,
+    and an edge that simply forgot an invariant reports no blockers. Editing this file is
+    only safe if the file catches all of them, so it checks them here rather than trusting
+    a reviewer to.
     """
+    known_phases = {phase.value for phase in MarketPhase}
+
+    misspelled_edges = {
+        (from_phase, to_phase)
+        for from_phase, to_phase in VALID_TRANSITIONS
+        if from_phase not in known_phases or to_phase not in known_phases
+    }
+    if misspelled_edges:
+        raise RuntimeError(
+            "VALID_TRANSITIONS names phases that are not MarketPhase members: "
+            f"{sorted(misspelled_edges)}. An edge nothing can reach is a transition that "
+            "always 400s."
+        )
+
     unreachable = set(TRANSITION_GUARDS) - VALID_TRANSITIONS
     if unreachable:
         raise RuntimeError(
             "TRANSITION_GUARDS lists edges that are not in VALID_TRANSITIONS: "
             f"{sorted(unreachable)}. Guards on an edge that cannot be taken never run."
+        )
+
+    entered_phases = {to_phase for _, to_phase in VALID_TRANSITIONS}
+    undeclarable = set(PHASE_ENTRY_INVARIANTS) - entered_phases
+    if undeclarable:
+        raise RuntimeError(
+            "PHASE_ENTRY_INVARIANTS declares invariants for phases no transition enters: "
+            f"{sorted(undeclarable)}. Entry invariants are enforced on the edges into a "
+            "phase, so a phase with no inbound edge in VALID_TRANSITIONS - a misspelled one, "
+            "most likely - has its invariants silently dropped."
         )
 
     for from_phase, to_phase in sorted(VALID_TRANSITIONS):

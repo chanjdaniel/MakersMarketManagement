@@ -177,7 +177,7 @@ class TestTransitionGuards:
 
 
 class TestRegistrySelfCheck:
-    """The registry has to catch the two ways a one-file edit can silently drop a guard."""
+    """The registry has to catch every way a one-file edit can silently drop a guard."""
 
     BOTH_INBOUND_EDGES = {
         ("draft", "applications_open"),
@@ -225,6 +225,29 @@ class TestRegistrySelfCheck:
                 ("applications_closed", "applications_open"): [FormHasFieldsGuard()],
             },
         )
+
+    def test_invariant_declared_for_a_misspelled_phase_is_rejected(self, monkeypatch):
+        """The lookup is by phase string, so a typo there drops the invariant as quietly as a
+        typo'd edge does: every inbound edge passes a floor of nothing."""
+        with pytest.raises(RuntimeError, match="no transition enters"):
+            self._validate(
+                monkeypatch,
+                self.BOTH_INBOUND_EDGES,
+                {
+                    ("draft", "applications_open"): [],
+                    ("applications_closed", "applications_open"): [],
+                },
+                entry_invariants={"applications_opne": [FormHasFieldsGuard()]},
+            )
+
+    def test_edge_naming_a_phase_that_does_not_exist_is_rejected(self, monkeypatch):
+        with pytest.raises(RuntimeError, match="not MarketPhase members"):
+            self._validate(
+                monkeypatch,
+                {("draft", "applications_opne")},
+                {},
+                entry_invariants={},
+            )
 
     def test_edge_specific_guard_beyond_the_invariant_is_allowed(self, monkeypatch):
         """Entry invariants are a floor, not a ceiling: a route may demand more of its own.

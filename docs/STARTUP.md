@@ -284,6 +284,21 @@ docker-compose build --no-cache
 docker-compose up
 ```
 
+**Backend exits at startup with "The market-key migration has not been applied to this database"**:
+
+The back end refuses to boot against a database whose market documents may still be stored under the legacy snake_case keys, because it reads the canonical camelCase key only - an unmigrated market would simply be invisible, with nothing logged.
+A Mongo volume created before the migration existed has no marker, so an existing dev stack hits this the first time it pulls the change.
+The migration is the whole fix: it runs against an existing database, rewrites the documents, and records the marker itself.
+
+```bash
+docker compose run --rm backend python migrations/migrate_market_keys.py
+docker compose up backend
+```
+
+Use `run`, not `exec`: the back-end container is crash-looping, so there is nothing to attach to.
+`run` starts a throwaway container (with MongoDB already up as its dependency) and passes the command straight through the entrypoint.
+Add `--dry-run` to the migration to preview the changes without applying them.
+
 ### Backend Issues
 
 **MongoDB Connection Error**:
