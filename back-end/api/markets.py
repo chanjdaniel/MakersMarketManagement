@@ -431,6 +431,28 @@ def get_markets_by_owner_email(owner_email: str) -> List[Dict[str, Any]]:
     return list(markets_collection.find({f"roles.{owner_email}": MarketRole.OWNER.value}))
 
 
+def _decorate_market_summary(market: Dict[str, Any], user_role: Optional[str]) -> Dict[str, Any]:
+    """Add the read-time fields every market list entry carries.
+
+    Kept in one place so a market exposes the same derived state - phase included -
+    whether it was served by the list endpoint or by ``get_market_for_user``.
+    """
+    market['_id'] = str(market['_id'])
+    market['user_role'] = user_role
+    market['phase'] = phase_from_market_document(market).value
+    if market.get('organization_id'):
+        org = OrgsApi.get_organization(market['organization_id'])
+        if org:
+            market['organization_name'] = org.get('name')
+    role_emails = {}
+    for uid in (market.get('roles') or {}).keys():
+        u = UsersApi.get_user_by_id(uid)
+        if u:
+            role_emails[uid] = u.email
+    market['role_emails'] = role_emails
+    return market
+
+
 def get_markets_for_user(user_email: str) -> List[Dict[str, Any]]:
     """
     Get all markets a user has access to (via explicit role or organization).
@@ -440,38 +462,26 @@ def get_markets_for_user(user_email: str) -> List[Dict[str, Any]]:
     if not user:
         return []
     user_id = user.id
-    
+
     seen_ids = set()
     result = []
-    
+
     pipeline = [
         {"$addFields": {"roles_array": {"$objectToArray": {"$ifNull": ["$roles", {}]}}}},
         {"$match": {"roles_array": {"$elemMatch": {"k": user_id}}}},
         {"$project": {"roles_array": 0}}
     ]
     markets_with_role = markets_collection.aggregate(pipeline)
-    
+
     for market in markets_with_role:
         mid = market["id"]
         if mid not in seen_ids:
             seen_ids.add(mid)
-            market['_id'] = str(market['_id'])
-            market['user_role'] = market.get('roles', {}).get(user_id)
-            if market.get('organization_id'):
-                org = OrgsApi.get_organization(market['organization_id'])
-                if org:
-                    market['organization_name'] = org.get('name')
-            role_emails = {}
-            for uid in (market.get('roles') or {}).keys():
-                u = UsersApi.get_user_by_id(uid)
-                if u:
-                    role_emails[uid] = u.email
-            market['role_emails'] = role_emails
-            result.append(market)
-    
+            result.append(_decorate_market_summary(market, market.get('roles', {}).get(user_id)))
+
     user_orgs = OrgsApi.get_organizations_for_user(user_email)
     org_ids = [org['id'] for org in user_orgs]
-    
+
     if org_ids:
         org_markets = markets_collection.find({
             "organization_id": {"$in": org_ids}
@@ -480,20 +490,8 @@ def get_markets_for_user(user_email: str) -> List[Dict[str, Any]]:
             mid = market["id"]
             if mid not in seen_ids:
                 seen_ids.add(mid)
-                market['_id'] = str(market['_id'])
-                market['user_role'] = MarketRole.VIEWER.value
-                if market.get('organization_id'):
-                    org = OrgsApi.get_organization(market['organization_id'])
-                    if org:
-                        market['organization_name'] = org.get('name')
-                role_emails = {}
-                for uid in (market.get('roles') or {}).keys():
-                    u = UsersApi.get_user_by_id(uid)
-                    if u:
-                        role_emails[uid] = u.email
-                market['role_emails'] = role_emails
-                result.append(market)
-    
+                result.append(_decorate_market_summary(market, MarketRole.VIEWER.value))
+
     return result
 
 def _convert_roles_keys_to_user_ids(roles: Dict[str, str]) -> Dict[str, str]:
@@ -585,32 +583,18 @@ def update_market(market_id: str, market: Market, requesting_user: str) -> Updat
 def get_assigned_market(market_id: str, requesting_user: Optional[str] = None) -> tuple[Dict[str, Any], int]:
     """Get an assigned market. Requires VIEW permission."""
     try:
-        market_dict = markets_collection.find_one({"id": market_id})
-        if not market_dict:
+        context = load_market_context(market_id)
+        if context is None:
             return {"error": "Market not found"}, 404
-        
+
         if requesting_user:
-            market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
-            try:
-                market = Market(**market_dict_snake)
-            except Exception:
+            if context.market is None:
                 return {"error": "Invalid market data"}, 400
-            
-            organization = None
-            if market.organization_id:
-                org_dict = OrgsApi.get_organization(market.organization_id)
-                if org_dict:
-                    org_dict.pop('_id', None)
-                    try:
-                        from datatypes import Organization
-                        organization = Organization(**org_dict)
-                    except Exception:
-                        pass
-            
-            if not PermissionsApi.user_has_permission(requesting_user, market, MarketRole.VIEWER, organization):
+
+            if not PermissionsApi.user_has_permission(requesting_user, context.market, MarketRole.VIEWER, context.organization):
                 return {"error": "User does not have permission to view this market"}, 403
-        
-        market_dict = convert_keys_to_snake_case(market_dict)
+
+        market_dict = convert_keys_to_snake_case(context.document)
 
         # Fix missing assignment_options in setup_object
         if "setup_object" in market_dict and market_dict["setup_object"]:
@@ -649,6 +633,7 @@ def get_assigned_market(market_id: str, requesting_user: Optional[str] = None) -
         # Convert dictionary to Market object
         try:
             market = Market(**market_dict)
+            market.phase = phase_from_market_document(context.document)
             assigned_market = assign_market(market, source_data)
             assigned_market_dict = assigned_market.model_dump()
 
@@ -696,29 +681,16 @@ def get_assigned_market(market_id: str, requesting_user: Optional[str] = None) -
 def get_assignment_statistics(market_id: str, requesting_user: Optional[str] = None) -> tuple[Dict[str, Any], int]:
     """Derive and return assignment statistics for a market."""
     try:
-        market_dict = markets_collection.find_one({"id": market_id})
-        if not market_dict:
+        context = load_market_context(market_id)
+        if context is None:
             return {"error": "Market not found"}, 404
-
-        market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
-        try:
-            market = Market(**market_dict_snake)
-        except Exception:
+        if context.market is None:
             return {"error": "Invalid market data"}, 400
 
-        if requesting_user:
-            organization = None
-            if market.organization_id:
-                org_dict = OrgsApi.get_organization(market.organization_id)
-                if org_dict:
-                    org_dict.pop('_id', None)
-                    try:
-                        from datatypes import Organization
-                        organization = Organization(**org_dict)
-                    except Exception:
-                        pass
+        market = context.market
 
-            if not PermissionsApi.user_has_permission(requesting_user, market, MarketRole.VIEWER, organization):
+        if requesting_user:
+            if not PermissionsApi.user_has_permission(requesting_user, market, MarketRole.VIEWER, context.organization):
                 return {"error": "User does not have permission to view this market"}, 403
 
         source_data_result = SourceDataApi.get_source_data(market_id)
@@ -766,29 +738,16 @@ def get_assignment_csv(market_id: str, requesting_user: Optional[str] = None) ->
     an error dict with the appropriate HTTP status code.
     """
     try:
-        market_dict = markets_collection.find_one({"id": market_id})
-        if not market_dict:
+        context = load_market_context(market_id)
+        if context is None:
             return {"error": "Market not found"}, 404
-
-        market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
-        try:
-            market = Market(**market_dict_snake)
-        except Exception:
+        if context.market is None:
             return {"error": "Invalid market data"}, 400
 
-        if requesting_user:
-            organization = None
-            if market.organization_id:
-                org_dict = OrgsApi.get_organization(market.organization_id)
-                if org_dict:
-                    org_dict.pop('_id', None)
-                    try:
-                        from datatypes import Organization
-                        organization = Organization(**org_dict)
-                    except Exception:
-                        pass
+        market = context.market
 
-            if not PermissionsApi.user_has_permission(requesting_user, market, MarketRole.VIEWER, organization):
+        if requesting_user:
+            if not PermissionsApi.user_has_permission(requesting_user, market, MarketRole.VIEWER, context.organization):
                 return {"error": "User does not have permission to view this market"}, 403
 
         if market.setup_object is None:
@@ -810,7 +769,7 @@ def get_assignment_csv(market_id: str, requesting_user: Optional[str] = None) ->
         except ValueError as e:
             return {"error": str(e)}, 400
 
-        filename = _market_csv_filename(market_dict.get("name"), market_id)
+        filename = _market_csv_filename(context.document.get("name"), market_id)
         return {"csv_content": csv_content, "filename": filename, "market_id": market_id}, 200
     except Exception as e:
         logger.error(f"Unexpected error in get_assignment_csv: {str(e)}")
@@ -827,29 +786,16 @@ def get_assignment_csv(market_id: str, requesting_user: Optional[str] = None) ->
 def get_market_tables(market_id: str, requesting_user: Optional[str] = None) -> tuple[List[Dict[str, Any]] | Dict[str, Any], int]:
     """Derive and return table rows for a market."""
     try:
-        market_dict = markets_collection.find_one({"id": market_id})
-        if not market_dict:
+        context = load_market_context(market_id)
+        if context is None:
             return {"error": "Market not found"}, 404
-
-        market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
-        try:
-            market = Market(**market_dict_snake)
-        except Exception:
+        if context.market is None:
             return {"error": "Invalid market data"}, 400
 
-        if requesting_user:
-            organization = None
-            if market.organization_id:
-                org_dict = OrgsApi.get_organization(market.organization_id)
-                if org_dict:
-                    org_dict.pop('_id', None)
-                    try:
-                        from datatypes import Organization
-                        organization = Organization(**org_dict)
-                    except Exception:
-                        pass
+        market = context.market
 
-            if not PermissionsApi.user_has_permission(requesting_user, market, MarketRole.VIEWER, organization):
+        if requesting_user:
+            if not PermissionsApi.user_has_permission(requesting_user, market, MarketRole.VIEWER, context.organization):
                 return {"error": "User does not have permission to view this market"}, 403
 
         source_data_result = SourceDataApi.get_source_data(market_id)
@@ -934,28 +880,15 @@ def post_assignment_to_discord(market_id: str, requesting_user: str) -> tuple[Di
     may invoke this endpoint; lesser roles receive 403.
     """
     try:
-        market_dict = markets_collection.find_one({"id": market_id})
-        if not market_dict:
+        context = load_market_context(market_id)
+        if context is None:
             return {"error": "Market not found"}, 404
-
-        market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
-        try:
-            market = Market(**market_dict_snake)
-        except Exception:
+        if context.market is None:
             return {"error": "Invalid market data"}, 400
 
-        organization = None
-        if market.organization_id:
-            org_dict = OrgsApi.get_organization(market.organization_id)
-            if org_dict:
-                org_dict.pop('_id', None)
-                try:
-                    from datatypes import Organization
-                    organization = Organization(**org_dict)
-                except Exception:
-                    pass
+        market = context.market
 
-        if not PermissionsApi.user_has_permission(requesting_user, market, MarketRole.OWNER, organization):
+        if not PermissionsApi.user_has_permission(requesting_user, market, MarketRole.OWNER, context.organization):
             return {"error": "User does not have permission to post to Discord for this market"}, 403
 
         webhook_url = (market.discord_webhook_url or "").strip()
@@ -999,31 +932,18 @@ def post_assignment_to_discord(market_id: str, requesting_user: str) -> tuple[Di
 
 def add_market_role(market_id: str, user_email: str, role: MarketRole, requesting_user: str) -> bool:
     """Add a user role to a market. Requires permission to manage roles."""
-    market_dict = markets_collection.find_one({"id": market_id})
-    if not market_dict:
+    context = load_market_context(market_id)
+    if context is None:
         raise ValueError("Market not found")
-    
-    # Convert to Market object for permission checking
-    market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
-    try:
-        market = Market(**market_dict_snake)
-    except Exception:
+    if context.market is None:
         raise ValueError("Invalid market data")
-    
-    organization = None
-    if market.organization_id:
-        org_dict = OrgsApi.get_organization(market.organization_id)
-        if org_dict:
-            org_dict.pop('_id', None)
-            try:
-                from datatypes import Organization
-                organization = Organization(**org_dict)
-            except Exception:
-                pass
-    
-    if not PermissionsApi.can_manage_roles(requesting_user, market, role, organization):
+
+    market_dict = context.document
+    market = context.market
+
+    if not PermissionsApi.can_manage_roles(requesting_user, market, role, context.organization):
         raise PermissionError("User does not have permission to manage this role")
-    
+
     if role == MarketRole.OWNER:
         current_roles = market_dict.get('roles', {})
         for uid, existing_role in current_roles.items():
@@ -1047,28 +967,16 @@ def add_market_role(market_id: str, user_email: str, role: MarketRole, requestin
 
 def remove_market_role(market_id: str, user_id: str, requesting_user: str) -> bool:
     """Remove a user role from a market. Requires permission to manage roles."""
-    market_dict = markets_collection.find_one({"id": market_id})
-    if not market_dict:
+    context = load_market_context(market_id)
+    if context is None:
         raise ValueError("Market not found")
-    
-    # Convert to Market object for permission checking
-    market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
-    try:
-        market = Market(**market_dict_snake)
-    except Exception:
+    if context.market is None:
         raise ValueError("Invalid market data")
-    
-    organization = None
-    if market.organization_id:
-        org_dict = OrgsApi.get_organization(market.organization_id)
-        if org_dict:
-            org_dict.pop('_id', None)
-            try:
-                from datatypes import Organization
-                organization = Organization(**org_dict)
-            except Exception:
-                pass
-    
+
+    market_dict = context.document
+    market = context.market
+    organization = context.organization
+
     roles = market_dict.get('roles', {})
     if user_id not in roles:
         raise ValueError("User does not have a role in this market")
@@ -1151,29 +1059,15 @@ def update_market_role(market_id: str, user_id: str, new_role: MarketRole, reque
 
 def delete_market(market_id: str, requesting_user: str) -> DeleteResult:
     """Delete a market. Only owner can delete."""
-    market_dict = markets_collection.find_one({"id": market_id})
-    if not market_dict:
+    context = load_market_context(market_id)
+    if context is None:
         raise ValueError("Market not found")
-
-    # Convert to Market object for permission checking
-    market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
-    try:
-        market = Market(**market_dict_snake)
-    except Exception:
+    if context.market is None:
         raise ValueError("Invalid market data")
 
-    organization = None
-    if market.organization_id:
-        org_dict = OrgsApi.get_organization(market.organization_id)
-        if org_dict:
-            org_dict.pop('_id', None)
-            try:
-                from datatypes import Organization
-                organization = Organization(**org_dict)
-            except Exception:
-                pass
+    market = context.market
 
-    user_role = PermissionsApi.get_user_market_role(requesting_user, market, organization)
+    user_role = PermissionsApi.get_user_market_role(requesting_user, market, context.organization)
     if user_role != MarketRole.OWNER:
         raise PermissionError("Only the market owner can delete this market")
 
