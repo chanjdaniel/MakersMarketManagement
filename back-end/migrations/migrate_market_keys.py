@@ -13,7 +13,9 @@ every market names each field exactly once and readers can name one key.
 Where a document carries both spellings, the camelCase value wins -- it is the one the last
 write set.
 
-Run this before deploying code that queries markets by the canonical key only.
+The run records a marker in the ``schema_migrations`` collection. The app refuses to boot
+without it, because reads that name the canonical key only would silently hide any market this
+migration has not reached. Run this before deploying, and note that nothing runs it for you.
 
 Usage:
     python migrations/migrate_market_keys.py
@@ -28,7 +30,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db_config import get_database
-from market_documents import MONGO_ID_KEY, normalize_market_document
+from market_documents import (
+    MARKET_KEY_MIGRATION_ID,
+    SCHEMA_COLLECTION,
+    apply_market_key_migration,
+    pending_market_key_rewrites,
+)
 
 
 def legacy_keys(doc, normalized):
@@ -37,11 +44,8 @@ def legacy_keys(doc, normalized):
 
 
 def migrate(db, dry_run=False):
-    collection = db.markets
-    pending = [(doc, normalize_market_document(doc)) for doc in collection.find({})]
-    pending = [(doc, normalized) for doc, normalized in pending if normalized != doc]
-
     if dry_run:
+        pending = pending_market_key_rewrites(db)
         for doc, normalized in pending:
             dropped = legacy_keys(doc, normalized)
             print(
@@ -49,16 +53,15 @@ def migrate(db, dry_run=False):
                 + (f" (drop {', '.join(dropped)})" if dropped else "")
             )
         print(f"\nDRY RUN: would rewrite {len(pending)} market(s)")
+        print(f"DRY RUN: would record '{MARKET_KEY_MIGRATION_ID}' in '{SCHEMA_COLLECTION}'")
         return
 
-    updated = 0
-    for doc, normalized in pending:
-        result = collection.replace_one({MONGO_ID_KEY: doc[MONGO_ID_KEY]}, normalized)
-        updated += result.modified_count
+    rewritten = apply_market_key_migration(db)
 
-    print(f"Rewrote {updated} market(s)")
-    if not pending:
-        print("No markets with legacy keys found -- migration already applied.")
+    print(f"Rewrote {rewritten} market(s)")
+    if not rewritten:
+        print("No markets with legacy keys found -- documents were already canonical.")
+    print(f"Recorded '{MARKET_KEY_MIGRATION_ID}' in '{SCHEMA_COLLECTION}' -- the app will boot.")
 
 
 def main():

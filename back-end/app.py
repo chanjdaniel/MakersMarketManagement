@@ -23,8 +23,8 @@ from datetime import timedelta, datetime, timezone
 from datatypes import Market, MarketPhase, MarketRole, phase_from_market_document
 from assignment.utils import convert_keys_to_camel_case, convert_keys_to_snake_case
 from guards import PreconditionResult, VALID_TRANSITIONS, evaluate_transition
-from market_documents import LegacyMarketDocumentsError, assert_market_documents_migrated
-from pymongo.errors import PyMongoError
+from market_documents import MarketKeyMigrationError, assert_market_key_migration_recorded
+import db_config
 from dataclasses import asdict
 import json
 import os
@@ -40,27 +40,32 @@ SESSION_FOLDER = "flask_session"
 SESSION_MAX_AGE = 7200
 
 
-def verify_market_documents_migrated() -> None:
-    """Refuse to boot against market documents that predate the canonical camelCase keys.
+def verify_market_key_migration() -> None:
+    """Refuse to boot unless the market-key migration is recorded as applied.
 
-    Reads name one key, so an unmigrated document is simply invisible - vendors are told the
-    market does not exist at check-in, and org members get an empty market list, with nothing
-    logged. Nothing auto-runs the migration (rewriting stored documents is the operator's call),
-    so this is what makes skipping it impossible to miss.
+    Reads name the canonical camelCase key only, so a market left under the legacy snake_case
+    keys is simply invisible - vendors are told the market does not exist at check-in, and org
+    members get an empty market list, with nothing logged anywhere. Nothing auto-runs the
+    migration (rewriting stored documents is the operator's call), so this check is what makes
+    skipping it impossible to miss.
 
-    A database that cannot be reached at all is a different failure, and every request will say
-    so; there is nothing to verify, so boot proceeds.
+    It reads the migration's marker document by ``_id``: one indexed lookup, bounded by a short
+    server selection timeout so a database blip cannot hang boot. Being that cheap is what lets
+    it fail closed on every outcome that is not a confirmed marker - an unreachable database
+    could not serve a request anyway, and an unknown migration state must never be taken for a
+    migrated one.
     """
+    probe = db_config.get_migration_probe_database()
     try:
-        assert_market_documents_migrated(MarketsApi.markets_collection)
-    except LegacyMarketDocumentsError as e:
+        assert_market_key_migration_recorded(probe)
+    except MarketKeyMigrationError as e:
         logger.critical("%s", e)
         raise
-    except PyMongoError as e:
-        logger.warning("Could not verify market document keys (database unreachable): %s", e)
+    finally:
+        probe.client.close()
 
 
-verify_market_documents_migrated()
+verify_market_key_migration()
 
 app = Flask(__name__)
 

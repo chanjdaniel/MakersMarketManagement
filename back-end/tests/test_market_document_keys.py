@@ -21,9 +21,13 @@ import api.permissions as PermissionsApi
 import api.users as UsersApi
 from datatypes import MarketRole
 from market_documents import (
-    LEGACY_MARKET_KEY_QUERY,
-    LegacyMarketDocumentsError,
-    assert_market_documents_migrated,
+    MARKETS_COLLECTION,
+    MARKET_KEY_MIGRATION_ID,
+    MONGO_ID_KEY,
+    SCHEMA_COLLECTION,
+    MarketKeyMigrationMissingError,
+    MarketKeyMigrationUnverifiableError,
+    assert_market_key_migration_recorded,
     market_doc_field,
     market_doc_filter,
     market_doc_set,
@@ -92,15 +96,39 @@ class FakeMarketsCollection:
                 doc.pop(key, None)
         return SimpleNamespace(matched_count=len(matched))
 
-    def count_documents(self, query):
-        assert query == LEGACY_MARKET_KEY_QUERY, "only the legacy-key census is modelled here"
-        return sum(
-            1 for doc in self.docs
-            if any(key != "_id" and "_" in key for key in doc)
-        )
-
     def aggregate(self, _pipeline):
         return iter([])
+
+
+class FakeSchemaCollection:
+    """The one document the startup check reads, and the migration's upsert of it."""
+
+    def __init__(self):
+        self.docs = {}
+
+    def find_one(self, query):
+        return self.docs.get(query[MONGO_ID_KEY])
+
+    def update_one(self, query, update, upsert=False):
+        doc = self.docs.get(query[MONGO_ID_KEY])
+        if doc is None:
+            if not upsert:
+                return SimpleNamespace(matched_count=0)
+            doc = dict(query)
+            self.docs[query[MONGO_ID_KEY]] = doc
+        doc.update(update.get("$set", {}))
+        return SimpleNamespace(matched_count=1)
+
+
+class FakeDatabase:
+    def __init__(self, markets):
+        self.collections = {
+            MARKETS_COLLECTION: markets,
+            SCHEMA_COLLECTION: FakeSchemaCollection(),
+        }
+
+    def __getitem__(self, name):
+        return self.collections[name]
 
 
 @pytest.fixture
@@ -141,7 +169,7 @@ def test_migrated_legacy_market_is_listed_by_its_org(collection):
     legacy = _market("legacy-market", org_key="organization_id")
     collection.docs.append(legacy)
 
-    migrate(SimpleNamespace(markets=collection))
+    migrate(FakeDatabase(collection))
     listed = {m["id"]: m for m in MarketsApi.get_markets_for_user(USER_EMAIL)}
 
     assert listed["legacy-market"]["organization_name"] == "Test Org"
@@ -153,7 +181,7 @@ def test_market_moved_between_orgs_stops_being_listed_by_the_old_one(collection)
     moved["organizationId"] = OTHER_ORG_ID
     collection.docs.append(moved)
 
-    migrate(SimpleNamespace(markets=collection))
+    migrate(FakeDatabase(collection))
     listed = {m["id"] for m in MarketsApi.get_markets_for_user(USER_EMAIL)}
 
     assert "moved-market" not in listed
@@ -214,31 +242,64 @@ def test_market_list_reads_each_org_and_member_once(collection, monkeypatch):
 
 class TestStartupCheck:
     """Unmigrated documents are invisible to every camelCase-only read, so booting on them
-    would silently hide markets. The app refuses to serve instead."""
+    would silently hide markets. The app refuses to serve instead, and it decides that on the
+    migration's marker document -- one lookup by ``_id``, not a scan of every market."""
 
-    def test_legacy_document_refuses_to_serve(self, collection):
-        collection.docs.append(_market("legacy-market", org_key="organization_id"))
+    def test_unmigrated_database_refuses_to_serve(self, collection):
+        with pytest.raises(MarketKeyMigrationMissingError) as excinfo:
+            assert_market_key_migration_recorded(FakeDatabase(collection))
 
-        with pytest.raises(LegacyMarketDocumentsError) as excinfo:
-            assert_market_documents_migrated(collection)
-
-        assert excinfo.value.count == 1
         assert "migrations/migrate_market_keys.py" in str(excinfo.value)
-
-    def test_canonical_documents_boot(self, collection):
-        assert_market_documents_migrated(collection)
 
     def test_migration_clears_the_refusal(self, collection):
         collection.docs.append(_market("legacy-market", org_key="organization_id"))
+        db = FakeDatabase(collection)
 
-        migrate(SimpleNamespace(markets=collection))
+        migrate(db)
 
-        assert_market_documents_migrated(collection)
+        assert_market_key_migration_recorded(db)
+
+    def test_marker_is_read_by_id_alone(self, collection):
+        db = FakeDatabase(collection)
+        migrate(db)
+
+        marker = db[SCHEMA_COLLECTION].find_one({MONGO_ID_KEY: MARKET_KEY_MIGRATION_ID})
+
+        assert marker is not None
+
+    def test_unreadable_marker_refuses_to_serve(self):
+        """An unknown migration state is not a migrated one: the check fails closed."""
+        class UnreachableDatabase:
+            def __getitem__(self, _name):
+                return SimpleNamespace(
+                    find_one=lambda _query: (_ for _ in ()).throw(
+                        ConnectionError("no reachable servers")
+                    )
+                )
+
+        with pytest.raises(MarketKeyMigrationUnverifiableError) as excinfo:
+            assert_market_key_migration_recorded(UnreachableDatabase())
+
+        assert "migrations/migrate_market_keys.py" in str(excinfo.value)
+        assert isinstance(excinfo.value.cause, ConnectionError)
+
+    def test_a_query_failure_is_not_reported_as_unreachable_and_ignored(self):
+        """Any failure to read the marker is fatal, not just a connection failure."""
+        class DeniedDatabase:
+            def __getitem__(self, _name):
+                return SimpleNamespace(
+                    find_one=lambda _query: (_ for _ in ()).throw(
+                        RuntimeError("not authorized to query schema_migrations")
+                    )
+                )
+
+        with pytest.raises(MarketKeyMigrationUnverifiableError):
+            assert_market_key_migration_recorded(DeniedDatabase())
 
 
 def test_deleting_an_org_detaches_a_migrated_legacy_market(org_delete):
     org_delete.docs.append(_market("legacy-market", org_key="organization_id"))
-    migrate(SimpleNamespace(markets=org_delete))
+    migrate(FakeDatabase(org_delete))
 
     OrgsApi.delete_organization(ORG_ID, USER_EMAIL)
 

@@ -74,8 +74,8 @@ python migrations/migrate_market_keys.py   # rewrites markets under the canonica
 
 `migrate_market_keys.py` **must** be run before the code that reads market documents by the canonical key only.
 An unmigrated market is invisible to every such read: vendors are told the market does not exist at check-in, and organization members get an empty market list.
-The back end therefore refuses to boot against a database that still holds legacy snake_case market keys, and the fatal log names the script to run.
-A deploy that skipped the migration fails loudly at startup rather than quietly serving half the data.
+The migration records a marker document in the `schema_migrations` collection when it completes, and the back end refuses to boot unless it can read that marker; the fatal log names the script to run.
+The check fails closed on anything short of a confirmed marker - an unknown migration state is not a migrated one - so a deploy that skipped the migration fails loudly at startup rather than quietly serving half the data.
 
 ## Files
 

@@ -16,60 +16,113 @@ think about this. Code that touches a raw document or writes a Mongo filter does
 these helpers rather than a string literal, so the spelling is decided in exactly one place.
 
 Reading one key only means the data has to be normalized first, and nothing auto-runs the
-migration: rewriting stored documents is a deliberate operator action. So the app refuses to
-boot against a database that still holds legacy keys (``assert_market_documents_migrated``,
-called from ``app.py``). Serving unmigrated data would hide markets from the check-in lookup
-and from org-scoped lists with no error anywhere; a loud refusal at startup is the only
-failure mode that cannot be deployed by accident.
+migration: rewriting stored documents is a deliberate operator action. The migration records a
+marker document in ``schema_migrations`` when it completes, and the app refuses to boot unless
+that marker is there (``assert_market_key_migration_recorded``, called from ``app.py``).
+Serving unmigrated data would hide markets from the check-in lookup and from org-scoped lists
+with no error anywhere; a loud refusal at startup is the only failure mode that cannot be
+deployed by accident. The marker is a single document read by ``_id``, so the check is one
+indexed lookup rather than a scan over every market - cheap enough to fail closed on, which is
+what it does: an unknown migration state is not a migrated one.
 """
-from typing import Any, Dict
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 from assignment.utils import convert_keys_to_camel_case, snake_to_camel
 
 MONGO_ID_KEY = "_id"
 
+MARKETS_COLLECTION = "markets"
+SCHEMA_COLLECTION = "schema_migrations"
+MARKET_KEY_MIGRATION_ID = "market_document_keys"
+
 MARKET_KEY_MIGRATION = "migrations/migrate_market_keys.py"
 
-LEGACY_MARKET_KEY_QUERY: Dict[str, Any] = {
-    "$expr": {
-        "$anyElementTrue": {
-            "$map": {
-                "input": {"$objectToArray": "$$ROOT"},
-                "in": {
-                    "$and": [
-                        {"$ne": ["$$this.k", MONGO_ID_KEY]},
-                        {"$regexMatch": {"input": "$$this.k", "regex": "_"}},
-                    ]
-                },
-            }
-        }
-    }
-}
+
+class MarketKeyMigrationError(RuntimeError):
+    """The market-key migration could not be confirmed as applied to this database."""
 
 
-class LegacyMarketDocumentsError(RuntimeError):
-    """Raised when stored market documents still carry the legacy snake_case keys."""
+class MarketKeyMigrationMissingError(MarketKeyMigrationError):
+    """The migration has demonstrably not run: its marker is absent."""
 
-    def __init__(self, count: int) -> None:
+    def __init__(self) -> None:
         super().__init__(
-            f"{count} market document(s) still carry legacy snake_case keys. Readers name the "
-            f"canonical camelCase key only, so these markets would be invisible to the public "
-            f"check-in lookup and to organization-scoped market lists. Run "
-            f"`python {MARKET_KEY_MIGRATION}` against this database, then restart."
+            f"The market-key migration has not been applied to this database: no "
+            f"'{MARKET_KEY_MIGRATION_ID}' marker in the '{SCHEMA_COLLECTION}' collection. "
+            f"Readers name the canonical camelCase key only, so any market still stored under "
+            f"legacy snake_case keys is invisible to the public check-in lookup and to "
+            f"organization-scoped market lists. Run `python {MARKET_KEY_MIGRATION}` against "
+            f"this database, then restart."
         )
-        self.count = count
 
 
-def count_legacy_market_documents(collection: Any) -> int:
-    """How many market documents still name a field under a non-canonical key."""
-    return collection.count_documents(LEGACY_MARKET_KEY_QUERY)
+class MarketKeyMigrationUnverifiableError(MarketKeyMigrationError):
+    """The marker could not be read at all, so the migration state is unknown."""
+
+    def __init__(self, cause: BaseException) -> None:
+        super().__init__(
+            f"Could not read the '{MARKET_KEY_MIGRATION_ID}' marker from the "
+            f"'{SCHEMA_COLLECTION}' collection: {cause!r}. An unknown migration state is not a "
+            f"migrated one, so this refuses to serve rather than risk hiding every market "
+            f"stored under legacy keys. Make the database reachable, ensure `python "
+            f"{MARKET_KEY_MIGRATION}` has been run against it, then restart."
+        )
+        self.cause = cause
 
 
-def assert_market_documents_migrated(collection: Any) -> None:
-    """Refuse to serve a database whose market documents predate the canonical keys."""
-    legacy_count = count_legacy_market_documents(collection)
-    if legacy_count:
-        raise LegacyMarketDocumentsError(legacy_count)
+def read_market_key_migration_marker(db: Any) -> Optional[Dict[str, Any]]:
+    """The migration's marker document, or None if the migration has not run."""
+    return db[SCHEMA_COLLECTION].find_one({MONGO_ID_KEY: MARKET_KEY_MIGRATION_ID})
+
+
+def assert_market_key_migration_recorded(db: Any) -> None:
+    """Refuse to serve a database whose market documents may predate the canonical keys.
+
+    Any failure to read the marker is a failure to confirm the migration, and is fatal for the
+    same reason a missing marker is: the alternative is serving markets nobody can see. A
+    database that cannot answer a single ``_id`` lookup cannot serve a request either, so
+    nothing is lost by refusing.
+    """
+    try:
+        marker = read_market_key_migration_marker(db)
+    except Exception as e:
+        raise MarketKeyMigrationUnverifiableError(e) from e
+    if marker is None:
+        raise MarketKeyMigrationMissingError()
+
+
+def record_market_key_migration(db: Any) -> None:
+    """Record that every market document is stored under the canonical keys."""
+    db[SCHEMA_COLLECTION].update_one(
+        {MONGO_ID_KEY: MARKET_KEY_MIGRATION_ID},
+        {"$set": {"appliedAt": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+
+
+def pending_market_key_rewrites(db: Any) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """Every stored market that is not already under the canonical keys, with its rewrite."""
+    rewrites = (
+        (doc, normalize_market_document(doc)) for doc in db[MARKETS_COLLECTION].find({})
+    )
+    return [(doc, normalized) for doc, normalized in rewrites if normalized != doc]
+
+
+def apply_market_key_migration(db: Any) -> int:
+    """Rewrite every market under the canonical keys and record that it happened.
+
+    Idempotent: a database that is already canonical has nothing to rewrite, and the marker is
+    upserted either way, so re-recording it is harmless.
+    """
+    rewritten = 0
+    for doc, normalized in pending_market_key_rewrites(db):
+        result = db[MARKETS_COLLECTION].replace_one(
+            {MONGO_ID_KEY: doc[MONGO_ID_KEY]}, normalized
+        )
+        rewritten += result.modified_count
+    record_market_key_migration(db)
+    return rewritten
 
 
 def market_doc_key(field: str) -> str:

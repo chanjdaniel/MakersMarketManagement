@@ -7,6 +7,16 @@ and the one the last write set, so it wins.
 import copy
 from types import SimpleNamespace
 
+import pytest
+
+from market_documents import (
+    MARKETS_COLLECTION,
+    MARKET_KEY_MIGRATION_ID,
+    MONGO_ID_KEY,
+    SCHEMA_COLLECTION,
+    MarketKeyMigrationMissingError,
+    assert_market_key_migration_recorded,
+)
 from migrate_market_keys import migrate
 
 
@@ -20,20 +30,44 @@ class FakeCollection:
 
     def replace_one(self, query, replacement):
         for index, doc in enumerate(self.docs):
-            if doc["_id"] == query["_id"]:
+            if doc[MONGO_ID_KEY] == query[MONGO_ID_KEY]:
                 modified = doc != replacement
                 self.docs[index] = replacement
                 return SimpleNamespace(modified_count=1 if modified else 0)
         return SimpleNamespace(modified_count=0)
 
 
+class FakeSchemaCollection:
+    def __init__(self):
+        self.docs = {}
+
+    def find_one(self, query):
+        return self.docs.get(query[MONGO_ID_KEY])
+
+    def update_one(self, query, update, upsert=False):
+        doc = self.docs.get(query[MONGO_ID_KEY])
+        if doc is None:
+            if not upsert:
+                return SimpleNamespace(matched_count=0)
+            doc = dict(query)
+            self.docs[query[MONGO_ID_KEY]] = doc
+        doc.update(update.get("$set", {}))
+        return SimpleNamespace(matched_count=1)
+
+
 class FakeDatabase:
     def __init__(self, docs):
-        self.markets = FakeCollection(docs)
+        self.collections = {
+            MARKETS_COLLECTION: FakeCollection(docs),
+            SCHEMA_COLLECTION: FakeSchemaCollection(),
+        }
+
+    def __getitem__(self, name):
+        return self.collections[name]
 
 
 def only(db):
-    return db.markets.docs[0]
+    return db[MARKETS_COLLECTION].docs[0]
 
 
 def test_legacy_keys_are_rewritten_under_the_canonical_spelling():
@@ -87,3 +121,32 @@ def test_dry_run_writes_nothing():
     migrate(db, dry_run=True)
 
     assert only(db) == {"_id": 1, "id": "m1", "organization_id": "org-a"}
+
+
+def test_dry_run_records_no_marker():
+    """A preview must not tell the app the database is safe to serve."""
+    db = FakeDatabase([{"_id": 1, "id": "m1", "organization_id": "org-a"}])
+
+    migrate(db, dry_run=True)
+
+    with pytest.raises(MarketKeyMigrationMissingError):
+        assert_market_key_migration_recorded(db)
+
+
+def test_migration_records_the_marker():
+    db = FakeDatabase([{"_id": 1, "id": "m1", "organization_id": "org-a"}])
+
+    migrate(db)
+
+    marker = db[SCHEMA_COLLECTION].find_one({MONGO_ID_KEY: MARKET_KEY_MIGRATION_ID})
+    assert marker is not None
+    assert marker["appliedAt"]
+
+
+def test_marker_is_recorded_even_when_nothing_needs_rewriting():
+    """A database that is already canonical still has to be able to boot."""
+    db = FakeDatabase([{"_id": 1, "id": "m1", "organizationId": "org-a"}])
+
+    migrate(db)
+
+    assert_market_key_migration_recorded(db)

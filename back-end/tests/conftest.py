@@ -135,6 +135,7 @@ if _needs_stub("resend"):
     sys.modules["resend"] = fake_resend
 
 
+
 from datatypes import AssignmentObject, Market, MarketPhase, MarketRole
 
 
@@ -221,3 +222,24 @@ def applications(monkeypatch):
     fake = FakeApplicationsCollection()
     monkeypatch.setattr(ApplicationsApi, "applications_collection", fake)
     return fake
+
+# app.py refuses to boot unless the market-key migration is recorded as applied, and it fails
+# closed when it cannot read the marker at all -- which is exactly what would happen here, since
+# the suite points Mongo at a port nothing listens on. The probe is answered in-process instead,
+# by a database that reports the migration as applied. Only the probe is redirected: the data
+# collections stay unreachable, so a test that touches an unpatched one still fails loudly.
+import db_config
+from market_documents import MARKET_KEY_MIGRATION_ID, MONGO_ID_KEY, SCHEMA_COLLECTION
+
+
+class _MigratedProbeDatabase:
+    client = SimpleNamespace(close=lambda: None)
+
+    def __getitem__(self, name):
+        assert name == SCHEMA_COLLECTION, "the probe reads the schema marker and nothing else"
+        return SimpleNamespace(
+            find_one=lambda _query: {MONGO_ID_KEY: MARKET_KEY_MIGRATION_ID}
+        )
+
+
+db_config.get_migration_probe_database = lambda *_args, **_kwargs: _MigratedProbeDatabase()
