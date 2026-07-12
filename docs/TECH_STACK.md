@@ -25,7 +25,7 @@ This document outlines the complete technology stack used in the Conventioner ap
 ### Database
 - **MongoDB 7** - NoSQL document database
   - Primary data storage
-  - Collections: `users`, `markets`, `organizations`, `source_data`
+  - Collections: `users`, `markets`, `organizations`, `source_data`, `attendance`, `applications`, `floorplan_templates` (created by `back-end/mongo-init.js` on a fresh volume)
   - Connection via PyMongo 4.6.1
   - Database name: `conventioner`
 
@@ -254,8 +254,9 @@ Conventioner/
 ├── back-end/
 │   ├── api/              # API endpoint modules
 │   │   ├── users.py      # User authentication endpoints
-│   │   ├── markets.py     # Market management endpoints
+│   │   ├── markets.py     # Market management + application form endpoints
 │   │   ├── organizations.py  # Organization endpoints
+│   │   ├── applications.py  # Sole owner of the `applications` collection
 │   │   └── source_data.py   # CSV data endpoints
 │   ├── utils/            # Utility modules
 │   │   ├── tokens.py     # Token/OTP generation
