@@ -26,28 +26,6 @@ class FakeMarketsCollection:
         return SimpleNamespace(inserted_id="mongo-id")
 
 
-class FakeApplicationsCollection:
-    def count_documents(self, _query):
-        return 0
-
-
-class FakeDb(dict):
-    """Any collection other than the ones seeded here is a no-op stand-in."""
-
-    def __missing__(self, name):
-        return SimpleNamespace(update_one=lambda *_a, **_kw: None)
-
-
-@pytest.fixture(autouse=True)
-def no_applications(monkeypatch):
-    """The D9 lock counts applications; keep that off the real database."""
-    monkeypatch.setattr(
-        MarketsApi,
-        "db",
-        FakeDb({MarketsApi.APPLICATIONS_COLLECTION: FakeApplicationsCollection()}),
-    )
-
-
 def _stored_market(**overrides):
     doc = {
         "id": "market-123",

@@ -8,6 +8,8 @@ import sys
 import types
 from types import SimpleNamespace
 
+import pytest
+
 BACK_END_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 for path in (BACK_END_DIR, os.path.join(BACK_END_DIR, "migrations")):
@@ -75,3 +77,37 @@ if "resend" not in sys.modules:
     fake_resend = types.ModuleType("resend")
     fake_resend.Emails = SimpleNamespace(send=lambda *_args, **_kwargs: {})
     sys.modules["resend"] = fake_resend
+
+
+class FakeApplicationsCollection:
+    """Stand-in for the applications collection the D9 form lock counts.
+
+    ``count_documents`` matches inserted documents against the filter the way Mongo does,
+    so a test can pin the persisted key contract by inserting a real ``Application`` dump.
+    Tests that only care that *some* applications exist can set ``count`` instead.
+    """
+
+    def __init__(self, count: int = 0):
+        self.count = count
+        self.documents: list = []
+
+    def insert_one(self, document):
+        self.documents.append(document)
+        return SimpleNamespace(inserted_id=str(len(self.documents)))
+
+    def count_documents(self, query):
+        matched = sum(
+            1 for doc in self.documents
+            if all(doc.get(key) == value for key, value in (query or {}).items())
+        )
+        return self.count + matched
+
+
+@pytest.fixture(autouse=True)
+def applications(monkeypatch):
+    """The D9 lock counts applications; keep that off the real database everywhere."""
+    import api.applications as ApplicationsApi
+
+    fake = FakeApplicationsCollection()
+    monkeypatch.setattr(ApplicationsApi, "applications_collection", fake)
+    return fake

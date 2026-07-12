@@ -45,16 +45,27 @@ describe('FormBuilder', () => {
     expect(recursive).toEqual([]);
   });
 
-  it('derives the key from the label on blur', async () => {
+  it('derives the key from the label as it is typed', async () => {
     const { wrapper, form } = mountWithParent(null);
 
     await wrapper.get('[data-testid="form-builder-add-field-button"]').trigger('click');
     expect(form.value?.fields[0].key).toBe('');
 
-    const label = wrapper.get('[data-testid="form-field-label-input"]');
-    await label.setValue('Business Name!');
-    await label.trigger('blur');
+    await wrapper.get('[data-testid="form-field-label-input"]').setValue('Business Name!');
 
+    expect(form.value?.fields[0].key).toBe('business_name');
+  });
+
+  it('re-derives an auto key when the label is corrected', async () => {
+    const { wrapper, form } = mountWithParent(null);
+
+    await wrapper.get('[data-testid="form-builder-add-field-button"]').trigger('click');
+    const label = wrapper.get('[data-testid="form-field-label-input"]');
+
+    await label.setValue('Bsuiness Name');
+    expect(form.value?.fields[0].key).toBe('bsuiness_name');
+
+    await label.setValue('Business Name');
     expect(form.value?.fields[0].key).toBe('business_name');
   });
 
@@ -69,6 +80,35 @@ describe('FormBuilder', () => {
     await label.trigger('blur');
 
     expect(form.value?.fields[0].key).toBe('custom_key');
+  });
+
+  it('keeps the hand-edited flag with its field when an earlier field is removed', async () => {
+    const { wrapper, form } = mountWithParent(null);
+
+    await wrapper.get('[data-testid="form-builder-add-field-button"]').trigger('click');
+    await wrapper.get('[data-testid="form-field-key-input"]').setValue('hand_edited');
+    await wrapper.get('[data-testid="form-builder-add-field-button"]').trigger('click');
+
+    await wrapper.findAll('[data-testid="form-builder-remove-field-button"]')[0].trigger('click');
+
+    // The surviving field never had its key touched, so it must still track its label.
+    await wrapper.get('[data-testid="form-field-label-input"]').setValue('Booth Size');
+
+    expect(form.value?.fields).toHaveLength(1);
+    expect(form.value?.fields[0].key).toBe('booth_size');
+  });
+
+  it('treats a key loaded from the server as hand-edited', async () => {
+    const existing: ApplicationForm = {
+      fields: [
+        { key: 'shop_name', label: 'Shop', type: 'text', required: false, options: [], order: 0 },
+      ],
+    };
+    const { wrapper, form } = mountWithParent(existing);
+
+    await wrapper.get('[data-testid="form-field-label-input"]').setValue('Storefront');
+
+    expect(form.value?.fields[0].key).toBe('shop_name');
   });
 
   it('gives each added field a distinct key once labelled, even after a removal', async () => {

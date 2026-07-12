@@ -6,6 +6,7 @@ from bson import ObjectId
 from datatypes import ApplicationForm, FormField, Market, MarketPhase, MarketRole, MarketTableRow, UnassignedTableEntry
 from assignment.assignment import assign_market
 from assignment.utils import convert_keys_to_snake_case, convert_keys_to_camel_case
+import api.applications as ApplicationsApi
 import api.source_data as SourceDataApi
 import api.permissions as PermissionsApi
 import api.organizations as OrgsApi
@@ -22,9 +23,11 @@ logger = logging.getLogger(__name__)
 db = get_database()
 markets_collection = db["markets"]
 
-APPLICATIONS_COLLECTION = "applications"
-
 VALID_FORM_FIELD_TYPES = {"text", "number", "select", "multi_select", "checkbox", "date", "email"}
+
+
+class MarketNotFoundError(ValueError):
+    """No market exists with the requested id. Callers map this to HTTP 404."""
 
 
 def _load_organization(organization_id: Optional[str]):
@@ -47,7 +50,7 @@ def _load_market_for(market_id: str, requesting_user: str, role: MarketRole, act
     """Load a market and assert the requesting user holds at least ``role`` on it."""
     market_dict = markets_collection.find_one({"id": market_id})
     if not market_dict:
-        raise ValueError("Market not found")
+        raise MarketNotFoundError("Market not found")
 
     market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
     try:
@@ -60,10 +63,6 @@ def _load_market_for(market_id: str, requesting_user: str, role: MarketRole, act
         raise PermissionError(f"User does not have permission to {action} this market")
 
     return market
-
-
-def count_applications(market_id: str) -> int:
-    return db[APPLICATIONS_COLLECTION].count_documents({"market_id": market_id})
 
 
 def application_form_lock_reason(market: Market) -> Optional[str]:
@@ -79,7 +78,7 @@ def application_form_lock_reason(market: Market) -> Optional[str]:
             f"Current phase: {market.phase.value}."
         )
 
-    existing_app_count = count_applications(market.id)
+    existing_app_count = ApplicationsApi.count_applications_for_market(market.id)
     if existing_app_count > 0:
         return (
             "Application form is locked. "
@@ -94,6 +93,27 @@ def _assert_application_form_editable(market: Market) -> None:
     reason = application_form_lock_reason(market)
     if reason:
         raise RuntimeError(reason)
+
+
+def _validate_select_options(field: FormField, key: str) -> None:
+    """Options are the persisted answer values in ``Application.form_data``, so they carry the
+    same uniqueness burden as field keys: a duplicate is an ambiguous answer, a blank is an
+    unselectable row in the applicant's form."""
+    if not field.options:
+        raise ValueError(
+            f"Field '{key}' is type '{field.type}' but has no options defined"
+        )
+
+    seen_options = set()
+    for option in field.options:
+        option_value = (option or "").strip()
+        if not option_value:
+            raise ValueError(f"Field '{key}' has a blank option. Options must be non-empty.")
+        if option_value in seen_options:
+            raise ValueError(
+                f"Duplicate option '{option_value}' in field '{key}'. Options must be unique."
+            )
+        seen_options.add(option_value)
 
 
 def _validate_application_form(application_form: ApplicationForm) -> None:
@@ -121,10 +141,8 @@ def _validate_application_form(application_form: ApplicationForm) -> None:
                 f"Unrecognized field type '{field.type}' for field '{key}'. "
                 f"Valid types: {', '.join(sorted(VALID_FORM_FIELD_TYPES))}"
             )
-        if field.type in ("select", "multi_select") and not field.options:
-            raise ValueError(
-                f"Field '{key}' is type '{field.type}' but has no options defined"
-            )
+        if field.type in ("select", "multi_select"):
+            _validate_select_options(field, key)
 
 
 def _application_form_dump(market: Market) -> Optional[Dict[str, Any]]:

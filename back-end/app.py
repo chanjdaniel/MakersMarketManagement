@@ -655,6 +655,8 @@ def update_market(market_id: str) -> Response:
             "modified_count": result.modified_count
         }), 200
 
+    except MarketsApi.MarketNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
     except RuntimeError as e:
@@ -692,6 +694,8 @@ def save_application_form(market_id: str) -> Response:
             "application_form": result,
         }), 200
 
+    except MarketsApi.MarketNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
     except RuntimeError as e:
@@ -717,6 +721,8 @@ def get_application_form(market_id: str) -> Response:
 
         return jsonify(MarketsApi.get_application_form(market_id, requesting_user)), 200
 
+    except MarketsApi.MarketNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
     except ValueError as e:

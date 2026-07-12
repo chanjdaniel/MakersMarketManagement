@@ -19,15 +19,16 @@ const props = withDefaults(
     field: FormField;
     index: number;
     readonly?: boolean;
+    /** True once the organizer has typed in the key input. The parent owns it so it
+     * survives the component instance being reused for another field. */
+    keyTouched?: boolean;
   }>(),
-  { readonly: false },
+  { readonly: false, keyTouched: false },
 );
 
 const emit = defineEmits<{
   'update:field': [field: FormField];
-  remove: [];
-  'move-up': [];
-  'move-down': [];
+  'update:keyTouched': [touched: boolean];
 }>();
 
 const local = computed(() => props.field);
@@ -39,20 +40,21 @@ function slugify(text: string): string {
     .replace(/^_|_$/g, '');
 }
 
-/** Derive the key from the label unless the organizer has hand-edited it. */
-function autoKeyFromLabel() {
-  if (props.readonly) return;
-  if (local.value.key && local.value.key !== slugify(local.value.label)) return;
-
-  const newKey = slugify(local.value.label);
-  if (newKey) {
-    emit('update:field', { ...local.value, key: newKey });
-  }
-}
-
 function emitUpdate(patch: Partial<FormField>) {
   if (props.readonly) return;
   emit('update:field', { ...local.value, ...patch });
+}
+
+/** The key tracks the label until the organizer takes it over, so fixing a typo in the
+ * label fixes the key too. */
+function updateLabel(label: string) {
+  emitUpdate(props.keyTouched ? { label } : { label, key: slugify(label) });
+}
+
+function updateKey(key: string) {
+  if (props.readonly) return;
+  emit('update:keyTouched', true);
+  emitUpdate({ key });
 }
 
 function addOption() {
@@ -79,8 +81,7 @@ function updateOption(idx: number, value: string) {
       <input
         class="field-input"
         :value="local.label"
-        @input="emitUpdate({ label: ($event.target as HTMLInputElement).value })"
-        @blur="autoKeyFromLabel()"
+        @input="updateLabel(($event.target as HTMLInputElement).value)"
         :disabled="readonly"
         placeholder="e.g. Business Name"
         data-testid="form-field-label-input"
@@ -92,7 +93,7 @@ function updateOption(idx: number, value: string) {
       <input
         class="field-input field-input-sm"
         :value="local.key"
-        @input="emitUpdate({ key: ($event.target as HTMLInputElement).value })"
+        @input="updateKey(($event.target as HTMLInputElement).value)"
         :disabled="readonly"
         placeholder="auto-generated from label"
         data-testid="form-field-key-input"

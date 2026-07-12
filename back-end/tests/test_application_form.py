@@ -10,7 +10,8 @@ import pytest
 import api.markets as MarketsApi
 import api.permissions as PermissionsApi
 from datatypes import (
-    ApplicationForm, AssignmentObject, FormField, Market, MarketPhase, MarketRole,
+    Application, ApplicationForm, ApplicationStatus, AssignmentObject, FormField,
+    Market, MarketPhase, MarketRole,
 )
 
 
@@ -25,21 +26,6 @@ class FakeMarketsCollection:
     def update_one(self, _filter, update):
         self.last_update = update
         return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
-
-
-class FakeApplicationsCollection:
-    def __init__(self, count=0):
-        self.count = count
-
-    def count_documents(self, _query):
-        return self.count
-
-
-class FakeDb(dict):
-    """Any collection other than the ones seeded here is a no-op stand-in."""
-
-    def __missing__(self, name):
-        return SimpleNamespace(update_one=lambda *_a, **_kw: None)
 
 
 def _stored_market(**overrides):
@@ -88,11 +74,14 @@ def markets(monkeypatch):
     return fake
 
 
-@pytest.fixture
-def applications(monkeypatch):
-    fake = FakeApplicationsCollection()
-    monkeypatch.setattr(MarketsApi, "db", FakeDb({MarketsApi.APPLICATIONS_COLLECTION: fake}))
-    return fake
+def _submitted_application(market_id: str) -> dict:
+    """An application document exactly as ``api.applications`` contracts to store it."""
+    return Application(
+        market_id=market_id,
+        applicant_email="vendor@example.com",
+        form_data={"business_name": "Acme"},
+        status=ApplicationStatus.OPEN,
+    ).model_dump()
 
 
 class TestSaveApplicationForm:
@@ -113,10 +102,10 @@ class TestSaveApplicationForm:
         assert "help_text" not in result["fields"][0]
         assert "published_at" not in result
 
-    def test_missing_market_raises(self, monkeypatch, applications):
+    def test_missing_market_raises_not_found(self, monkeypatch, applications):
         monkeypatch.setattr(MarketsApi, "markets_collection", FakeMarketsCollection(None))
 
-        with pytest.raises(ValueError, match="Market not found"):
+        with pytest.raises(MarketsApi.MarketNotFoundError, match="Market not found"):
             MarketsApi.save_application_form("nope", VALID_FORM, "user-1")
 
     def test_requires_editor_permission(self, markets, applications, monkeypatch):
@@ -151,6 +140,24 @@ class TestPhaseGate:
 
 
 class TestD9Lock:
+    def test_a_stored_application_document_engages_the_lock(self, markets, applications):
+        """Pins the storage contract: the lock counts by the snake_case ``market_id`` key
+        an ``Application`` dump actually carries. A writer that stored ``marketId`` instead
+        would leave the lock counting zero and the D9 invariant silently dead."""
+        applications.insert_one(_submitted_application("market-123"))
+
+        with pytest.raises(RuntimeError, match="1 application"):
+            MarketsApi.save_application_form("market-123", VALID_FORM, "user-1")
+
+        assert markets.last_update is None
+
+    def test_another_markets_application_does_not_engage_the_lock(self, markets, applications):
+        applications.insert_one(_submitted_application("other-market"))
+
+        MarketsApi.save_application_form("market-123", VALID_FORM, "user-1")
+
+        assert markets.last_update is not None
+
     def test_form_is_frozen_once_an_application_exists(self, markets, applications):
         applications.count = 3
 
@@ -250,6 +257,33 @@ class TestFieldValidation:
     def test_select_without_options_is_refused(self, markets, applications, field_type):
         with pytest.raises(ValueError, match="no options defined"):
             self._save([{"key": "size", "label": "Size", "type": field_type}])
+
+    @pytest.mark.parametrize("field_type", ["select", "multi_select"])
+    def test_blank_option_is_refused(self, markets, applications, field_type):
+        """A blank option renders as an unselectable empty row in the applicant's form."""
+        with pytest.raises(ValueError, match="blank option"):
+            self._save([
+                {"key": "size", "label": "Size", "type": field_type, "options": ["Small", "  "]}
+            ])
+
+    @pytest.mark.parametrize("field_type", ["select", "multi_select"])
+    def test_duplicate_option_is_refused(self, markets, applications, field_type):
+        """Options are the persisted answer values, so a duplicate is an ambiguous answer."""
+        with pytest.raises(ValueError, match="Duplicate option 'Small'"):
+            self._save([
+                {
+                    "key": "size", "label": "Size", "type": field_type,
+                    "options": ["Small", "Large", "Small"],
+                }
+            ])
+
+    def test_market_put_validates_the_options_of_a_form_it_carries(self, markets, applications):
+        bad = ApplicationForm(fields=[
+            FormField(key="size", label="Size", type="select", options=["Small", "Small"]),
+        ])
+
+        with pytest.raises(ValueError, match="Duplicate option"):
+            MarketsApi.update_market("market-123", _client_market(application_form=bad), "user-1")
 
     def test_every_supported_type_is_accepted(self, markets, applications):
         fields = [

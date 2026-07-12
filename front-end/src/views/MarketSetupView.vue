@@ -12,7 +12,7 @@ import ElementLocationSetup from '@/components/elements/ElementLocationSetup.vue
 import ElementSectionSetup from '@/components/elements/ElementSectionSetup.vue';
 import ChoosePathOverlay from '@/components/floorplan/ChoosePathOverlay.vue';
 import { type SetupObject, type Market, type ApplicationForm } from '@/assets/types/datatypes';
-import { api, getApiErrorMessage } from '@/utils/api';
+import { api, getApiErrorMessage, getApiErrorStatus } from '@/utils/api';
 import FormBuilder from '@/components/application/FormBuilder.vue';
 import FormPreview from '@/components/application/FormPreview.vue';
 
@@ -26,7 +26,13 @@ const applicationForm = ref<ApplicationForm | null>(null);
 const formSaveStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle');
 const formErrorMessage = ref<string | null>(null);
 const formLockReason = ref<string | null>(null);
+const formLoadError = ref<string | null>(null);
 const formLocked = computed(() => formLockReason.value !== null);
+/**
+ * Only edit a form we know to be editable. A failed load leaves the lock state unknown, and
+ * assuming "editable" there invites the organizer to rework a locked form and lose it to a 409.
+ */
+const formEditable = computed(() => !formLocked.value && formLoadError.value === null);
 const setupObject = reactive<SetupObject>({
     colNames: [],
     colValues: [],
@@ -168,22 +174,29 @@ function adoptApplicationForm(form: ApplicationForm | null) {
 
 async function loadApplicationForm() {
     if (!market.value?.id) return;
+    formLoadError.value = null;
     try {
         const response = await api.get(`/markets/${market.value.id}/application-form`);
         adoptApplicationForm(response.data?.application_form ?? null);
         formLockReason.value = response.data?.lock_reason ?? null;
-    } catch {
-        // Market not readable yet; leave the cached form and let a save surface the error.
+    } catch (err: unknown) {
+        formLoadError.value = getApiErrorMessage(
+            err,
+            'Could not load the application form. Retry before editing it.',
+        );
     }
 }
 
+/** A form with no fields yet is an untouched starting state, not a mistake to flag. */
+const formIsEmpty = computed(() => (applicationForm.value?.fields ?? []).length === 0);
+
 /**
- * Field keys are the primary key of every applicant's answers, so the back-end rejects
- * blank or duplicate ones. Say so before the organizer clicks Save.
+ * Field keys and select options are the primary key and the persisted values of every
+ * applicant's answers, so the back-end rejects blank or duplicate ones. Say so before the
+ * organizer clicks Save.
  */
 const formValidationError = computed<string | null>(() => {
     const fields = applicationForm.value?.fields ?? [];
-    if (fields.length === 0) return 'Add at least one field before saving.';
 
     const seen = new Set<string>();
     for (const field of fields) {
@@ -192,18 +205,31 @@ const formValidationError = computed<string | null>(() => {
         if (!key) return `Field "${field.label}" needs a key.`;
         if (seen.has(key)) return `Duplicate field key "${key}". Keys must be unique.`;
         seen.add(key);
-        if (
-            (field.type === 'select' || field.type === 'multi_select') &&
-            field.options.filter((o) => o.trim()).length === 0
-        ) {
-            return `Field "${field.label}" is a ${field.type} and needs at least one option.`;
+
+        if (field.type === 'select' || field.type === 'multi_select') {
+            if (field.options.length === 0) {
+                return `Field "${field.label}" is a ${field.type} and needs at least one option.`;
+            }
+            const seenOptions = new Set<string>();
+            for (const option of field.options) {
+                const value = option.trim();
+                if (!value) return `Field "${field.label}" has a blank option.`;
+                if (seenOptions.has(value)) {
+                    return `Field "${field.label}" repeats the option "${value}". Options must be unique.`;
+                }
+                seenOptions.add(value);
+            }
         }
     }
     return null;
 });
 
 const canSaveForm = computed(
-    () => !formLocked.value && formValidationError.value === null && formSaveStatus.value !== 'saving',
+    () =>
+        formEditable.value &&
+        !formIsEmpty.value &&
+        formValidationError.value === null &&
+        formSaveStatus.value !== 'saving',
 );
 
 async function saveApplicationForm() {
@@ -223,6 +249,10 @@ async function saveApplicationForm() {
     } catch (err: unknown) {
         formSaveStatus.value = 'error';
         formErrorMessage.value = getApiErrorMessage(err, 'Failed to save form');
+        // A 409 means the server locked the form under us; stop presenting it as editable.
+        if (getApiErrorStatus(err) === 409) {
+            formLockReason.value = formErrorMessage.value;
+        }
     }
 }
 
@@ -339,12 +369,26 @@ watch(pageIdx, (newIdx) => {
                                     >
                                         {{ formLockReason }}
                                     </div>
+                                    <div
+                                        v-else-if="formLoadError"
+                                        class="form-load-error-banner"
+                                        data-testid="form-builder-load-error"
+                                    >
+                                        <span>{{ formLoadError }}</span>
+                                        <button
+                                            class="retry-button"
+                                            @click="loadApplicationForm()"
+                                            data-testid="form-builder-retry-button"
+                                        >
+                                            Retry
+                                        </button>
+                                    </div>
                                     <FormBuilder
                                         :applicationForm="applicationForm"
-                                        :readonly="formLocked"
+                                        :readonly="!formEditable"
                                         @update:applicationForm="(form: ApplicationForm) => applicationForm = form"
                                     />
-                                    <div v-if="!formLocked" class="form-save-row">
+                                    <div v-if="formEditable" class="form-save-row">
                                         <button
                                             class="done-button"
                                             :disabled="!canSaveForm"
@@ -725,6 +769,39 @@ h2 {
     border: 1px solid #f0d089;
     border-radius: 6px;
     padding: 10px 12px;
+}
+
+.form-load-error-banner {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-family: 'Outfit Regular';
+    font-size: 13px;
+    line-height: 1.4;
+    color: #8a1f1f;
+    background: #fdeaea;
+    border: 1px solid #f0a9a9;
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+
+.retry-button {
+    flex-shrink: 0;
+    background: none;
+    border: 1px solid #8a1f1f;
+    color: #8a1f1f;
+    border-radius: 4px;
+    padding: 3px 12px;
+    cursor: pointer;
+    font-family: 'Outfit Regular';
+    font-size: 12px;
+}
+
+.retry-button:hover {
+    background: #8a1f1f;
+    color: white;
 }
 
 .save-status {

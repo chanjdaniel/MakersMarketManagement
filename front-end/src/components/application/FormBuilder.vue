@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import draggable from 'vuedraggable';
 import { type FormField, type ApplicationForm } from '@/assets/types/datatypes';
 import FormFieldEditor from './FormFieldEditor.vue';
@@ -34,6 +34,26 @@ const fields = computed<FormField[]>({
   },
 });
 
+/**
+ * Whether the organizer has taken over each field's key, positionally aligned with `fields`.
+ * It lives here rather than in FormFieldEditor because the editors are keyed by `order` and
+ * so get reused across field identities; parked here it follows its field through removals
+ * and drags. A field arriving with a key already set (a form loaded from the server) counts
+ * as taken over, so re-labelling it never rewrites the key applicants' answers are stored under.
+ */
+const keyTouched = ref<boolean[]>([]);
+
+watch(
+  () => props.applicationForm?.fields ?? [],
+  (current) => {
+    while (keyTouched.value.length < current.length) {
+      keyTouched.value.push(Boolean(current[keyTouched.value.length].key));
+    }
+    keyTouched.value.splice(current.length);
+  },
+  { immediate: true },
+);
+
 function addField() {
   const newField: FormField = {
     key: '',
@@ -48,11 +68,19 @@ function addField() {
 }
 
 function removeField(index: number) {
+  if (props.readonly) return;
+  keyTouched.value.splice(index, 1);
   fields.value = fields.value.filter((_, i) => i !== index);
 }
 
 function updateField(index: number, field: FormField) {
   fields.value = fields.value.map((f, i) => (i === index ? field : f));
+}
+
+function onDragChange(event: { moved?: { oldIndex: number; newIndex: number } }) {
+  if (!event.moved) return;
+  const [moved] = keyTouched.value.splice(event.moved.oldIndex, 1);
+  keyTouched.value.splice(event.moved.newIndex, 0, moved);
 }
 
 const fieldCount = computed(() => fields.value.length);
@@ -86,6 +114,7 @@ const fieldCount = computed(() => fields.value.length);
       handle=".drag-handle"
       ghost-class="drag-ghost"
       :disabled="readonly"
+      @change="onDragChange"
       data-testid="form-builder-field-list"
     >
       <template #item="{ element, index }">
@@ -112,8 +141,9 @@ const fieldCount = computed(() => fields.value.length);
               :field="element"
               :index="index"
               :readonly="readonly"
+              :keyTouched="keyTouched[index] ?? false"
               @update:field="(f: FormField) => updateField(index, f)"
-              @remove="removeField(index)"
+              @update:keyTouched="keyTouched[index] = true"
             />
           </div>
         </div>
