@@ -74,8 +74,32 @@ if [ -z "$USER_ID" ]; then
 fi
 echo "  User ID: $USER_ID"
 
+# ── 3b. Create test organization ──
+echo "[3b/6] Setting up test organization..."
+ORG_CHECK=$(curl -k -s -b "$COOKIE_JAR" \
+  -X GET "$BACKEND_URL/organizations" \
+  -H "X-Owner-Email: $TEST_EMAIL")
+ORG_COUNT=$(echo "$ORG_CHECK" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('organizations', [])))" 2>/dev/null || echo "0")
+if [ "$ORG_COUNT" -eq 0 ]; then
+  ORG_RESPONSE=$(curl -k -s -b "$COOKIE_JAR" \
+    -X POST "$BACKEND_URL/organizations" \
+    -H "Content-Type: application/json" \
+    -H "X-Owner-Email: $TEST_EMAIL" \
+    -d "{\"name\": \"Seed Test Org\"}")
+  echo "  $ORG_RESPONSE"
+  ORG_ID=$(echo "$ORG_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['organization_id'])" 2>/dev/null || echo "")
+  if [ -z "$ORG_ID" ]; then
+    echo "  ERROR: Could not create test organization"
+    exit 1
+  fi
+  echo "  Organization ID: $ORG_ID"
+else
+  echo "  User already has $ORG_COUNT organization(s), skipping creation."
+  ORG_ID=$(echo "$ORG_CHECK" | python3 -c "import sys,json; print(json.load(sys.stdin)['organizations'][0]['id'])" 2>/dev/null || echo "")
+fi
+
 # ── 4. Create a market ──
-echo "[4/5] Creating market..."
+echo "[4/6] Creating market..."
 MARKET_NAME="Seed Market $(date +%H%M%S)"
 CREATE_RESPONSE=$(curl -k -s -b "$COOKIE_JAR" \
   -X POST "$BACKEND_URL/markets" \
@@ -84,6 +108,7 @@ CREATE_RESPONSE=$(curl -k -s -b "$COOKIE_JAR" \
   -d "{
     \"name\": \"$MARKET_NAME\",
     \"creationDate\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+    \"organizationId\": \"$ORG_ID\",
     \"roles\": {\"$USER_ID\": \"owner\"},
     \"modificationList\": [],
     \"assignmentObject\": {}
@@ -98,7 +123,7 @@ fi
 echo "  Market ID: $MARKET_ID"
 
 # ── 5. Upload CSV fixture ──
-echo "[5/5] Uploading CSV fixture..."
+echo "[5/6] Uploading CSV fixture..."
 UPLOAD_RESPONSE=$(curl -k -s -b "$COOKIE_JAR" \
   -X POST "$BACKEND_URL/source-data/$MARKET_ID" \
   -H "X-Owner-Email: $TEST_EMAIL" \

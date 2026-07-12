@@ -9,6 +9,7 @@ export class NewMarketPage {
 
   readonly overlayBackground: Locator;
   readonly chooseFileButton: Locator;
+  readonly orgSelect: Locator;
   readonly nameInput: Locator;
   readonly submitButton: Locator;
 
@@ -17,6 +18,7 @@ export class NewMarketPage {
 
     this.overlayBackground = page.getByTestId('new-market-overlay-background');
     this.chooseFileButton = page.getByTestId('file-drop-choose-button');
+    this.orgSelect = page.getByTestId('org-select-dropdown');
     this.nameInput = page.getByTestId('new-market-name-input');
     this.submitButton = page.getByTestId('new-market-submit-button');
   }
@@ -51,6 +53,12 @@ export class NewMarketPage {
   /** Wait for the name input to appear (indicating CSV was parsed). */
   async waitForNameInput(): Promise<void> {
     await this.nameInput.waitFor({ state: 'visible', timeout: 10000 });
+  }
+
+  /** Select an organization from the dropdown (first available option). */
+  async selectFirstOrg(): Promise<void> {
+    await this.orgSelect.waitFor({ state: 'visible', timeout: 5000 });
+    await this.orgSelect.selectOption({ index: 1 });
   }
 
   /** Wait for navigation to the market setup wizard after submission. */

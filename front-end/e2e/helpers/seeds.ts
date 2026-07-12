@@ -7,6 +7,7 @@ export interface SeedResult {
   marketId: string;
   userId: string;
   marketName: string;
+  orgId: string;
 }
 
 /**
@@ -29,6 +30,39 @@ function marketNameToSlug(name: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
+}
+
+/**
+ * Helper: ensure the test user has at least one organization.
+ * Creates one named 'E2E Test Org' if none exist.
+ * Returns the organization ID.
+ */
+export async function ensureTestOrg(
+  request: APIRequestContext,
+  baseURL: string,
+  email: string,
+): Promise<string> {
+  const orgsRes = await request.get(`${baseURL}/organizations`, {
+    headers: { 'X-Owner-Email': email },
+  });
+  if (orgsRes.ok()) {
+    const body = await orgsRes.json() as { organizations: { id: string }[] };
+    if (body.organizations && body.organizations.length > 0) {
+      return body.organizations[0].id;
+    }
+  }
+  const createRes = await request.post(`${baseURL}/organizations`, {
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Owner-Email': email,
+    },
+    data: { name: 'E2E Test Org' },
+  });
+  if (!createRes.ok()) {
+    throw new Error(`Test org creation failed: ${createRes.status()} ${await createRes.text()}`);
+  }
+  const createBody = await createRes.json() as { organization_id: string };
+  return createBody.organization_id;
 }
 
 /**
@@ -65,6 +99,8 @@ export async function seedMarketWithVendors(
   };
   const userId = loginBody.user_data.id;
 
+  const orgId = await ensureTestOrg(request, baseURL, email);
+
   // Step 2: Create a market (user must own it)
   const marketName = `E2E Market ${Date.now()}`;
   const createRes = await request.post(`${baseURL}/markets`, {
@@ -75,6 +111,7 @@ export async function seedMarketWithVendors(
     data: {
       name: marketName,
       creationDate: new Date().toISOString(),
+      organizationId: orgId,
       roles: { [userId]: 'owner' },
       modificationList: [],
       assignmentObject: {},
@@ -108,7 +145,7 @@ export async function seedMarketWithVendors(
     throw new Error(`CSV upload failed: ${uploadRes.status()} ${await uploadRes.text()}`);
   }
 
-  return { marketId, userId, marketName };
+  return { marketId, userId, marketName, orgId };
 }
 
 /**
@@ -144,6 +181,8 @@ export async function seedPublishedMarketWithAssignments(
   };
   const userId = loginBody.user_data.id;
 
+  const orgId = await ensureTestOrg(request, baseURL, email);
+
   // Step 2: Create a market
   const marketName = `E2E Published ${Date.now()}`;
   const createRes = await request.post(`${baseURL}/markets`, {
@@ -154,6 +193,7 @@ export async function seedPublishedMarketWithAssignments(
     data: {
       name: marketName,
       creationDate: new Date().toISOString(),
+      organizationId: orgId,
       roles: { [userId]: 'owner' },
       modificationList: [],
       assignmentObject: {},
