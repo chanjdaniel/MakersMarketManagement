@@ -522,8 +522,17 @@ class FloorplanTemplateContract(FloorplanTemplate, ContractModel):
     pass
 
 
+class FormFieldContract(FormField, ContractModel):
+    """Camel-cased contract view of an application form field."""
+
+
+class ApplicationFormContract(ContractModel):
+    fields: List[FormFieldContract]
+    published_at: Optional[str] = None
+
+
 class MarketSchemaContract(ContractModel):
-    application_form: Optional[Dict[str, Any]] = None
+    application_form: Optional[ApplicationFormContract] = None
     assignment_object: AssignmentObjectContract
     creation_date: str
     discord_guild_id: Optional[str] = None

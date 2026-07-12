@@ -223,9 +223,6 @@ export interface Application {
     mainApplicationId?: string,
     submittedAt?: string,
     updatedAt: string,
-    otp?: string,
-    otpExpires?: string,
-    otpAttempts: number,
     assignedReviewerId?: string,
 }
 

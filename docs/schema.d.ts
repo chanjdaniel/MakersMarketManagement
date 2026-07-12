@@ -5,6 +5,16 @@
 
 export interface MarketSchema {
   applicationForm?: {
+    fields: {
+      helpText?: string;
+      key: string;
+      label: string;
+      options?: string[];
+      order?: number;
+      required?: boolean;
+      type: string;
+    }[];
+    publishedAt?: string;
   };
   assignmentObject: {
     assignmentDate: string;
