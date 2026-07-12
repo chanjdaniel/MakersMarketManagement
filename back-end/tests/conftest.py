@@ -2,7 +2,12 @@
 
 pytest imports this before any test module, so the stubs below are installed exactly
 once and test modules never have to care about collection order.
+
+A stub is installed only when the real dependency is not importable. When the full
+requirements.txt is installed (as in CI), the real modules win, so route-level tests
+can import app.py and exercise Flask endpoints through the test client.
 """
+import importlib.util
 import os
 import sys
 import types
@@ -16,7 +21,18 @@ for path in (BACK_END_DIR, os.path.join(BACK_END_DIR, "migrations")):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-if "pymongo" not in sys.modules:
+
+def _needs_stub(module_name: str) -> bool:
+    """True when module_name is neither already imported nor installed."""
+    if module_name in sys.modules:
+        return False
+    try:
+        return importlib.util.find_spec(module_name) is None
+    except (ImportError, ValueError):
+        return True
+
+
+if _needs_stub("pymongo"):
     fake_pymongo = types.ModuleType("pymongo")
     fake_pymongo_results = types.ModuleType("pymongo.results")
 
@@ -52,19 +68,19 @@ if "pymongo" not in sys.modules:
     sys.modules["pymongo"] = fake_pymongo
     sys.modules["pymongo.results"] = fake_pymongo_results
 
-if "bson" not in sys.modules:
+if _needs_stub("bson"):
     fake_bson = types.ModuleType("bson")
     fake_bson.ObjectId = str
     sys.modules["bson"] = fake_bson
 
-if "flask" not in sys.modules:
+if _needs_stub("flask"):
     fake_flask = types.ModuleType("flask")
     fake_flask.request = SimpleNamespace()
     fake_flask.jsonify = lambda payload: payload
     fake_flask.send_file = lambda *args, **kwargs: None
     sys.modules["flask"] = fake_flask
 
-if "flask_login" not in sys.modules:
+if _needs_stub("flask_login"):
     fake_flask_login = types.ModuleType("flask_login")
 
     class _FakeUserMixin:
@@ -73,7 +89,7 @@ if "flask_login" not in sys.modules:
     fake_flask_login.UserMixin = _FakeUserMixin
     sys.modules["flask_login"] = fake_flask_login
 
-if "resend" not in sys.modules:
+if _needs_stub("resend"):
     fake_resend = types.ModuleType("resend")
     fake_resend.Emails = SimpleNamespace(send=lambda *_args, **_kwargs: {})
     sys.modules["resend"] = fake_resend

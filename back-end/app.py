@@ -4,6 +4,7 @@ import api.organizations as OrgsApi
 import api.markets as MarketsApi
 import api.source_data as SourceDataApi
 import api.attendance as AttendanceApi
+import api.permissions as PermissionsApi
 from api.floorplans import floorplans_bp
 from api.floorplans_placement import floorplans_placement_bp
 from api.floorplans_templates import floorplans_templates_bp
@@ -21,7 +22,8 @@ from flask_cors import CORS
 from datetime import timedelta, datetime, timezone
 from datatypes import Market, MarketPhase, MarketRole
 from assignment.utils import convert_keys_to_camel_case, convert_keys_to_snake_case
-from guards import VALID_TRANSITIONS, evaluate_transition
+from guards import PreconditionResult, VALID_TRANSITIONS, evaluate_transition
+from dataclasses import asdict
 import json
 import os
 import glob
@@ -757,11 +759,12 @@ def delete_market(market_id: str) -> Response:
 def transition_market(market_id: str) -> Response:
     """Advance a market to a new lifecycle phase. Evaluates guards server-side.
 
-    Body: { "to_phase": "applications_open" }
+    Body: { "toPhase": "applications_open" }
 
     Returns:
         200 on success with { "phase": "<new_phase>" }
-        409 with blocker list when preconditions are not met
+        409 with a camelCase blocker list when preconditions are not met, or
+            when the phase changed underneath this request
         400 when the transition is not valid from the current phase
     """
     try:
@@ -769,6 +772,7 @@ def transition_market(market_id: str) -> Response:
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
+        data = convert_keys_to_snake_case(data)
         to_phase_raw = data.get("to_phase")
         if not to_phase_raw:
             return jsonify({"error": "to_phase is required"}), 400
@@ -827,36 +831,46 @@ def transition_market(market_id: str) -> Response:
                 ),
             }), 400
 
-        if from_phase == to_phase.value:
-            return jsonify({"phase": to_phase.value}), 200
-
         blockers = evaluate_transition(market, to_phase.value, None)
         if blockers:
-            return jsonify({
+            return jsonify(convert_keys_to_camel_case({
                 "error": "preconditions_not_met",
                 "current_phase": from_phase,
                 "target_phase": to_phase.value,
-                "blockers": [
-                    {
-                        "id": b.id,
-                        "message": b.message,
-                        "resolution_link": b.resolution_link,
-                    }
-                    for b in blockers
-                ],
-            }), 409
+                "blockers": [asdict(b) for b in blockers],
+            })), 409
 
-        MarketsApi.markets_collection.update_one(
-            {"id": market_id},
+        result = MarketsApi.markets_collection.update_one(
+            {"id": market_id, "phase": from_phase},
             {"$set": {"phase": to_phase.value}},
         )
+
+        if result.matched_count == 0:
+            latest_doc = MarketsApi.markets_collection.find_one({"id": market_id}) or {}
+            actual_phase = latest_doc.get("phase", from_phase)
+            conflict = PreconditionResult(
+                id="phase_changed",
+                passed=False,
+                message=(
+                    f"This market moved to the '{actual_phase}' phase while the "
+                    f"request was in flight, so it can no longer move to "
+                    f"'{to_phase.value}' from '{from_phase}'. "
+                    "Reload the market and try again."
+                ),
+            )
+            return jsonify(convert_keys_to_camel_case({
+                "error": "phase_changed",
+                "current_phase": actual_phase,
+                "target_phase": to_phase.value,
+                "blockers": [asdict(conflict)],
+            })), 409
 
         return jsonify({"phase": to_phase.value}), 200
 
     except Exception as e:
         logger.error(f"Error in transition_market {market_id}: {str(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route('/markets/<market_id>/assignment', methods=['GET'])

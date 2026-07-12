@@ -16,13 +16,13 @@ defineProps<{
                 class="blocker-item"
             >
                 <span class="blocker-message">{{ blocker.message }}</span>
-                <a
+                <router-link
                     v-if="blocker.resolutionLink"
-                    :href="blocker.resolutionLink"
+                    :to="blocker.resolutionLink"
                     class="blocker-link"
                 >
                     Fix this &rarr;
-                </a>
+                </router-link>
             </li>
         </ul>
     </div>
