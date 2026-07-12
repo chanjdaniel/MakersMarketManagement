@@ -24,6 +24,12 @@ const activeTab = ref<'form' | 'setup'>('setup');
 
 const market = ref<Market | null>(null);
 const applicationForm = ref<ApplicationForm | null>(null);
+/**
+ * Per-field "the organizer typed this key themselves" flags, positionally aligned with the
+ * form's fields. It lives beside the form, whose lifetime it shares, rather than inside the
+ * FormBuilder that tabbing away unmounts.
+ */
+const keyTouched = ref<boolean[]>([]);
 const formSaveStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle');
 const formErrorMessage = ref<string | null>(null);
 const formLockReason = ref<string | null>(null);
@@ -34,6 +40,13 @@ const formLocked = computed(() => formLockReason.value !== null);
  * assuming "editable" there invites the organizer to rework a locked form and lose it to a 409.
  */
 const formEditable = computed(() => !formLocked.value && formLoadError.value === null);
+/**
+ * A failed load with nothing cached tells us nothing about the market's form - not even whether
+ * it has one - so there is nothing we can honestly render but the error and a way to retry.
+ */
+const formStateUnknown = computed(
+    () => formLoadError.value !== null && applicationForm.value === null,
+);
 const setupObject = reactive<SetupObject>({
     colNames: [],
     colValues: [],
@@ -160,13 +173,18 @@ onMounted(() => {
 
     // Paint the cached form immediately, then reconcile with the server, which also
     // tells us whether the form is still editable.
-    applicationForm.value = market.value?.applicationForm ?? null;
+    adoptApplicationForm(market.value?.applicationForm ?? null);
     loadApplicationForm();
 });
 
-/** The market document is the single source of truth for the form; keep it in step. */
+/**
+ * The market document is the single source of truth for the form; keep it in step. Every key on
+ * a stored form was accepted by the server as that field's answer key, so re-labelling such a
+ * field must never rewrite it - adopting a form marks all of its keys as the organizer's own.
+ */
 function adoptApplicationForm(form: ApplicationForm | null) {
     applicationForm.value = form;
+    keyTouched.value = (form?.fields ?? []).map(() => true);
     if (market.value) {
         market.value.applicationForm = form ?? undefined;
         localStorage.setItem("market", JSON.stringify(market.value));
@@ -355,9 +373,12 @@ watch(pageIdx, (newIdx) => {
                                         </button>
                                     </div>
                                     <FormBuilder
+                                        v-if="!formStateUnknown"
                                         :applicationForm="applicationForm"
+                                        :keyTouched="keyTouched"
                                         :readonly="!formEditable"
                                         @update:applicationForm="(form: ApplicationForm) => applicationForm = form"
+                                        @update:keyTouched="(touched: boolean[]) => keyTouched = touched"
                                     />
                                     <div v-if="formEditable" class="form-save-row">
                                         <button
@@ -405,7 +426,14 @@ watch(pageIdx, (newIdx) => {
                                 <h2>Preview</h2>
                             </template>
                             <template #setting-content>
-                                <FormPreview :applicationForm="applicationForm" />
+                                <FormPreview v-if="!formStateUnknown" :applicationForm="applicationForm" />
+                                <p
+                                    v-else
+                                    class="preview-unavailable"
+                                    data-testid="form-preview-unavailable"
+                                >
+                                    Preview unavailable until the application form loads.
+                                </p>
                             </template>
                         </ElementSettingContainer>
                     </div>
@@ -797,5 +825,13 @@ h2 {
 
 .save-status.hint {
     color: var(--mm-grey, #666);
+}
+
+.preview-unavailable {
+    font-family: 'Outfit Regular';
+    font-size: 14px;
+    color: var(--mm-grey, #999);
+    text-align: center;
+    padding: 40px;
 }
 </style>

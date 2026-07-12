@@ -5,24 +5,46 @@ import { mount } from '@vue/test-utils';
 import FormBuilder from '@/components/application/FormBuilder.vue';
 import type { ApplicationForm } from '@/assets/types/datatypes';
 
-/** Mirrors how MarketSetupView owns the form: child emits, parent re-feeds it as a prop. */
+/**
+ * Mirrors how MarketSetupView owns the form and the hand-edited-key flags: child emits, parent
+ * re-feeds them as props. `mounted` mirrors the `v-if` on the Application Form tab, so a test can
+ * tab away and back and see whether state that must outlive the builder actually does.
+ */
 function mountWithParent(initial: ApplicationForm | null, readonly = false) {
   const form = ref<ApplicationForm | null>(initial);
+  const keyTouched = ref<boolean[]>((initial?.fields ?? []).map(() => true));
+  const mounted = ref(true);
 
   const Parent = defineComponent({
     setup() {
       return () =>
-        h(FormBuilder, {
-          applicationForm: form.value,
-          readonly,
-          'onUpdate:applicationForm': (next: ApplicationForm) => {
-            form.value = next;
-          },
-        });
+        mounted.value
+          ? h(FormBuilder, {
+              applicationForm: form.value,
+              keyTouched: keyTouched.value,
+              readonly,
+              'onUpdate:applicationForm': (next: ApplicationForm) => {
+                form.value = next;
+              },
+              'onUpdate:keyTouched': (next: boolean[]) => {
+                keyTouched.value = next;
+              },
+            })
+          : h('div');
     },
   });
 
-  return { wrapper: mount(Parent), form };
+  const wrapper = mount(Parent);
+
+  /** Leave the Application Form tab and come back, tearing the builder down and rebuilding it. */
+  async function remount() {
+    mounted.value = false;
+    await wrapper.vm.$nextTick();
+    mounted.value = true;
+    await wrapper.vm.$nextTick();
+  }
+
+  return { wrapper, form, keyTouched, remount };
 }
 
 afterEach(() => {
@@ -98,6 +120,31 @@ describe('FormBuilder', () => {
     // ...and it tracks the label again from here on.
     await wrapper.get('[data-testid="form-field-label-input"]').setValue('Shop Name');
     expect(form.value?.fields[0].key).toBe('shop_name');
+  });
+
+  it('still re-derives an auto key after the organizer switches tabs and back', async () => {
+    const { wrapper, form, remount } = mountWithParent(null);
+
+    await wrapper.get('[data-testid="form-builder-add-field-button"]').trigger('click');
+    await wrapper.get('[data-testid="form-field-label-input"]').setValue('Bsuiness Name');
+    expect(form.value?.fields[0].key).toBe('bsuiness_name');
+
+    await remount();
+
+    await wrapper.get('[data-testid="form-field-label-input"]').setValue('Business Name');
+    expect(form.value?.fields[0].key).toBe('business_name');
+  });
+
+  it('still protects a hand-edited key after the organizer switches tabs and back', async () => {
+    const { wrapper, form, remount } = mountWithParent(null);
+
+    await wrapper.get('[data-testid="form-builder-add-field-button"]').trigger('click');
+    await wrapper.get('[data-testid="form-field-key-input"]').setValue('custom_key');
+
+    await remount();
+
+    await wrapper.get('[data-testid="form-field-label-input"]').setValue('Business Name');
+    expect(form.value?.fields[0].key).toBe('custom_key');
   });
 
   it('keeps the hand-edited flag with its field when an earlier field is removed', async () => {
