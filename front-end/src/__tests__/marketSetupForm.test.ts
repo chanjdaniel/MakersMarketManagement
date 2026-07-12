@@ -71,6 +71,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe('MarketSetupView application form', () => {
@@ -133,6 +134,41 @@ describe('MarketSetupView application form', () => {
     expect(api.put).toHaveBeenCalledTimes(1);
     // Saving is not the organizer typing the key: the key must still track the label.
     expect(builderOf(wrapper).props('keyTouched')).toEqual([false]);
+  });
+
+  it('keeps the confirmation up for a full 2s after a save that closely follows another', async () => {
+    vi.useFakeTimers();
+    const form = formWith('shop_name', 'Shop');
+    storeMarket(form);
+    api.get.mockResolvedValue({ data: { application_form: form, lock_reason: null } });
+    api.put.mockResolvedValue({ data: { application_form: form } });
+
+    const wrapper = await mountOnFormTab();
+    await flushPromises();
+
+    const saved = () => wrapper.find('[data-testid="form-builder-save-success"]').exists();
+    const save = async () => {
+      await wrapper.get('[data-testid="form-builder-save-button"]').trigger('click');
+      await flushPromises();
+    };
+
+    await save();
+    expect(saved()).toBe(true);
+
+    // A second save lands before the first save's reset timer would have fired.
+    vi.advanceTimersByTime(1500);
+    await save();
+    expect(saved()).toBe(true);
+
+    // The first save's stale timer must not blank the second save's confirmation.
+    vi.advanceTimersByTime(900);
+    await flushPromises();
+    expect(saved()).toBe(true);
+
+    // The second save's own timer still clears it on schedule.
+    vi.advanceTimersByTime(1100);
+    await flushPromises();
+    expect(saved()).toBe(false);
   });
 
   it('treats every key of a form loaded from the server as the organizer own', async () => {

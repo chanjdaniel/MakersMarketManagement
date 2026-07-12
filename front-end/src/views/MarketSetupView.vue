@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, nextTick, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, nextTick, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
 import ElementSettingContainer from '@/components/elements/ElementSettingContainer.vue';
@@ -239,8 +239,20 @@ const canSaveForm = computed(
         formSaveStatus.value !== 'saving',
 );
 
+const savedStatusTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+
+function clearSavedStatusTimer() {
+    if (savedStatusTimer.value !== null) {
+        clearTimeout(savedStatusTimer.value);
+        savedStatusTimer.value = null;
+    }
+}
+
+onUnmounted(clearSavedStatusTimer);
+
 async function saveApplicationForm() {
     if (!market.value?.id || !canSaveForm.value) return;
+    clearSavedStatusTimer();
     formSaveStatus.value = 'saving';
     formErrorMessage.value = null;
     try {
@@ -252,7 +264,10 @@ async function saveApplicationForm() {
         if (response.data?.application_form) {
             adoptApplicationForm(response.data.application_form);
         }
-        setTimeout(() => { if (formSaveStatus.value === 'saved') formSaveStatus.value = 'idle'; }, 2000);
+        savedStatusTimer.value = setTimeout(() => {
+            savedStatusTimer.value = null;
+            if (formSaveStatus.value === 'saved') formSaveStatus.value = 'idle';
+        }, 2000);
     } catch (err: unknown) {
         formSaveStatus.value = 'error';
         formErrorMessage.value = getApiErrorMessage(err, 'Failed to save form');
