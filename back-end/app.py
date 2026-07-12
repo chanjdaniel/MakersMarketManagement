@@ -20,7 +20,7 @@ from flask_login import LoginManager, login_user, login_required, logout_user, c
 from flask_bcrypt import Bcrypt
 from flask_cors import CORS
 from datetime import timedelta, datetime, timezone
-from datatypes import Market, MarketPhase, MarketRole
+from datatypes import Market, MarketPhase, MarketRole, phase_from_market_document
 from assignment.utils import convert_keys_to_camel_case, convert_keys_to_snake_case
 from guards import PreconditionResult, VALID_TRANSITIONS, evaluate_transition
 from dataclasses import asdict
@@ -789,33 +789,19 @@ def transition_market(market_id: str) -> Response:
         if not user_email:
             return jsonify({"error": "User email not provided in headers"}), 400
 
-        user = UsersApi.get_user(user_email)
-        if not user:
+        if not UsersApi.get_user(user_email):
             return jsonify({"error": "User not found"}), 404
 
-        market_doc = MarketsApi.markets_collection.find_one({"id": market_id})
-        if not market_doc:
+        context = MarketsApi.load_market_context(market_id)
+        if context is None:
             return jsonify({"error": "Market not found"}), 404
-
-        market_snake = convert_keys_to_snake_case(market_doc.copy())
-        try:
-            market = Market(**market_snake)
-        except Exception:
+        if context.market is None:
             return jsonify({"error": "Invalid market data"}), 400
 
-        organization = None
-        if market.organization_id:
-            org_dict = OrgsApi.get_organization(market.organization_id)
-            if org_dict:
-                org_dict.pop("_id", None)
-                try:
-                    from datatypes import Organization
-                    organization = Organization(**org_dict)
-                except Exception:
-                    pass
+        market = context.market
 
         if not PermissionsApi.user_has_permission(
-            user_email, market, MarketRole.ADMIN, organization
+            user_email, market, MarketRole.ADMIN, context.organization
         ):
             return jsonify({
                 "error": "User does not have permission to manage this market's phase"
@@ -840,14 +826,18 @@ def transition_market(market_id: str) -> Response:
                 "blockers": [asdict(b) for b in blockers],
             })), 409
 
+        stored_phase = (
+            context.document["phase"] if "phase" in context.document
+            else {"$exists": False}
+        )
         result = MarketsApi.markets_collection.update_one(
-            {"id": market_id, "phase": from_phase},
+            {"id": market_id, "phase": stored_phase},
             {"$set": {"phase": to_phase.value}},
         )
 
         if result.matched_count == 0:
             latest_doc = MarketsApi.markets_collection.find_one({"id": market_id}) or {}
-            actual_phase = latest_doc.get("phase", from_phase)
+            actual_phase = phase_from_market_document(latest_doc).value
             conflict = PreconditionResult(
                 id="phase_changed",
                 passed=False,

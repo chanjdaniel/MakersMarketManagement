@@ -1,10 +1,20 @@
 import re
 import uuid
-from typing import Optional, Dict, Any, List
+from typing import NamedTuple, Optional, Dict, Any, List
 from pymongo.results import InsertOneResult, UpdateResult, DeleteResult
 from pydantic import BaseModel
 from bson import ObjectId
-from datatypes import ApplicationForm, FormField, Market, MarketPhase, MarketRole, MarketTableRow, UnassignedTableEntry
+from datatypes import (
+    ApplicationForm,
+    FormField,
+    Market,
+    MarketPhase,
+    MarketRole,
+    MarketTableRow,
+    Organization,
+    UnassignedTableEntry,
+    phase_from_market_document,
+)
 from assignment.assignment import assign_market
 from assignment.utils import convert_keys_to_snake_case, convert_keys_to_camel_case
 import api.applications as ApplicationsApi
@@ -347,35 +357,64 @@ def get_market(market_id: str) -> Optional[Dict[str, Any]]:
     return markets_collection.find_one({"id": market_id})
 
 
-def get_market_for_user(user_email: str, market_id: str) -> Optional[Dict[str, Any]]:
-    """Get a market by id, checking user has access."""
+class MarketContext(NamedTuple):
+    """Everything a permission check needs about a stored market.
+
+    ``market`` is None when the stored document fails validation; the raw
+    ``document`` is still returned so callers can tell that case apart from
+    a missing market.
+    """
+    document: Dict[str, Any]
+    market: Optional[Market]
+    organization: Optional[Organization]
+    organization_dict: Optional[Dict[str, Any]]
+
+
+def load_market_context(market_id: str) -> Optional[MarketContext]:
+    """Load a market with its parsed model and owning organization, or None if absent."""
     market_dict = markets_collection.find_one({"id": market_id})
     if not market_dict:
         return None
-    
+
     market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
     try:
         market = Market(**market_dict_snake)
     except Exception:
-        return None
-    
+        return MarketContext(market_dict, None, None, None)
+
+    market.phase = phase_from_market_document(market_dict)
+
     organization = None
+    org_dict = None
     if market.organization_id:
         org_dict = OrgsApi.get_organization(market.organization_id)
         if org_dict:
             org_dict.pop('_id', None)
             try:
-                from datatypes import Organization
                 organization = Organization(**org_dict)
             except Exception:
-                pass
-    
-    user_role = PermissionsApi.get_user_market_role(user_email, market, organization)
+                organization = None
+
+    return MarketContext(market_dict, market, organization, org_dict)
+
+
+def get_market_for_user(user_email: str, market_id: str) -> Optional[Dict[str, Any]]:
+    """Get a market by id, checking user has access."""
+    context = load_market_context(market_id)
+    if context is None or context.market is None:
+        return None
+
+    market_dict = context.document
+    market = context.market
+    org_dict = context.organization_dict
+
+    user_role = PermissionsApi.get_user_market_role(user_email, market, context.organization)
     if user_role is None:
         return None
-    
+
     market_dict['_id'] = str(market_dict['_id'])
     market_dict['user_role'] = user_role.value
+    market_dict['phase'] = market.phase.value
     if market.organization_id and org_dict:
         market_dict['organization_name'] = org_dict.get('name')
     role_emails = {}

@@ -21,19 +21,36 @@ OWNER_EMAIL = "owner@example.com"
 OWNER_ID = "user-1"
 
 
-def _market_doc(phase="draft", fields=None):
-    """A market document as it is stored in Mongo (camelCase keys)."""
-    return {
+def _market_doc(phase="draft", fields=None, is_draft=True):
+    """A market document as it is stored in Mongo (camelCase keys).
+
+    ``phase=None`` models a market created before the phase field existed and never
+    touched by migrations/migrate_phase.py -- the document simply has no phase key.
+    """
+    doc = {
         "id": "market-1",
         "name": "Test Market",
         "creationDate": "2026-01-01",
         "roles": {OWNER_ID: "owner"},
         "modificationList": [],
         "assignmentObject": {},
-        "isDraft": True,
-        "phase": phase,
+        "isDraft": is_draft,
         "applicationForm": {"fields": fields if fields is not None else []},
     }
+    if phase is not None:
+        doc["phase"] = phase
+    return doc
+
+
+def _matches(doc, filter_query):
+    """Mongo filter matching for the operators the transition endpoint uses."""
+    for key, expected in filter_query.items():
+        if isinstance(expected, dict) and "$exists" in expected:
+            if (key in doc) != expected["$exists"]:
+                return False
+        elif doc.get(key) != expected:
+            return False
+    return True
 
 
 class FakeMarketsCollection:
@@ -44,13 +61,11 @@ class FakeMarketsCollection:
         self.updates = []
 
     def find_one(self, query):
-        if all(self.doc.get(k) == v for k, v in query.items()):
-            return dict(self.doc)
-        return None
+        return dict(self.doc) if _matches(self.doc, query) else None
 
     def update_one(self, filter_query, update):
         self.updates.append((filter_query, update))
-        if not all(self.doc.get(k) == v for k, v in filter_query.items()):
+        if not _matches(self.doc, filter_query):
             return SimpleNamespace(matched_count=0, modified_count=0)
         self.doc.update(update.get("$set", {}))
         return SimpleNamespace(matched_count=1, modified_count=1)
@@ -58,7 +73,7 @@ class FakeMarketsCollection:
 
 @pytest.fixture
 def client(monkeypatch):
-    app_module.app.config["LOGIN_DISABLED"] = True
+    monkeypatch.setitem(app_module.app.config, "LOGIN_DISABLED", True)
     monkeypatch.setattr(
         UsersApi, "get_user",
         lambda email: SimpleNamespace(id=OWNER_ID, email=email) if email == OWNER_EMAIL else None,
@@ -107,6 +122,20 @@ class TestTransitionSuccess:
 
         assert response.status_code == 200
         assert response.get_json() == {"phase": "applications_open"}
+
+    def test_market_predating_the_phase_migration_can_still_publish(self, client, markets):
+        collection = markets(_market_doc(
+            phase=None,
+            is_draft=True,
+            fields=[{"key": "name", "label": "Name", "type": "text"}],
+        ))
+
+        response = _post(client, {"toPhase": "applications_open"})
+
+        assert response.status_code == 200
+        assert response.get_json() == {"phase": "applications_open"}
+        assert collection.doc["phase"] == "applications_open"
+        assert collection.updates[0][0] == {"id": "market-1", "phase": {"$exists": False}}
 
 
 class TestTransitionBlocked:
@@ -158,6 +187,19 @@ class TestTransitionRejected:
 
         assert response.status_code == 400
         assert "not available" in response.get_json()["error"]
+
+    def test_published_market_predating_the_migration_is_archived(self, client, markets):
+        collection = markets(_market_doc(
+            phase=None,
+            is_draft=False,
+            fields=[{"key": "name", "label": "Name", "type": "text"}],
+        ))
+
+        response = _post(client, {"toPhase": "applications_open"})
+
+        assert response.status_code == 400
+        assert "'archived'" in response.get_json()["error"]
+        assert collection.updates == []
 
     def test_unknown_phase_is_400(self, client, markets):
         markets(_market_doc())

@@ -32,6 +32,23 @@ class MarketPhase(str, Enum):
     ARCHIVED = "archived"
 
 
+def phase_from_market_document(document: Dict[str, Any]) -> MarketPhase:
+    """Effective phase of a stored market document.
+
+    Documents written before the phase field existed carry only ``isDraft``
+    (older ones ``is_draft``). This is the single source of truth for the
+    draft/archived mapping applied to them; ``migrations/migrate_phase.py``
+    backfills the field with the very same mapping, so a market behaves
+    identically before and after the migration runs.
+    """
+    stored_phase = document.get("phase")
+    if stored_phase:
+        return MarketPhase(stored_phase)
+
+    is_draft = document.get("isDraft", document.get("is_draft", True))
+    return MarketPhase.DRAFT if is_draft else MarketPhase.ARCHIVED
+
+
 class OrganizationRole(str, Enum):
     OWNER = "owner"
     ADMIN = "admin"
