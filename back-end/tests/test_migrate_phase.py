@@ -1,17 +1,6 @@
 """Regression: the phase migration must read the camel-cased `isDraft` key markets are stored under."""
 import copy
-import os
-import sys
-import types
 from types import SimpleNamespace
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "migrations"))
-
-if "pymongo" not in sys.modules:
-    fake_pymongo = types.ModuleType("pymongo")
-    fake_pymongo.MongoClient = object
-    sys.modules["pymongo"] = fake_pymongo
 
 from migrate_phase import migrate
 
