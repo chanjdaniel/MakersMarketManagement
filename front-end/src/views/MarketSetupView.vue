@@ -592,25 +592,31 @@ watch(pageIdx, (newIdx) => {
     width: 100%;
     min-width: 1000px;
     flex: 1;
+    min-height: 0;
 
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    /* `safe` centres only while the content fits. Plain `center` splits any overflow
+       evenly above and below, and content above the scroll origin cannot be reached at
+       any scroll position - it would strand the organizer with no way back to the tabs. */
+    justify-content: safe center;
     align-items: center;
 }
 
 .market-setup-body {
     width: 80%;
     height: 80%;
+    min-height: 0;
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    justify-content: safe center;
     align-items: center;
 }
 
 .settings-container {
     align-self: stretch;
     flex: 1;
+    min-height: 0;
     background-color: white;
     box-shadow: 0px 0px 4px 5px rgba(0, 0, 0, 0.25);
     display: flex;
@@ -670,11 +676,15 @@ watch(pageIdx, (newIdx) => {
     flex: 1;
 }
 
+/* Each of these lays its cards out in a single row. The row must be `minmax(0, 1fr)`:
+   an auto row grows to its tallest card's content, which the cards then resolve their
+   `height: 100%` against, so the whole settings panel outgrows the viewport. */
 .single-column-body {
     align-self: stretch;
     flex-grow: 1;
     display: grid;
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr);
     gap: 30px;
     min-height: 0;
     flex: 1;
@@ -685,6 +695,7 @@ watch(pageIdx, (newIdx) => {
     flex-grow: 1;
     display: grid;
     grid-template-columns: 1fr 1fr;
+    grid-template-rows: minmax(0, 1fr);
     gap: 30px;
     min-height: 0;
     flex: 1;
@@ -695,6 +706,7 @@ watch(pageIdx, (newIdx) => {
     flex-grow: 1;
     display: grid;
     grid-template-columns: 3fr 2fr;
+    grid-template-rows: minmax(0, 1fr);
     gap: 30px;
     min-height: 0;
     flex: 1;
@@ -705,6 +717,7 @@ watch(pageIdx, (newIdx) => {
     flex-grow: 1;
     display: grid;
     grid-template-columns: 1fr 1fr 2fr;
+    grid-template-rows: minmax(0, 1fr);
     gap: 30px;
     min-height: 0;
     flex: 1;
@@ -726,18 +739,26 @@ h2 {
 
 .done-button {
     margin-top: 15px;
-    width: 100px;
-    height: 35px;
+    /* Sized to fit the label, with the original 100x35 box as the floor so the
+       single-word buttons ("Back", "Next", "Assign") keep their footprint. */
+    min-width: 100px;
+    min-height: 35px;
+    padding: 0 14px;
 
     background: var(--mm-green);
     border-radius: 5px;
     border: none;
 
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    white-space: nowrap;
+
     font-family: 'Merge One';
     font-style: normal;
     font-weight: 400;
     font-size: 20px;
-    line-height: 15px;
+    line-height: 1.2;
     text-align: center;
 
     color: #FFFFFF;
