@@ -2,6 +2,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { test, expect, BACKEND_URL, TEST_USER, NewMarketPage, ApplicationFormPage } from './fixtures';
 import { seedApplication } from './helpers/seedApplication';
+import { ensureTestOrg } from './helpers/seeds';
 import type { Page } from '@playwright/test';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -15,6 +16,7 @@ async function createMarket(page: Page): Promise<string> {
   await newMarketPage.waitForOverlay();
   await newMarketPage.uploadCsv(CSV_PATH);
   await newMarketPage.waitForNameInput();
+  await newMarketPage.selectFirstOrg();
   await newMarketPage.fillMarketName(`Form Builder E2E ${Date.now()}`);
   await newMarketPage.clickSubmit();
   await newMarketPage.waitForSetupRedirect();
@@ -23,6 +25,12 @@ async function createMarket(page: Page): Promise<string> {
 }
 
 test.describe('Application form builder', () => {
+  // POST /markets rejects a market with no organization, and the overlay's submit button
+  // stays disabled until one is picked, so the test user needs an org to belong to.
+  test.beforeAll(async ({ request }) => {
+    await ensureTestOrg(request, BACKEND_URL, TEST_USER.email, TEST_USER.password);
+  });
+
   /**
    * The organizer's real journey: define the application fields in the draft phase,
    * watch the applicant preview follow along, save, and find the form still there on
