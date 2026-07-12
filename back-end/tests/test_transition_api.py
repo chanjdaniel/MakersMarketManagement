@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app as app_module
 import api.markets as MarketsApi
 import api.users as UsersApi
+import guards
 
 
 OWNER_EMAIL = "owner@example.com"
@@ -123,6 +124,27 @@ class TestTransitionSuccess:
         assert response.status_code == 200
         assert response.get_json() == {"phase": "applications_open"}
 
+    def test_guards_receive_the_database_handle(self, client, markets, monkeypatch):
+        markets(_market_doc(fields=[{"key": "name", "label": "Name", "type": "text"}]))
+        seen = []
+
+        class RecordingGuard:
+            id = "recording"
+            description = "Records the db handle it was evaluated with"
+
+            def evaluate(self, market, db):
+                seen.append(db)
+                return guards.PreconditionResult(id=self.id, passed=True, message="")
+
+        monkeypatch.setitem(
+            guards.TRANSITION_GUARDS, ("draft", "applications_open"), [RecordingGuard()]
+        )
+
+        response = _post(client, {"toPhase": "applications_open"})
+
+        assert response.status_code == 200
+        assert seen == [MarketsApi.db]
+
     def test_market_predating_the_phase_migration_can_still_publish(self, client, markets):
         collection = markets(_market_doc(
             phase=None,
@@ -178,8 +200,38 @@ class TestTransitionBlocked:
         assert body["blockers"][0]["id"] == "phase_changed"
         assert body["blockers"][0]["passed"] is False
 
+    def test_market_deleted_underneath_returns_not_found(self, client, markets):
+        collection = markets(_market_doc(fields=[{"key": "name", "label": "Name", "type": "text"}]))
+
+        original_update_one = collection.update_one
+
+        def deleting_update_one(filter_query, update):
+            collection.doc = {}
+            return original_update_one(filter_query, update)
+
+        collection.update_one = deleting_update_one
+
+        response = _post(client, {"toPhase": "applications_open"})
+
+        assert response.status_code == 404
+        assert response.get_json()["error"] == "Market not found"
+
 
 class TestTransitionRejected:
+    def test_body_that_is_not_json_is_400(self, client, markets):
+        markets(_market_doc())
+
+        response = client.post(
+            "/markets/market-1/transition",
+            data="toPhase=applications_open",
+            content_type="text/plain",
+            headers={"X-Owner-Email": OWNER_EMAIL},
+        )
+
+        assert response.status_code == 400
+        assert response.get_json()["error"] == "No data provided"
+
+
     def test_transition_not_in_registry_is_400(self, client, markets):
         markets(_market_doc(phase="draft"))
 

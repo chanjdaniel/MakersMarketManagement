@@ -6,9 +6,10 @@ once and test modules never have to care about collection order.
 A stub is installed only when the real dependency is not importable. When the full
 requirements.txt is installed (as in CI), the real modules win, so route-level tests
 can import app.py and exercise Flask endpoints through the test client. In that case
-the real pymongo driver is in play, so an unconfigured environment gets a short server
-selection timeout: a test that reaches an unpatched collection then fails in a fraction
-of a second instead of hanging on pymongo's 30s default.
+the real pymongo driver is in play, so an unconfigured environment is pointed at a
+port nothing can listen on, with a short server selection timeout: a test that reaches
+an unpatched collection fails loudly in a fraction of a second instead of silently
+reading or writing a developer's live local database.
 """
 import importlib.util
 import os
@@ -33,8 +34,10 @@ MONGO_ENV_KEYS = (
     "MONGODB_AUTH_DB",
 )
 
+UNREACHABLE_MONGODB_URI = "mongodb://127.0.0.1:1/?serverSelectionTimeoutMS=100"
+
 if not any(os.getenv(key) for key in MONGO_ENV_KEYS):
-    os.environ["MONGODB_URI"] = "mongodb://localhost:27017/?serverSelectionTimeoutMS=100"
+    os.environ["MONGODB_URI"] = UNREACHABLE_MONGODB_URI
 
 
 def _needs_stub(module_name: str) -> bool:

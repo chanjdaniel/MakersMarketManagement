@@ -768,8 +768,8 @@ def transition_market(market_id: str) -> Response:
         400 when the transition is not valid from the current phase
     """
     try:
-        data = request.json
-        if not data:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
             return jsonify({"error": "No data provided"}), 400
 
         data = convert_keys_to_snake_case(data)
@@ -817,7 +817,7 @@ def transition_market(market_id: str) -> Response:
                 ),
             }), 400
 
-        blockers = evaluate_transition(market, to_phase.value, None)
+        blockers = evaluate_transition(market, to_phase.value, MarketsApi.db)
         if blockers:
             return jsonify(convert_keys_to_camel_case({
                 "error": "preconditions_not_met",
@@ -836,7 +836,10 @@ def transition_market(market_id: str) -> Response:
         )
 
         if result.matched_count == 0:
-            latest_doc = MarketsApi.markets_collection.find_one({"id": market_id}) or {}
+            latest_doc = MarketsApi.markets_collection.find_one({"id": market_id})
+            if latest_doc is None:
+                return jsonify({"error": "Market not found"}), 404
+
             actual_phase = phase_from_market_document(latest_doc).value
             conflict = PreconditionResult(
                 id="phase_changed",
