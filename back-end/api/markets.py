@@ -1100,27 +1100,15 @@ def remove_market_role(market_id: str, user_id: str, requesting_user: str) -> bo
 
 def update_market_role(market_id: str, user_id: str, new_role: MarketRole, requesting_user: str) -> bool:
     """Update a user's role in a market. Requires permission to manage roles."""
-    market_dict = markets_collection.find_one({"id": market_id})
-    if not market_dict:
+    context = load_market_context(market_id)
+    if context is None:
         raise ValueError("Market not found")
-    
-    # Convert to Market object for permission checking
-    market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
-    try:
-        market = Market(**market_dict_snake)
-    except Exception:
+    if context.market is None:
         raise ValueError("Invalid market data")
-    
-    organization = None
-    if market.organization_id:
-        org_dict = OrgsApi.get_organization(market.organization_id)
-        if org_dict:
-            org_dict.pop('_id', None)
-            try:
-                from datatypes import Organization
-                organization = Organization(**org_dict)
-            except Exception:
-                pass
+
+    market_dict = context.document
+    market = context.market
+    organization = context.organization
 
     roles = market_dict.get('roles', {})
     current_role_value = roles.get(user_id)
