@@ -23,6 +23,8 @@ from datetime import timedelta, datetime, timezone
 from datatypes import Market, MarketPhase, MarketRole, phase_from_market_document
 from assignment.utils import convert_keys_to_camel_case, convert_keys_to_snake_case
 from guards import PreconditionResult, VALID_TRANSITIONS, evaluate_transition
+from market_documents import LegacyMarketDocumentsError, assert_market_documents_migrated
+from pymongo.errors import PyMongoError
 from dataclasses import asdict
 import json
 import os
@@ -36,6 +38,29 @@ logger = logging.getLogger(__name__)
 
 SESSION_FOLDER = "flask_session"
 SESSION_MAX_AGE = 7200
+
+
+def verify_market_documents_migrated() -> None:
+    """Refuse to boot against market documents that predate the canonical camelCase keys.
+
+    Reads name one key, so an unmigrated document is simply invisible - vendors are told the
+    market does not exist at check-in, and org members get an empty market list, with nothing
+    logged. Nothing auto-runs the migration (rewriting stored documents is the operator's call),
+    so this is what makes skipping it impossible to miss.
+
+    A database that cannot be reached at all is a different failure, and every request will say
+    so; there is nothing to verify, so boot proceeds.
+    """
+    try:
+        assert_market_documents_migrated(MarketsApi.markets_collection)
+    except LegacyMarketDocumentsError as e:
+        logger.critical("%s", e)
+        raise
+    except PyMongoError as e:
+        logger.warning("Could not verify market document keys (database unreachable): %s", e)
+
+
+verify_market_documents_migrated()
 
 app = Flask(__name__)
 

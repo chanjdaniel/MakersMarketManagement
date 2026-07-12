@@ -437,7 +437,33 @@ def get_markets_by_owner_email(owner_email: str) -> List[Dict[str, Any]]:
     return list(markets_collection.find({f"roles.{owner_email}": MarketRole.OWNER.value}))
 
 
-def _decorate_market_summary(market: Dict[str, Any], user_role: Optional[str]) -> Dict[str, Any]:
+class _SummaryLookups:
+    """Memo for the organization and user reads a market list makes.
+
+    Decorating one market costs an organization read plus a user read per role entry, and a
+    list repeats the same few organizations and the same few members across every entry. The
+    organizations the caller already fetched seed the memo, so the common case - every market
+    belonging to an organization the user is a member of - costs no organization read at all.
+    """
+
+    def __init__(self, organizations: Optional[List[Dict[str, Any]]] = None) -> None:
+        self._organizations: Dict[str, Any] = {org['id']: org for org in (organizations or [])}
+        self._users: Dict[str, Any] = {}
+
+    def organization(self, org_id: str) -> Optional[Dict[str, Any]]:
+        if org_id not in self._organizations:
+            self._organizations[org_id] = OrgsApi.get_organization(org_id)
+        return self._organizations[org_id]
+
+    def user(self, user_id: str) -> Any:
+        if user_id not in self._users:
+            self._users[user_id] = UsersApi.get_user_by_id(user_id)
+        return self._users[user_id]
+
+
+def _decorate_market_summary(
+    market: Dict[str, Any], user_role: Optional[str], lookups: _SummaryLookups
+) -> Dict[str, Any]:
     """Add the read-time fields every market list entry carries.
 
     Kept in one place so a market exposes the same derived state - phase included -
@@ -448,12 +474,12 @@ def _decorate_market_summary(market: Dict[str, Any], user_role: Optional[str]) -
     market['phase'] = phase_from_market_document(market).value
     organization_id = market_doc_field(market, 'organization_id')
     if organization_id:
-        org = OrgsApi.get_organization(organization_id)
+        org = lookups.organization(organization_id)
         if org:
             market['organization_name'] = org.get('name')
     role_emails = {}
     for uid in (market_doc_field(market, 'roles') or {}).keys():
-        u = UsersApi.get_user_by_id(uid)
+        u = lookups.user(uid)
         if u:
             role_emails[uid] = u.email
     market['role_emails'] = role_emails
@@ -473,6 +499,9 @@ def get_markets_for_user(user_email: str) -> List[Dict[str, Any]]:
     seen_ids = set()
     result = []
 
+    user_orgs = OrgsApi.get_organizations_for_user(user_email)
+    lookups = _SummaryLookups(user_orgs)
+
     pipeline = [
         {"$addFields": {"roles_array": {"$objectToArray": {"$ifNull": ["$roles", {}]}}}},
         {"$match": {"roles_array": {"$elemMatch": {"k": user_id}}}},
@@ -484,9 +513,10 @@ def get_markets_for_user(user_email: str) -> List[Dict[str, Any]]:
         mid = market["id"]
         if mid not in seen_ids:
             seen_ids.add(mid)
-            result.append(_decorate_market_summary(market, market.get('roles', {}).get(user_id)))
+            result.append(_decorate_market_summary(
+                market, market.get('roles', {}).get(user_id), lookups
+            ))
 
-    user_orgs = OrgsApi.get_organizations_for_user(user_email)
     org_ids = [org['id'] for org in user_orgs]
 
     if org_ids:
@@ -497,7 +527,7 @@ def get_markets_for_user(user_email: str) -> List[Dict[str, Any]]:
             mid = market["id"]
             if mid not in seen_ids:
                 seen_ids.add(mid)
-                result.append(_decorate_market_summary(market, MarketRole.VIEWER.value))
+                result.append(_decorate_market_summary(market, MarketRole.VIEWER.value, lookups))
 
     return result
 

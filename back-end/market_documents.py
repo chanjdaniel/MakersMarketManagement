@@ -14,12 +14,62 @@ on seeing it). The data is normalized once instead, and readers name one key.
 Code that goes through ``convert_keys_to_snake_case`` (``load_market_context``) never has to
 think about this. Code that touches a raw document or writes a Mongo filter does, and it uses
 these helpers rather than a string literal, so the spelling is decided in exactly one place.
+
+Reading one key only means the data has to be normalized first, and nothing auto-runs the
+migration: rewriting stored documents is a deliberate operator action. So the app refuses to
+boot against a database that still holds legacy keys (``assert_market_documents_migrated``,
+called from ``app.py``). Serving unmigrated data would hide markets from the check-in lookup
+and from org-scoped lists with no error anywhere; a loud refusal at startup is the only
+failure mode that cannot be deployed by accident.
 """
 from typing import Any, Dict
 
 from assignment.utils import convert_keys_to_camel_case, snake_to_camel
 
 MONGO_ID_KEY = "_id"
+
+MARKET_KEY_MIGRATION = "migrations/migrate_market_keys.py"
+
+LEGACY_MARKET_KEY_QUERY: Dict[str, Any] = {
+    "$expr": {
+        "$anyElementTrue": {
+            "$map": {
+                "input": {"$objectToArray": "$$ROOT"},
+                "in": {
+                    "$and": [
+                        {"$ne": ["$$this.k", MONGO_ID_KEY]},
+                        {"$regexMatch": {"input": "$$this.k", "regex": "_"}},
+                    ]
+                },
+            }
+        }
+    }
+}
+
+
+class LegacyMarketDocumentsError(RuntimeError):
+    """Raised when stored market documents still carry the legacy snake_case keys."""
+
+    def __init__(self, count: int) -> None:
+        super().__init__(
+            f"{count} market document(s) still carry legacy snake_case keys. Readers name the "
+            f"canonical camelCase key only, so these markets would be invisible to the public "
+            f"check-in lookup and to organization-scoped market lists. Run "
+            f"`python {MARKET_KEY_MIGRATION}` against this database, then restart."
+        )
+        self.count = count
+
+
+def count_legacy_market_documents(collection: Any) -> int:
+    """How many market documents still name a field under a non-canonical key."""
+    return collection.count_documents(LEGACY_MARKET_KEY_QUERY)
+
+
+def assert_market_documents_migrated(collection: Any) -> None:
+    """Refuse to serve a database whose market documents predate the canonical keys."""
+    legacy_count = count_legacy_market_documents(collection)
+    if legacy_count:
+        raise LegacyMarketDocumentsError(legacy_count)
 
 
 def market_doc_key(field: str) -> str:

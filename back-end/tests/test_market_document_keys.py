@@ -20,7 +20,14 @@ import api.organizations as OrgsApi
 import api.permissions as PermissionsApi
 import api.users as UsersApi
 from datatypes import MarketRole
-from market_documents import market_doc_field, market_doc_filter, market_doc_set
+from market_documents import (
+    LEGACY_MARKET_KEY_QUERY,
+    LegacyMarketDocumentsError,
+    assert_market_documents_migrated,
+    market_doc_field,
+    market_doc_filter,
+    market_doc_set,
+)
 from migrate_market_keys import migrate
 
 USER_ID = "user-1"
@@ -29,19 +36,24 @@ ORG_ID = "org-1"
 OTHER_ORG_ID = "org-2"
 
 
-def _market(market_id, org_key="organizationId", org_id=ORG_ID):
+def _market(market_id, org_key="organizationId", org_id=ORG_ID, roles=None):
     """A stored market owned by an org, keyed the way the given write path spelled it."""
     return {
         "_id": f"mongo-{market_id}",
         "id": market_id,
         "name": f"Market {market_id}",
         "creationDate": "2026-01-01T00:00:00Z",
-        "roles": {},
+        "roles": roles if roles is not None else {},
         "modificationList": [],
         "assignmentObject": {"vendorAssignments": [], "assignmentStatistics": None},
         "isDraft": True,
         org_key: org_id,
     }
+
+
+def _organization(org_id):
+    """An organization as ``get_organization`` and ``get_organizations_for_user`` return it."""
+    return {"id": org_id, "_id": f"mongo-{org_id}", "name": "Test Org"}
 
 
 class FakeMarketsCollection:
@@ -80,6 +92,13 @@ class FakeMarketsCollection:
                 doc.pop(key, None)
         return SimpleNamespace(matched_count=len(matched))
 
+    def count_documents(self, query):
+        assert query == LEGACY_MARKET_KEY_QUERY, "only the legacy-key census is modelled here"
+        return sum(
+            1 for doc in self.docs
+            if any(key != "_id" and "_" in key for key in doc)
+        )
+
     def aggregate(self, _pipeline):
         return iter([])
 
@@ -95,10 +114,10 @@ def collection(monkeypatch):
         UsersApi, "get_user_by_id", lambda _uid: SimpleNamespace(id=USER_ID, email=USER_EMAIL)
     )
     monkeypatch.setattr(
-        OrgsApi, "get_organizations_for_user", lambda _email: [{"id": ORG_ID}]
+        OrgsApi, "get_organizations_for_user", lambda _email: [_organization(ORG_ID)]
     )
     monkeypatch.setattr(
-        OrgsApi, "get_organization", lambda oid: {"id": oid, "name": "Test Org"} if oid == ORG_ID else None
+        OrgsApi, "get_organization", lambda oid: _organization(oid) if oid == ORG_ID else None
     )
     monkeypatch.setattr(
         PermissionsApi, "get_user_market_role", lambda *_args, **_kwargs: MarketRole.VIEWER
@@ -167,6 +186,54 @@ def test_deleting_an_org_detaches_its_markets(org_delete):
 
     market = next(doc for doc in org_delete.docs if doc["id"] == "camel-market")
     assert market_doc_field(market, "organization_id") is None
+
+
+def test_market_list_reads_each_org_and_member_once(collection, monkeypatch):
+    """A list of N markets must not cost N organization reads and N member reads."""
+    org_reads, user_reads = [], []
+    monkeypatch.setattr(
+        OrgsApi, "get_organization",
+        lambda oid: org_reads.append(oid) or _organization(oid),
+    )
+    monkeypatch.setattr(
+        UsersApi, "get_user_by_id",
+        lambda uid: user_reads.append(uid) or SimpleNamespace(id=uid, email=USER_EMAIL),
+    )
+    collection.docs = [
+        _market(f"market-{i}", roles={USER_ID: MarketRole.OWNER.value}) for i in range(5)
+    ]
+
+    listed = MarketsApi.get_markets_for_user(USER_EMAIL)
+
+    assert len(listed) == 5
+    assert all(m["organization_name"] == "Test Org" for m in listed)
+    assert all(m["role_emails"] == {USER_ID: USER_EMAIL} for m in listed)
+    assert org_reads == [], "the org was already fetched to resolve the user's memberships"
+    assert user_reads == [USER_ID]
+
+
+class TestStartupCheck:
+    """Unmigrated documents are invisible to every camelCase-only read, so booting on them
+    would silently hide markets. The app refuses to serve instead."""
+
+    def test_legacy_document_refuses_to_serve(self, collection):
+        collection.docs.append(_market("legacy-market", org_key="organization_id"))
+
+        with pytest.raises(LegacyMarketDocumentsError) as excinfo:
+            assert_market_documents_migrated(collection)
+
+        assert excinfo.value.count == 1
+        assert "migrations/migrate_market_keys.py" in str(excinfo.value)
+
+    def test_canonical_documents_boot(self, collection):
+        assert_market_documents_migrated(collection)
+
+    def test_migration_clears_the_refusal(self, collection):
+        collection.docs.append(_market("legacy-market", org_key="organization_id"))
+
+        migrate(SimpleNamespace(markets=collection))
+
+        assert_market_documents_migrated(collection)
 
 
 def test_deleting_an_org_detaches_a_migrated_legacy_market(org_delete):
