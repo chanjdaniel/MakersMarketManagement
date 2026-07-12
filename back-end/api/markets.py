@@ -1,3 +1,4 @@
+import re
 import uuid
 from typing import Optional, Dict, Any, List
 from pymongo.results import InsertOneResult, UpdateResult, DeleteResult
@@ -25,9 +26,22 @@ markets_collection = db["markets"]
 
 VALID_FORM_FIELD_TYPES = {"text", "number", "select", "multi_select", "checkbox", "date", "email"}
 
+# Field keys become document keys inside ``Application.form_data``, where a dot or a leading
+# ``$`` cannot be addressed by Mongo update operators. Keys are held to the slug charset the
+# builder produces so no key can ever be unaddressable.
+FORM_FIELD_KEY_PATTERN = re.compile(r"^[a-z0-9_]+$")
+
 
 class MarketNotFoundError(ValueError):
     """No market exists with the requested id. Callers map this to HTTP 404."""
+
+
+class ApplicationFormLockedError(Exception):
+    """The application form may no longer be edited. Callers map this to HTTP 409.
+
+    A dedicated type rather than a builtin: a ``RuntimeError`` escaping any other part of an
+    update is a bug, not a conflict, and must not be reported to the client as one.
+    """
 
 
 def _load_organization(organization_id: Optional[str]):
@@ -92,48 +106,63 @@ def application_form_lock_reason(market: Market) -> Optional[str]:
 def _assert_application_form_editable(market: Market) -> None:
     reason = application_form_lock_reason(market)
     if reason:
-        raise RuntimeError(reason)
+        raise ApplicationFormLockedError(reason)
 
 
-def _validate_select_options(field: FormField, key: str) -> None:
+def _normalized_select_options(field: FormField, key: str) -> List[str]:
     """Options are the persisted answer values in ``Application.form_data``, so they carry the
-    same uniqueness burden as field keys: a duplicate is an ambiguous answer, a blank is an
-    unselectable row in the applicant's form."""
+    same burden as field keys: a duplicate is an ambiguous answer, a blank is an unselectable
+    row in the applicant's form, and stray whitespace would ride along into every answer."""
     if not field.options:
         raise ValueError(
             f"Field '{key}' is type '{field.type}' but has no options defined"
         )
 
-    seen_options = set()
+    options: List[str] = []
     for option in field.options:
         option_value = (option or "").strip()
         if not option_value:
             raise ValueError(f"Field '{key}' has a blank option. Options must be non-empty.")
-        if option_value in seen_options:
+        if option_value in options:
             raise ValueError(
                 f"Duplicate option '{option_value}' in field '{key}'. Options must be unique."
             )
-        seen_options.add(option_value)
+        options.append(option_value)
+
+    return options
 
 
-def _validate_application_form(application_form: ApplicationForm) -> None:
-    """Field keys are the primary key of every applicant's answers, so they must be
-    present and unique; a duplicate key would silently overwrite another field's data."""
+def _normalized_application_form(application_form: ApplicationForm) -> ApplicationForm:
+    """Validate a form and return it exactly as it will be persisted.
+
+    Validation and normalization are one step so a stored value can never differ from the value
+    that was checked. Field keys are the primary key of every applicant's answers: they must be
+    present, unique, and addressable as Mongo document keys. ``order`` is renormalized to the
+    array position, which is the display order every writer already implies, so the builder and
+    the applicant's form can never disagree about it.
+    """
     if not application_form.fields:
         raise ValueError("Application form must include at least one field")
 
+    fields: List[FormField] = []
     seen_keys = set()
-    for field in application_form.fields:
+    for index, field in enumerate(application_form.fields):
         key = (field.key or "").strip()
         if not key:
             raise ValueError(
                 f"Field '{field.label or '(untitled)'}' must have a non-empty key"
             )
+        if not FORM_FIELD_KEY_PATTERN.match(key):
+            raise ValueError(
+                f"Invalid field key '{key}'. Keys may only contain lowercase letters, "
+                "numbers, and underscores."
+            )
         if key in seen_keys:
             raise ValueError(f"Duplicate field key '{key}'. Field keys must be unique.")
         seen_keys.add(key)
 
-        if not (field.label or "").strip():
+        label = (field.label or "").strip()
+        if not label:
             raise ValueError(f"Field '{key}' must have a non-empty label")
 
         if field.type not in VALID_FORM_FIELD_TYPES:
@@ -141,29 +170,25 @@ def _validate_application_form(application_form: ApplicationForm) -> None:
                 f"Unrecognized field type '{field.type}' for field '{key}'. "
                 f"Valid types: {', '.join(sorted(VALID_FORM_FIELD_TYPES))}"
             )
-        if field.type in ("select", "multi_select"):
-            _validate_select_options(field, key)
+
+        options = (
+            _normalized_select_options(field, key)
+            if field.type in ("select", "multi_select")
+            else []
+        )
+
+        fields.append(field.model_copy(update={
+            "key": key,
+            "label": label,
+            "options": options,
+            "order": index,
+        }))
+
+    return application_form.model_copy(update={"fields": fields})
 
 
 def _application_form_dump(market: Market) -> Optional[Dict[str, Any]]:
     return market.application_form.model_dump() if market.application_form else None
-
-
-def _guard_application_form_write(
-    market_dict: Dict[str, Any], existing_market: Market
-) -> None:
-    """Route any application-form write through the same lock the dedicated endpoint uses.
-
-    A market update body carries the whole document, so without this a client could rewrite
-    or null a locked form by PUTting /markets/{id} instead of /markets/{id}/application-form.
-    """
-    incoming = market_dict.get("application_form")
-    if incoming == _application_form_dump(existing_market):
-        return
-
-    _assert_application_form_editable(existing_market)
-    if incoming is not None:
-        _validate_application_form(ApplicationForm(**incoming))
 
 
 def _strip_persisted_assignment_statistics(market_dict: Dict[str, Any]) -> None:
@@ -178,12 +203,17 @@ def _preserve_server_owned_fields(
 ) -> None:
     """Keep market state the update payload does not own.
 
-    `phase` is lifecycle state advanced by the server, never by an update body. The Conventioner
-    fields are carried over whenever the payload omits them, so a client that round-trips a market
-    it fetched cannot null them out; an explicit null still clears them.
+    `phase` is lifecycle state advanced by the server, never by an update body. `application_form`
+    is written only by ``save_application_form``: a single writer keeps the D9 lock unbypassable
+    and stops a stale client copy of the market from silently reverting a saved form on the next
+    PUT. Both are always taken from the stored market, whatever the payload carries.
+
+    The remaining Conventioner fields are carried over whenever the payload omits them, so a client
+    that round-trips a market it fetched cannot null them out; an explicit null still clears them.
     """
     market_dict["phase"] = existing_market.phase.value
-    for field in ("application_form", "review_config", "discord_guild_id"):
+    market_dict["application_form"] = _application_form_dump(existing_market)
+    for field in ("review_config", "discord_guild_id"):
         if field in market.model_fields_set:
             continue
         existing_value = getattr(existing_market, field)
@@ -478,7 +508,6 @@ def update_market(market_id: str, market: Market, requesting_user: str) -> Updat
     market_dict = market.model_dump()
     _strip_persisted_assignment_statistics(market_dict)
     _preserve_server_owned_fields(market_dict, market, existing_market)
-    _guard_application_form_write(market_dict, existing_market)
     market_dict["roles"] = _convert_roles_keys_to_user_ids(market_dict.get("roles", {}))
     market_dict = convert_keys_to_camel_case(market_dict)
     
@@ -1127,15 +1156,16 @@ def delete_market(market_id: str, requesting_user: str) -> DeleteResult:
 def save_application_form(market_id: str, application_form_data: dict, requesting_user: str) -> dict:
     """Save or update the application form for a market.
 
-    Editability is decided by ``application_form_lock_reason``, the same gate
-    ``update_market`` applies, so the D9 lock holds on every route into the field.
+    The single writer of ``Market.application_form``: ``update_market`` preserves the stored form
+    rather than accepting one from a market body, so every write passes the lock below.
 
     Returns the saved ``ApplicationForm`` as a camelCase dict on success.
 
     Raises:
-        ValueError: market not found or validation failure
+        MarketNotFoundError: no such market
+        ValueError: validation failure
         PermissionError: user lacks EDITOR+ permission
-        RuntimeError: phase gate or D9 lock prevents editing
+        ApplicationFormLockedError: phase gate or D9 lock prevents editing
     """
     market = _load_market_for(market_id, requesting_user, MarketRole.EDITOR, "edit")
     _assert_application_form_editable(market)
@@ -1145,7 +1175,7 @@ def save_application_form(market_id: str, application_form_data: dict, requestin
     except Exception as e:
         raise ValueError(f"Invalid application form data: {e}")
 
-    _validate_application_form(application_form)
+    application_form = _normalized_application_form(application_form)
 
     form_dict = convert_keys_to_camel_case(application_form.model_dump())
     markets_collection.update_one(

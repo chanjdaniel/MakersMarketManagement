@@ -79,6 +79,60 @@ if "resend" not in sys.modules:
     sys.modules["resend"] = fake_resend
 
 
+from datatypes import AssignmentObject, Market, MarketPhase, MarketRole
+
+
+class FakeMarketsCollection:
+    """Stand-in for the markets collection, holding one market document."""
+
+    def __init__(self, doc):
+        self.doc = doc
+        self.last_update = None
+        self.inserted = None
+
+    def find_one(self, _query):
+        return dict(self.doc) if self.doc is not None else None
+
+    def update_one(self, _filter, update):
+        self.last_update = update
+        return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
+
+    def insert_one(self, document):
+        self.inserted = document
+        return SimpleNamespace(inserted_id="mongo-id")
+
+
+def stored_market(phase: MarketPhase = MarketPhase.DRAFT, **overrides) -> dict:
+    """A market document as Mongo holds it: camelCase, with the server-owned phase stamped on."""
+    doc = {
+        "id": "market-123",
+        "name": "Test Market",
+        "creationDate": "2026-01-01T00:00:00Z",
+        "roles": {"user-1": "owner"},
+        "modificationList": [],
+        "assignmentObject": {"vendorAssignments": [], "assignmentStatistics": None},
+        "isDraft": phase == MarketPhase.DRAFT,
+        "phase": phase.value,
+    }
+    doc.update(overrides)
+    return doc
+
+
+def client_market(**overrides) -> Market:
+    """A market body as the front-end PUTs it back: no phase, no Conventioner fields."""
+    kwargs = {
+        "id": "market-123",
+        "name": "Test Market",
+        "creation_date": "2026-01-01T00:00:00Z",
+        "roles": {"user-1": MarketRole.OWNER},
+        "modification_list": [],
+        "assignment_object": AssignmentObject(),
+        "is_draft": True,
+    }
+    kwargs.update(overrides)
+    return Market(**kwargs)
+
+
 class FakeApplicationsCollection:
     """Stand-in for the applications collection the D9 form lock counts.
 

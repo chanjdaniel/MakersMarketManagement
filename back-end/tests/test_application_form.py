@@ -1,60 +1,17 @@
 """Tests for ApplicationForm CRUD, phase-gating, and D9 locking.
 
-The lock lives in ``api.markets.application_form_lock_reason`` and is reached from both
-``save_application_form`` and ``update_market``, so both routes are exercised here.
+``save_application_form`` is the only writer of the form; ``update_market`` preserves whatever
+is stored. Both halves of that contract are exercised here.
 """
-from types import SimpleNamespace
-
 import pytest
+
+from conftest import FakeMarketsCollection, client_market, stored_market
 
 import api.markets as MarketsApi
 import api.permissions as PermissionsApi
 from datatypes import (
-    Application, ApplicationForm, ApplicationStatus, AssignmentObject, FormField,
-    Market, MarketPhase, MarketRole,
+    Application, ApplicationForm, ApplicationStatus, FormField, MarketPhase,
 )
-
-
-class FakeMarketsCollection:
-    def __init__(self, doc):
-        self.doc = doc
-        self.last_update = None
-
-    def find_one(self, _query):
-        return dict(self.doc) if self.doc is not None else None
-
-    def update_one(self, _filter, update):
-        self.last_update = update
-        return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
-
-
-def _stored_market(**overrides):
-    doc = {
-        "id": "market-123",
-        "name": "Test Market",
-        "creationDate": "2026-01-01T00:00:00Z",
-        "roles": {"user-1": "owner"},
-        "modificationList": [],
-        "assignmentObject": {"vendorAssignments": [], "assignmentStatistics": None},
-        "isDraft": True,
-        "phase": MarketPhase.DRAFT.value,
-    }
-    doc.update(overrides)
-    return doc
-
-
-def _client_market(**overrides):
-    kwargs = {
-        "id": "market-123",
-        "name": "Test Market",
-        "creation_date": "2026-01-01T00:00:00Z",
-        "roles": {"user-1": MarketRole.OWNER},
-        "modification_list": [],
-        "assignment_object": AssignmentObject(),
-        "is_draft": True,
-    }
-    kwargs.update(overrides)
-    return Market(**kwargs)
 
 
 VALID_FORM = {
@@ -65,10 +22,20 @@ VALID_FORM = {
     ]
 }
 
+STORED_FORM = {"fields": [{"key": "shop_name", "label": "Shop name", "type": "text"}]}
+
 
 @pytest.fixture
 def markets(monkeypatch):
-    fake = FakeMarketsCollection(_stored_market())
+    fake = FakeMarketsCollection(stored_market())
+    monkeypatch.setattr(MarketsApi, "markets_collection", fake)
+    monkeypatch.setattr(PermissionsApi, "user_has_permission", lambda *_a, **_kw: True)
+    return fake
+
+
+@pytest.fixture
+def markets_with_stored_form(monkeypatch):
+    fake = FakeMarketsCollection(stored_market(applicationForm=STORED_FORM))
     monkeypatch.setattr(MarketsApi, "markets_collection", fake)
     monkeypatch.setattr(PermissionsApi, "user_has_permission", lambda *_a, **_kw: True)
     return fake
@@ -119,11 +86,11 @@ class TestPhaseGate:
     def test_non_draft_phase_is_refused(self, monkeypatch, applications):
         monkeypatch.setattr(
             MarketsApi, "markets_collection",
-            FakeMarketsCollection(_stored_market(phase=MarketPhase.APPLICATIONS_OPEN.value)),
+            FakeMarketsCollection(stored_market(phase=MarketPhase.APPLICATIONS_OPEN)),
         )
         monkeypatch.setattr(PermissionsApi, "user_has_permission", lambda *_a, **_kw: True)
 
-        with pytest.raises(RuntimeError, match="draft phase"):
+        with pytest.raises(MarketsApi.ApplicationFormLockedError, match="draft phase"):
             MarketsApi.save_application_form("market-123", VALID_FORM, "user-1")
 
     def test_every_non_draft_phase_is_refused(self, monkeypatch, applications):
@@ -133,9 +100,9 @@ class TestPhaseGate:
                 continue
             monkeypatch.setattr(
                 MarketsApi, "markets_collection",
-                FakeMarketsCollection(_stored_market(phase=phase.value)),
+                FakeMarketsCollection(stored_market(phase=phase)),
             )
-            with pytest.raises(RuntimeError):
+            with pytest.raises(MarketsApi.ApplicationFormLockedError):
                 MarketsApi.save_application_form("market-123", VALID_FORM, "user-1")
 
 
@@ -146,7 +113,7 @@ class TestD9Lock:
         would leave the lock counting zero and the D9 invariant silently dead."""
         applications.insert_one(_submitted_application("market-123"))
 
-        with pytest.raises(RuntimeError, match="1 application"):
+        with pytest.raises(MarketsApi.ApplicationFormLockedError, match="1 application"):
             MarketsApi.save_application_form("market-123", VALID_FORM, "user-1")
 
         assert markets.last_update is None
@@ -161,7 +128,7 @@ class TestD9Lock:
     def test_form_is_frozen_once_an_application_exists(self, markets, applications):
         applications.count = 3
 
-        with pytest.raises(RuntimeError, match="3 application"):
+        with pytest.raises(MarketsApi.ApplicationFormLockedError, match="3 application"):
             MarketsApi.save_application_form("market-123", VALID_FORM, "user-1")
 
         assert markets.last_update is None
@@ -173,72 +140,79 @@ class TestD9Lock:
 
         assert markets.last_update is not None
 
-    def test_market_put_cannot_rewrite_a_locked_form(self, monkeypatch, applications):
-        """The lock is an invariant: PUT /markets/{id} enforces the same gate."""
+    def test_the_lock_is_not_signalled_with_a_bare_runtime_error(self, markets, applications):
+        """A RuntimeError from anywhere else in an update is a bug, not a 409 conflict."""
         applications.count = 1
-        stored = _stored_market(
-            applicationForm={
-                "fields": [{"key": "shop_name", "label": "Shop name", "type": "text"}]
-            }
-        )
-        fake = FakeMarketsCollection(stored)
-        monkeypatch.setattr(MarketsApi, "markets_collection", fake)
-        monkeypatch.setattr(PermissionsApi, "user_has_permission", lambda *_a, **_kw: True)
 
+        with pytest.raises(MarketsApi.ApplicationFormLockedError) as excinfo:
+            MarketsApi.save_application_form("market-123", VALID_FORM, "user-1")
+
+        assert not isinstance(excinfo.value, RuntimeError)
+
+
+class TestMarketPutDoesNotWriteTheForm:
+    """The form has one writer. A market body carries the whole document, so a client holding a
+    stale copy would otherwise revert a saved form - permanently, if the revert lands at publish
+    time. The server keeps its own form on every market PUT, locked or not."""
+
+    def test_market_put_cannot_rewrite_the_form(self, markets_with_stored_form, applications):
         rewritten = ApplicationForm(fields=[FormField(key="gotcha", label="Gotcha", type="text")])
 
-        with pytest.raises(RuntimeError, match="locked"):
-            MarketsApi.update_market("market-123", _client_market(application_form=rewritten), "user-1")
+        MarketsApi.update_market("market-123", client_market(application_form=rewritten), "user-1")
 
-        assert fake.last_update is None
+        written = markets_with_stored_form.last_update["$set"]["applicationForm"]
+        assert written["fields"][0]["key"] == "shop_name"
 
-    def test_market_put_cannot_null_a_locked_form(self, monkeypatch, applications):
-        applications.count = 1
-        fake = FakeMarketsCollection(
-            _stored_market(
-                applicationForm={
-                    "fields": [{"key": "shop_name", "label": "Shop name", "type": "text"}]
-                }
-            )
+    def test_market_put_cannot_null_the_form(self, markets_with_stored_form, applications):
+        MarketsApi.update_market("market-123", client_market(application_form=None), "user-1")
+
+        written = markets_with_stored_form.last_update["$set"]["applicationForm"]
+        assert written["fields"][0]["key"] == "shop_name"
+
+    def test_a_stale_client_copy_cannot_revert_a_saved_form(self, markets_with_stored_form, applications):
+        """The publish path PUTs a market read from localStorage, which may predate a form save."""
+        stale = ApplicationForm(fields=[FormField(key="old_field", label="Old", type="text")])
+
+        MarketsApi.update_market(
+            "market-123", client_market(application_form=stale, is_draft=False), "user-1"
         )
-        monkeypatch.setattr(MarketsApi, "markets_collection", fake)
-        monkeypatch.setattr(PermissionsApi, "user_has_permission", lambda *_a, **_kw: True)
 
-        with pytest.raises(RuntimeError, match="locked"):
-            MarketsApi.update_market("market-123", _client_market(application_form=None), "user-1")
+        written = markets_with_stored_form.last_update["$set"]["applicationForm"]
+        assert written["fields"][0]["key"] == "shop_name"
 
-        assert fake.last_update is None
-
-    def test_market_put_of_an_unchanged_locked_form_still_succeeds(self, monkeypatch, applications):
-        """A client round-tripping the market it fetched must not trip the lock."""
+    def test_market_put_cannot_rewrite_a_locked_form(self, markets_with_stored_form, applications):
         applications.count = 1
-        stored_form = {"fields": [{"key": "shop_name", "label": "Shop name", "type": "text"}]}
-        fake = FakeMarketsCollection(_stored_market(applicationForm=stored_form))
-        monkeypatch.setattr(MarketsApi, "markets_collection", fake)
-        monkeypatch.setattr(PermissionsApi, "user_has_permission", lambda *_a, **_kw: True)
+        rewritten = ApplicationForm(fields=[FormField(key="gotcha", label="Gotcha", type="text")])
 
-        unchanged = ApplicationForm(
-            fields=[FormField(key="shop_name", label="Shop name", type="text")]
+        MarketsApi.update_market("market-123", client_market(application_form=rewritten), "user-1")
+
+        written = markets_with_stored_form.last_update["$set"]["applicationForm"]
+        assert written["fields"][0]["key"] == "shop_name"
+
+    def test_market_put_ignores_an_invalid_form_rather_than_rejecting_the_update(
+        self, markets_with_stored_form, applications
+    ):
+        """The body's form is not a write, so it is not a validation surface either: the rest of
+        the market still updates and the stored form is untouched."""
+        bad = ApplicationForm(fields=[
+            FormField(key="dupe", label="One", type="text"),
+            FormField(key="dupe", label="Two", type="text"),
+        ])
+
+        MarketsApi.update_market(
+            "market-123", client_market(name="Renamed", application_form=bad), "user-1"
         )
-        MarketsApi.update_market("market-123", _client_market(application_form=unchanged), "user-1")
 
-        assert fake.last_update["$set"]["name"] == "Test Market"
+        written = markets_with_stored_form.last_update["$set"]
+        assert written["name"] == "Renamed"
+        assert written["applicationForm"]["fields"][0]["key"] == "shop_name"
 
-    def test_market_put_omitting_the_form_does_not_trip_the_lock(self, monkeypatch, applications):
-        applications.count = 1
-        fake = FakeMarketsCollection(
-            _stored_market(
-                applicationForm={
-                    "fields": [{"key": "shop_name", "label": "Shop name", "type": "text"}]
-                }
-            )
-        )
-        monkeypatch.setattr(MarketsApi, "markets_collection", fake)
-        monkeypatch.setattr(PermissionsApi, "user_has_permission", lambda *_a, **_kw: True)
+    def test_market_put_leaves_a_formless_market_formless(self, markets, applications):
+        form = ApplicationForm(fields=[FormField(key="website", label="Website", type="text")])
 
-        MarketsApi.update_market("market-123", _client_market(), "user-1")
+        MarketsApi.update_market("market-123", client_market(application_form=form), "user-1")
 
-        assert fake.last_update["$set"]["applicationForm"]["fields"][0]["key"] == "shop_name"
+        assert markets.last_update["$set"]["applicationForm"] is None
 
 
 class TestFieldValidation:
@@ -277,14 +251,6 @@ class TestFieldValidation:
                 }
             ])
 
-    def test_market_put_validates_the_options_of_a_form_it_carries(self, markets, applications):
-        bad = ApplicationForm(fields=[
-            FormField(key="size", label="Size", type="select", options=["Small", "Small"]),
-        ])
-
-        with pytest.raises(ValueError, match="Duplicate option"):
-            MarketsApi.update_market("market-123", _client_market(application_form=bad), "user-1")
-
     def test_every_supported_type_is_accepted(self, markets, applications):
         fields = [
             {"key": "a", "label": "A", "type": "text"},
@@ -307,6 +273,13 @@ class TestFieldValidation:
                 {"key": "field_2", "label": "Two", "type": "text"},
             ])
 
+    def test_keys_differing_only_in_whitespace_are_duplicates(self, markets, applications):
+        with pytest.raises(ValueError, match="Duplicate field key 'name'"):
+            self._save([
+                {"key": "name", "label": "One", "type": "text"},
+                {"key": " name ", "label": "Two", "type": "text"},
+            ])
+
     def test_blank_key_is_refused(self, markets, applications):
         with pytest.raises(ValueError, match="non-empty key"):
             self._save([{"key": "   ", "label": "Nameless", "type": "text"}])
@@ -315,20 +288,61 @@ class TestFieldValidation:
         with pytest.raises(ValueError, match="non-empty label"):
             self._save([{"key": "x", "label": "", "type": "text"}])
 
-    def test_market_put_validates_a_form_it_carries(self, markets, applications):
-        bad = ApplicationForm(fields=[
-            FormField(key="dupe", label="One", type="text"),
-            FormField(key="dupe", label="Two", type="text"),
+    @pytest.mark.parametrize("key", ["a.b", "$where", "Name", "shop name", "shop-name", "aéb"])
+    def test_keys_outside_the_slug_charset_are_refused(self, markets, applications, key):
+        """Keys become document keys inside Application.form_data; a dot or a leading '$' is
+        exactly what Mongo update operators cannot address."""
+        with pytest.raises(ValueError, match="Invalid field key"):
+            self._save([{"key": key, "label": "Label", "type": "text"}])
+
+
+class TestNormalization:
+    """Validation runs on the normalized value, so the persisted value must be that same one."""
+
+    def _saved_fields(self, markets, fields):
+        MarketsApi.save_application_form("market-123", {"fields": fields}, "user-1")
+        return markets.last_update["$set"]["applicationForm"]["fields"]
+
+    def test_keys_and_labels_are_persisted_stripped(self, markets, applications):
+        fields = self._saved_fields(
+            markets, [{"key": " name ", "label": "  Your Name  ", "type": "text"}]
+        )
+
+        assert fields[0]["key"] == "name"
+        assert fields[0]["label"] == "Your Name"
+
+    def test_options_are_persisted_stripped(self, markets, applications):
+        fields = self._saved_fields(markets, [
+            {"key": "size", "label": "Size", "type": "select", "options": [" Small", "Large "]},
         ])
 
-        with pytest.raises(ValueError, match="Duplicate field key"):
-            MarketsApi.update_market("market-123", _client_market(application_form=bad), "user-1")
+        assert fields[0]["options"] == ["Small", "Large"]
+
+    def test_order_is_renormalized_to_the_array_position(self, markets, applications):
+        """Array position is the display order; the builder and the preview must not disagree."""
+        fields = self._saved_fields(markets, [
+            {"key": "a", "label": "A", "type": "text", "order": 7},
+            {"key": "b", "label": "B", "type": "text", "order": 7},
+            {"key": "c", "label": "C", "type": "text", "order": 2},
+        ])
+
+        assert [f["order"] for f in fields] == [0, 1, 2]
+        assert [f["key"] for f in fields] == ["a", "b", "c"]
+
+    def test_non_select_fields_are_persisted_without_options(self, markets, applications):
+        fields = self._saved_fields(
+            markets, [{"key": "a", "label": "A", "type": "text", "options": ["stray"]}]
+        )
+
+        assert fields[0]["options"] == []
 
 
 class TestGetApplicationForm:
     def test_returns_camel_case_form_and_editable_state(self, markets, applications):
         MarketsApi.save_application_form("market-123", VALID_FORM, "user-1")
-        markets.doc = _stored_market(applicationForm=markets.last_update["$set"]["applicationForm"])
+        markets.doc = stored_market(
+            applicationForm=markets.last_update["$set"]["applicationForm"]
+        )
 
         result = MarketsApi.get_application_form("market-123", "user-1")
 
@@ -353,7 +367,7 @@ class TestGetApplicationForm:
     def test_reports_the_lock_reason_out_of_draft(self, monkeypatch, applications):
         monkeypatch.setattr(
             MarketsApi, "markets_collection",
-            FakeMarketsCollection(_stored_market(phase=MarketPhase.ARCHIVED.value)),
+            FakeMarketsCollection(stored_market(phase=MarketPhase.ARCHIVED)),
         )
         monkeypatch.setattr(PermissionsApi, "user_has_permission", lambda *_a, **_kw: True)
 

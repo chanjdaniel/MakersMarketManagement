@@ -190,10 +190,13 @@ async function loadApplicationForm() {
 /** A form with no fields yet is an untouched starting state, not a mistake to flag. */
 const formIsEmpty = computed(() => (applicationForm.value?.fields ?? []).length === 0);
 
+/** The charset the back-end holds field keys to; they become document keys on every answer. */
+const FIELD_KEY_PATTERN = /^[a-z0-9_]+$/;
+
 /**
  * Field keys and select options are the primary key and the persisted values of every
- * applicant's answers, so the back-end rejects blank or duplicate ones. Say so before the
- * organizer clicks Save.
+ * applicant's answers, so the back-end rejects blank, duplicate, or unaddressable ones. Say so
+ * before the organizer clicks Save.
  */
 const formValidationError = computed<string | null>(() => {
     const fields = applicationForm.value?.fields ?? [];
@@ -203,6 +206,9 @@ const formValidationError = computed<string | null>(() => {
         const key = (field.key ?? '').trim();
         if (!field.label?.trim()) return 'Every field needs a label.';
         if (!key) return `Field "${field.label}" needs a key.`;
+        if (!FIELD_KEY_PATTERN.test(key)) {
+            return `Key "${key}" is invalid. Use lowercase letters, numbers, and underscores only.`;
+        }
         if (seen.has(key)) return `Duplicate field key "${key}". Keys must be unique.`;
         seen.add(key);
 
@@ -249,9 +255,11 @@ async function saveApplicationForm() {
     } catch (err: unknown) {
         formSaveStatus.value = 'error';
         formErrorMessage.value = getApiErrorMessage(err, 'Failed to save form');
-        // A 409 means the server locked the form under us; stop presenting it as editable.
+        // A 409 means the server locked the form under us; stop presenting the rejected edits as
+        // editable, and put back the form applicants will actually see.
         if (getApiErrorStatus(err) === 409) {
             formLockReason.value = formErrorMessage.value;
+            await loadApplicationForm();
         }
     }
 }

@@ -51,10 +51,18 @@ function updateLabel(label: string) {
   emitUpdate(props.keyTouched ? { label } : { label, key: slugify(label) });
 }
 
+/** Clearing the key hands it back to the label, which is what its placeholder promises. */
 function updateKey(key: string) {
   if (props.readonly) return;
-  emit('update:keyTouched', true);
+  emit('update:keyTouched', Boolean(key));
   emitUpdate({ key });
+}
+
+/** Re-derive on the way out rather than on every keystroke, so a cleared key can be retyped
+ * from empty without the derived one reappearing under the caret. */
+function keyBlurred() {
+  if (props.readonly || local.value.key) return;
+  emitUpdate({ key: slugify(local.value.label) });
 }
 
 function addOption() {
@@ -94,6 +102,7 @@ function updateOption(idx: number, value: string) {
         class="field-input field-input-sm"
         :value="local.key"
         @input="updateKey(($event.target as HTMLInputElement).value)"
+        @blur="keyBlurred()"
         :disabled="readonly"
         placeholder="auto-generated from label"
         data-testid="form-field-key-input"

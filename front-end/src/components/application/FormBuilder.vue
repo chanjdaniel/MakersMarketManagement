@@ -143,7 +143,7 @@ const fieldCount = computed(() => fields.value.length);
               :readonly="readonly"
               :keyTouched="keyTouched[index] ?? false"
               @update:field="(f: FormField) => updateField(index, f)"
-              @update:keyTouched="keyTouched[index] = true"
+              @update:keyTouched="(touched: boolean) => (keyTouched[index] = touched)"
             />
           </div>
         </div>

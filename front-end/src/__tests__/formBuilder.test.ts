@@ -82,6 +82,24 @@ describe('FormBuilder', () => {
     expect(form.value?.fields[0].key).toBe('custom_key');
   });
 
+  it('hands a cleared key back to the label, as its placeholder promises', async () => {
+    const { wrapper, form } = mountWithParent(null);
+
+    await wrapper.get('[data-testid="form-builder-add-field-button"]').trigger('click');
+    await wrapper.get('[data-testid="form-field-label-input"]').setValue('Business Name');
+
+    const key = wrapper.get('[data-testid="form-field-key-input"]');
+    await key.setValue('custom_key');
+    await key.setValue('');
+    await key.trigger('blur');
+
+    expect(form.value?.fields[0].key).toBe('business_name');
+
+    // ...and it tracks the label again from here on.
+    await wrapper.get('[data-testid="form-field-label-input"]').setValue('Shop Name');
+    expect(form.value?.fields[0].key).toBe('shop_name');
+  });
+
   it('keeps the hand-edited flag with its field when an earlier field is removed', async () => {
     const { wrapper, form } = mountWithParent(null);
 

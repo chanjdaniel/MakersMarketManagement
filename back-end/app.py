@@ -659,8 +659,6 @@ def update_market(market_id: str) -> Response:
         return jsonify({"error": str(e)}), 404
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 409
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
@@ -670,6 +668,7 @@ def update_market(market_id: str) -> Response:
 def save_application_form(market_id: str) -> Response:
     """Save or update the application form for a market.
 
+    The only writer of the application form; a market PUT preserves the stored one.
     Only allowed in ``draft`` phase.  Once any application exists for the market
     the form is locked (D9) and further edits are refused.
     """
@@ -696,10 +695,10 @@ def save_application_form(market_id: str) -> Response:
 
     except MarketsApi.MarketNotFoundError as e:
         return jsonify({"error": str(e)}), 404
+    except MarketsApi.ApplicationFormLockedError as e:
+        return jsonify({"error": str(e)}), 409
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 409
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
