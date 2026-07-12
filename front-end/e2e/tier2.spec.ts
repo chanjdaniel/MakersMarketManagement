@@ -95,7 +95,7 @@ test.describe('Tier 2 - Market role management', () => {
     const loginBody = await loginRes.json() as { user_data: { id: string } };
     const userId = loginBody.user_data.id;
 
-    const orgId = await ensureTestOrg(request, BACKEND_URL, TEST_USER.email);
+    const orgId = await ensureTestOrg(request, BACKEND_URL, TEST_USER.email, TEST_USER.password);
 
     marketName = `E2E Market Roles ${Date.now()}`;
     const marketRes = await request.post(`${BACKEND_URL}/markets`, {

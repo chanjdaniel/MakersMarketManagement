@@ -96,6 +96,11 @@ if [ "$ORG_COUNT" -eq 0 ]; then
 else
   echo "  User already has $ORG_COUNT organization(s), skipping creation."
   ORG_ID=$(echo "$ORG_CHECK" | python3 -c "import sys,json; print(json.load(sys.stdin)['organizations'][0]['id'])" 2>/dev/null || echo "")
+  if [ -z "$ORG_ID" ]; then
+    echo "  ERROR: Could not extract existing organization ID"
+    exit 1
+  fi
+  echo "  Organization ID: $ORG_ID"
 fi
 
 # ── 4. Create a market ──

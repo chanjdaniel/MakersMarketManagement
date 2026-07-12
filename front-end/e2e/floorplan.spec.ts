@@ -9,7 +9,7 @@ const CSV_PATH = path.resolve(__dirname, 'fixtures', 'test-vendors.csv')
 
 test.describe('Floorplan workflow E2E', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureTestOrg(request, BACKEND_URL, TEST_USER.email)
+    await ensureTestOrg(request, BACKEND_URL, TEST_USER.email, TEST_USER.password)
   })
 
   test('create market from floorplan, complete wizard, and verify save', async ({
