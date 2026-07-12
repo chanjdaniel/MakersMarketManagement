@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import ElementFileDrop from '@/components/elements/ElementFileDrop.vue';
 import ElementOrgSelect from '@/components/elements/ElementOrgSelect.vue';
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { type Market, MarketRole } from '@/assets/types/datatypes.ts'
 import axios from 'axios';
@@ -18,6 +18,10 @@ const next = ref(false);
 const marketName = ref("");
 const selectedOrgId = ref("");
 const errorMessage = ref("");
+
+watch(selectedOrgId, () => {
+    errorMessage.value = "";
+});
 
 const handleFileUploaded = (files: unknown) => {
     uploadedFiles.value = files;

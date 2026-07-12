@@ -57,28 +57,27 @@ export async function loginViaApi(
 
 /**
  * Helper: ensure the test user has at least one organization.
- * Logs in first, since the /organizations endpoints are login-protected and
- * the caller may pass a request context that has never authenticated.
+ * Assumes the request context already carries a Flask session cookie
+ * (the /organizations endpoints are login-protected).
  * Creates an organization named 'E2E Test Org' if none exist.
  * Returns the organization ID.
  */
-export async function ensureTestOrg(
+export async function ensureTestOrgAuthenticated(
   request: APIRequestContext,
   baseURL: string,
   email: string,
-  password: string,
 ): Promise<string> {
-  await loginViaApi(request, baseURL, email, password);
-
   const orgsRes = await request.get(`${baseURL}/organizations`, {
     headers: { 'X-Owner-Email': email },
   });
-  if (orgsRes.ok()) {
-    const body = await orgsRes.json() as { organizations: { id: string }[] };
-    if (body.organizations && body.organizations.length > 0) {
-      return body.organizations[0].id;
-    }
+  if (!orgsRes.ok()) {
+    throw new Error(`Organization list failed: ${orgsRes.status()} ${await orgsRes.text()}`);
   }
+  const body = await orgsRes.json() as { organizations: { id: string }[] };
+  if (body.organizations && body.organizations.length > 0) {
+    return body.organizations[0].id;
+  }
+
   const createRes = await request.post(`${baseURL}/organizations`, {
     headers: {
       'Content-Type': 'application/json',
@@ -91,6 +90,21 @@ export async function ensureTestOrg(
   }
   const createBody = await createRes.json() as { organization_id: string };
   return createBody.organization_id;
+}
+
+/**
+ * Helper: log in and ensure the test user has at least one organization.
+ * Use this from call sites whose request context has never authenticated.
+ * Returns the organization ID.
+ */
+export async function ensureTestOrg(
+  request: APIRequestContext,
+  baseURL: string,
+  email: string,
+  password: string,
+): Promise<string> {
+  await loginViaApi(request, baseURL, email, password);
+  return ensureTestOrgAuthenticated(request, baseURL, email);
 }
 
 /**
@@ -117,7 +131,7 @@ export async function seedMarketWithVendors(
   // Step 1: Login to get a session cookie and the user UUID
   const userId = await loginViaApi(request, baseURL, email, password);
 
-  const orgId = await ensureTestOrg(request, baseURL, email, password);
+  const orgId = await ensureTestOrgAuthenticated(request, baseURL, email);
 
   // Step 2: Create a market (user must own it)
   const marketName = `E2E Market ${Date.now()}`;
@@ -189,7 +203,7 @@ export async function seedPublishedMarketWithAssignments(
   // Step 1: Login
   const userId = await loginViaApi(request, baseURL, email, password);
 
-  const orgId = await ensureTestOrg(request, baseURL, email, password);
+  const orgId = await ensureTestOrgAuthenticated(request, baseURL, email);
 
   // Step 2: Create a market
   const marketName = `E2E Published ${Date.now()}`;
