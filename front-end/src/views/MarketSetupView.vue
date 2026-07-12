@@ -11,14 +11,20 @@ import ElementTierSetup from '@/components/elements/ElementTierSetup.vue';
 import ElementLocationSetup from '@/components/elements/ElementLocationSetup.vue';
 import ElementSectionSetup from '@/components/elements/ElementSectionSetup.vue';
 import ChoosePathOverlay from '@/components/floorplan/ChoosePathOverlay.vue';
-import { type SetupObject, type Market } from '@/assets/types/datatypes';
+import { type SetupObject, type Market, type ApplicationForm } from '@/assets/types/datatypes';
 import { api } from '@/utils/api';
+import FormBuilder from '@/components/application/FormBuilder.vue';
+import FormPreview from '@/components/application/FormPreview.vue';
 
 const router = useRouter();
 
 const showPathChoice = ref(false);
+const activeTab = ref<'form' | 'setup'>('setup');
 
 const market = ref<Market | null>(null);
+const applicationForm = ref<ApplicationForm | null>(null);
+const formSaveStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle');
+const formErrorMessage = ref<string | null>(null);
 const setupObject = reactive<SetupObject>({
     colNames: [],
     colValues: [],
@@ -142,7 +148,47 @@ onMounted(() => {
     // retrieve view state
     const setupPageIdx = JSON.parse(localStorage.getItem("setupPageIdx") || "null");
     pageIdx.value = setupPageIdx === null ? 0 : setupPageIdx;
+
+    // Load existing application form from market
+    if (market.value?.applicationForm) {
+        applicationForm.value = market.value.applicationForm;
+    } else if (market.value?.id) {
+        loadApplicationForm();
+    }
 });
+
+async function loadApplicationForm() {
+    if (!market.value?.id) return;
+    try {
+        const response = await api.get(`/markets/${market.value.id}/application-form`);
+        if (response.data?.application_form) {
+            applicationForm.value = response.data.application_form;
+        }
+    } catch {
+        // Form doesn't exist yet, that's fine
+    }
+}
+
+async function saveApplicationForm() {
+    if (!market.value?.id) return;
+    formSaveStatus.value = 'saving';
+    formErrorMessage.value = null;
+    try {
+        const response = await api.put(
+            `/markets/${market.value.id}/application-form`,
+            applicationForm.value,
+        );
+        formSaveStatus.value = 'saved';
+        if (response.data?.application_form) {
+            applicationForm.value = response.data.application_form;
+        }
+        setTimeout(() => { if (formSaveStatus.value === 'saved') formSaveStatus.value = 'idle'; }, 2000);
+    } catch (err: unknown) {
+        formSaveStatus.value = 'error';
+        const axiosErr = err as { response?: { data?: { error?: string } } };
+        formErrorMessage.value = axiosErr?.response?.data?.error || 'Failed to save form';
+    }
+}
 
 const updateMarket = async () => {
     localStorage.setItem("market", JSON.stringify(market.value));
@@ -223,8 +269,77 @@ watch(pageIdx, (newIdx) => {
             <div class="settings-container">
                 <div class="settings-header">
                     <h1>Settings</h1>
+                    <div class="tab-bar">
+                        <button
+                            :class="['tab-button', { active: activeTab === 'form' }]"
+                            @click="activeTab = 'form'"
+                            data-testid="market-setup-form-tab"
+                        >
+                            Application Form
+                        </button>
+                        <button
+                            :class="['tab-button', { active: activeTab === 'setup' }]"
+                            @click="activeTab = 'setup'"
+                            data-testid="market-setup-setup-tab"
+                        >
+                            Market Setup
+                        </button>
+                    </div>
                 </div>
-                <div class="settings-body">
+
+                <!-- Application Form Tab -->
+                <div v-if="activeTab === 'form'" class="settings-body">
+                    <div class="double-column-body">
+                        <ElementSettingContainer>
+                            <template #setting-title>
+                                <h2>Form Builder</h2>
+                            </template>
+                            <template #setting-content>
+                                <div class="form-builder-container">
+                                    <FormBuilder
+                                        :applicationForm="applicationForm"
+                                        @update:applicationForm="(form: ApplicationForm) => applicationForm = form"
+                                    />
+                                    <div class="form-save-row">
+                                        <button
+                                            class="done-button"
+                                            :disabled="formSaveStatus === 'saving'"
+                                            @click="saveApplicationForm()"
+                                            data-testid="form-builder-save-button"
+                                        >
+                                            {{ formSaveStatus === 'saving' ? 'Saving...' : 'Save Form' }}
+                                        </button>
+                                        <span
+                                            v-if="formSaveStatus === 'saved'"
+                                            class="save-status success"
+                                            data-testid="form-builder-save-success"
+                                        >
+                                            Saved
+                                        </span>
+                                        <span
+                                            v-if="formSaveStatus === 'error'"
+                                            class="save-status error"
+                                            data-testid="form-builder-save-error"
+                                        >
+                                            {{ formErrorMessage }}
+                                        </span>
+                                    </div>
+                                </div>
+                            </template>
+                        </ElementSettingContainer>
+                        <ElementSettingContainer>
+                            <template #setting-title>
+                                <h2>Preview</h2>
+                            </template>
+                            <template #setting-content>
+                                <FormPreview :applicationForm="applicationForm" />
+                            </template>
+                        </ElementSettingContainer>
+                    </div>
+                </div>
+
+                <!-- Market Setup Tab (existing wizard) -->
+                <div v-if="activeTab === 'setup'" class="settings-body">
                     <template v-if="pageIdx === 0">
                         <div class="double-column-body">
                             <ElementSettingContainer>
@@ -321,7 +436,7 @@ watch(pageIdx, (newIdx) => {
                     data-testid="market-setup-discord-webhook-input"
                 />
             </div>
-            <div style="width: 100%; display: flex; flex-direction: row; justify-content: space-between;">
+            <div v-if="activeTab === 'setup'" style="width: 100%; display: flex; flex-direction: row; justify-content: space-between;">
                 <div>
                     <button v-if="pageIdx !== 0" class="done-button" @click="handleBack" data-testid="market-setup-back-button">Back</button>
                 </div>
@@ -386,7 +501,35 @@ watch(pageIdx, (newIdx) => {
     display: flex;
     flex-direction: row;
     align-items: center;
-    justify-content: center;
+    justify-content: space-between;
+    padding: 0 20px;
+}
+
+.tab-bar {
+    display: flex;
+    flex-direction: row;
+    gap: 2px;
+}
+
+.tab-button {
+    padding: 6px 16px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    font-family: 'Outfit Regular';
+    font-size: 14px;
+    color: #999;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.tab-button:hover {
+    color: #ddd;
+}
+
+.tab-button.active {
+    color: white;
+    border-bottom-color: var(--mm-green);
 }
 
 .settings-body {
@@ -502,5 +645,36 @@ h2 {
     border: 1px solid var(--mm-grey, #b0b0b0);
     border-radius: 5px;
     background-color: white;
+}
+
+.form-builder-container {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    height: 100%;
+    overflow-y: auto;
+}
+
+.form-save-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--mm-grey, #eee);
+}
+
+.save-status {
+    font-family: 'Outfit Regular';
+    font-size: 13px;
+}
+
+.save-status.success {
+    color: var(--mm-green);
+}
+
+.save-status.error {
+    color: var(--mm-red, #cc0000);
 }
 </style>

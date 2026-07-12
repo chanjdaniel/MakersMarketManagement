@@ -3,7 +3,7 @@ from typing import Optional, Dict, Any, List
 from pymongo.results import InsertOneResult, UpdateResult, DeleteResult
 from pydantic import BaseModel
 from bson import ObjectId
-from datatypes import Market, MarketPhase, MarketRole, MarketTableRow, UnassignedTableEntry
+from datatypes import ApplicationForm, FormField, Market, MarketPhase, MarketRole, MarketTableRow, UnassignedTableEntry
 from assignment.assignment import assign_market
 from assignment.utils import convert_keys_to_snake_case, convert_keys_to_camel_case
 import api.source_data as SourceDataApi
@@ -1000,3 +1000,121 @@ def delete_market(market_id: str, requesting_user: str) -> DeleteResult:
             logger.warning(f"Failed to remove market from organization: {e}")
 
     return markets_collection.delete_one({"id": market_id})
+
+
+def save_application_form(market_id: str, application_form_data: dict, requesting_user: str) -> dict:
+    """Save or update the application form for a market.
+
+    Phase gate: forms can only be edited when the market is in ``draft`` phase.
+    D9 lock: once any application exists for the market the form is frozen.
+
+    Returns the saved ``ApplicationForm`` as a dict on success.
+
+    Raises:
+        ValueError: market not found or validation failure
+        PermissionError: user lacks EDITOR+ permission
+        RuntimeError: phase gate or D9 lock prevents editing
+    """
+    market_dict = markets_collection.find_one({"id": market_id})
+    if not market_dict:
+        raise ValueError("Market not found")
+
+    market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
+    try:
+        market = Market(**market_dict_snake)
+    except Exception as e:
+        raise ValueError(f"Invalid market data: {e}")
+
+    organization = None
+    if market.organization_id:
+        org_dict = OrgsApi.get_organization(market.organization_id)
+        if org_dict:
+            org_dict.pop('_id', None)
+            try:
+                from datatypes import Organization
+                organization = Organization(**org_dict)
+            except Exception:
+                pass
+
+    if not PermissionsApi.user_has_permission(requesting_user, market, MarketRole.EDITOR, organization):
+        raise PermissionError("User does not have permission to edit this market")
+
+    # Only draft phase allows form editing
+    if market.phase != MarketPhase.DRAFT:
+        raise RuntimeError(
+            "Application form can only be edited while the market is in draft phase. "
+            f"Current phase: {market.phase.value}."
+        )
+
+    # D9: form freezes once any application exists
+    existing_app_count = db["applications"].count_documents({"market_id": market_id})
+    if existing_app_count > 0:
+        raise RuntimeError(
+            "Application form is locked. "
+            f"{existing_app_count} application(s) already exist for this market. "
+            "The form cannot be modified once applicants have submitted."
+        )
+
+    try:
+        application_form = ApplicationForm(**application_form_data)
+    except Exception as e:
+        raise ValueError(f"Invalid application form data: {e}")
+
+    if not application_form.fields:
+        raise ValueError("Application form must include at least one field")
+
+    valid_types = {"text", "number", "select", "multi_select", "checkbox", "date", "email"}
+    for field in application_form.fields:
+        if field.type not in valid_types:
+            raise ValueError(
+                f"Unrecognized field type '{field.type}' for field '{field.key}'. "
+                f"Valid types: {', '.join(sorted(valid_types))}"
+            )
+        if field.type in ("select", "multi_select") and not field.options:
+            raise ValueError(
+                f"Field '{field.key}' is type '{field.type}' but has no options defined"
+            )
+
+    form_dict = application_form.model_dump()
+    markets_collection.update_one(
+        {"id": market_id},
+        {"$set": {"applicationForm": convert_keys_to_camel_case(form_dict)}}
+    )
+
+    return form_dict
+
+
+def get_application_form(market_id: str, requesting_user: str) -> dict:
+    """Retrieve the application form for a market.
+
+    Returns the ``ApplicationForm`` as a dict, or ``None`` if no form is set.
+    Requires VIEWER+ permission.
+    """
+    market_dict = markets_collection.find_one({"id": market_id})
+    if not market_dict:
+        raise ValueError("Market not found")
+
+    market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
+    try:
+        market = Market(**market_dict_snake)
+    except Exception as e:
+        raise ValueError(f"Invalid market data: {e}")
+
+    organization = None
+    if market.organization_id:
+        org_dict = OrgsApi.get_organization(market.organization_id)
+        if org_dict:
+            org_dict.pop('_id', None)
+            try:
+                from datatypes import Organization
+                organization = Organization(**org_dict)
+            except Exception:
+                pass
+
+    if not PermissionsApi.user_has_permission(requesting_user, market, MarketRole.VIEWER, organization):
+        raise PermissionError("User does not have permission to view this market")
+
+    if market.application_form is None:
+        return None
+
+    return market.application_form.model_dump()
