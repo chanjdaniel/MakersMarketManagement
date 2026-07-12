@@ -27,8 +27,8 @@ const hasFields = computed(() => sortedFields.value.length > 0);
 
     <form v-else class="preview-form" @submit.prevent>
       <div
-        v-for="field in sortedFields"
-        :key="field.key"
+        v-for="(field, fieldIdx) in sortedFields"
+        :key="fieldIdx"
         class="preview-field"
         :data-testid="`form-preview-field-${field.key}`"
       >

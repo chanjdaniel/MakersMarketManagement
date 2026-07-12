@@ -12,7 +12,7 @@ import ElementLocationSetup from '@/components/elements/ElementLocationSetup.vue
 import ElementSectionSetup from '@/components/elements/ElementSectionSetup.vue';
 import ChoosePathOverlay from '@/components/floorplan/ChoosePathOverlay.vue';
 import { type SetupObject, type Market, type ApplicationForm } from '@/assets/types/datatypes';
-import { api } from '@/utils/api';
+import { api, getApiErrorMessage } from '@/utils/api';
 import FormBuilder from '@/components/application/FormBuilder.vue';
 import FormPreview from '@/components/application/FormPreview.vue';
 
@@ -25,6 +25,8 @@ const market = ref<Market | null>(null);
 const applicationForm = ref<ApplicationForm | null>(null);
 const formSaveStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle');
 const formErrorMessage = ref<string | null>(null);
+const formLockReason = ref<string | null>(null);
+const formLocked = computed(() => formLockReason.value !== null);
 const setupObject = reactive<SetupObject>({
     colNames: [],
     colValues: [],
@@ -149,28 +151,63 @@ onMounted(() => {
     const setupPageIdx = JSON.parse(localStorage.getItem("setupPageIdx") || "null");
     pageIdx.value = setupPageIdx === null ? 0 : setupPageIdx;
 
-    // Load existing application form from market
-    if (market.value?.applicationForm) {
-        applicationForm.value = market.value.applicationForm;
-    } else if (market.value?.id) {
-        loadApplicationForm();
-    }
+    // Paint the cached form immediately, then reconcile with the server, which also
+    // tells us whether the form is still editable.
+    applicationForm.value = market.value?.applicationForm ?? null;
+    loadApplicationForm();
 });
+
+/** The market document is the single source of truth for the form; keep it in step. */
+function adoptApplicationForm(form: ApplicationForm | null) {
+    applicationForm.value = form;
+    if (market.value) {
+        market.value.applicationForm = form ?? undefined;
+        localStorage.setItem("market", JSON.stringify(market.value));
+    }
+}
 
 async function loadApplicationForm() {
     if (!market.value?.id) return;
     try {
         const response = await api.get(`/markets/${market.value.id}/application-form`);
-        if (response.data?.application_form) {
-            applicationForm.value = response.data.application_form;
-        }
+        adoptApplicationForm(response.data?.application_form ?? null);
+        formLockReason.value = response.data?.lock_reason ?? null;
     } catch {
-        // Form doesn't exist yet, that's fine
+        // Market not readable yet; leave the cached form and let a save surface the error.
     }
 }
 
+/**
+ * Field keys are the primary key of every applicant's answers, so the back-end rejects
+ * blank or duplicate ones. Say so before the organizer clicks Save.
+ */
+const formValidationError = computed<string | null>(() => {
+    const fields = applicationForm.value?.fields ?? [];
+    if (fields.length === 0) return 'Add at least one field before saving.';
+
+    const seen = new Set<string>();
+    for (const field of fields) {
+        const key = (field.key ?? '').trim();
+        if (!field.label?.trim()) return 'Every field needs a label.';
+        if (!key) return `Field "${field.label}" needs a key.`;
+        if (seen.has(key)) return `Duplicate field key "${key}". Keys must be unique.`;
+        seen.add(key);
+        if (
+            (field.type === 'select' || field.type === 'multi_select') &&
+            field.options.filter((o) => o.trim()).length === 0
+        ) {
+            return `Field "${field.label}" is a ${field.type} and needs at least one option.`;
+        }
+    }
+    return null;
+});
+
+const canSaveForm = computed(
+    () => !formLocked.value && formValidationError.value === null && formSaveStatus.value !== 'saving',
+);
+
 async function saveApplicationForm() {
-    if (!market.value?.id) return;
+    if (!market.value?.id || !canSaveForm.value) return;
     formSaveStatus.value = 'saving';
     formErrorMessage.value = null;
     try {
@@ -180,13 +217,12 @@ async function saveApplicationForm() {
         );
         formSaveStatus.value = 'saved';
         if (response.data?.application_form) {
-            applicationForm.value = response.data.application_form;
+            adoptApplicationForm(response.data.application_form);
         }
         setTimeout(() => { if (formSaveStatus.value === 'saved') formSaveStatus.value = 'idle'; }, 2000);
     } catch (err: unknown) {
         formSaveStatus.value = 'error';
-        const axiosErr = err as { response?: { data?: { error?: string } } };
-        formErrorMessage.value = axiosErr?.response?.data?.error || 'Failed to save form';
+        formErrorMessage.value = getApiErrorMessage(err, 'Failed to save form');
     }
 }
 
@@ -296,28 +332,43 @@ watch(pageIdx, (newIdx) => {
                             </template>
                             <template #setting-content>
                                 <div class="form-builder-container">
+                                    <div
+                                        v-if="formLocked"
+                                        class="form-lock-banner"
+                                        data-testid="form-builder-lock-banner"
+                                    >
+                                        {{ formLockReason }}
+                                    </div>
                                     <FormBuilder
                                         :applicationForm="applicationForm"
+                                        :readonly="formLocked"
                                         @update:applicationForm="(form: ApplicationForm) => applicationForm = form"
                                     />
-                                    <div class="form-save-row">
+                                    <div v-if="!formLocked" class="form-save-row">
                                         <button
                                             class="done-button"
-                                            :disabled="formSaveStatus === 'saving'"
+                                            :disabled="!canSaveForm"
                                             @click="saveApplicationForm()"
                                             data-testid="form-builder-save-button"
                                         >
                                             {{ formSaveStatus === 'saving' ? 'Saving...' : 'Save Form' }}
                                         </button>
                                         <span
-                                            v-if="formSaveStatus === 'saved'"
+                                            v-if="formValidationError"
+                                            class="save-status error"
+                                            data-testid="form-builder-validation-error"
+                                        >
+                                            {{ formValidationError }}
+                                        </span>
+                                        <span
+                                            v-else-if="formSaveStatus === 'saved'"
                                             class="save-status success"
                                             data-testid="form-builder-save-success"
                                         >
                                             Saved
                                         </span>
                                         <span
-                                            v-if="formSaveStatus === 'error'"
+                                            v-else-if="formSaveStatus === 'error'"
                                             class="save-status error"
                                             data-testid="form-builder-save-error"
                                         >
@@ -663,6 +714,17 @@ h2 {
     margin-top: 8px;
     padding-top: 8px;
     border-top: 1px solid var(--mm-grey, #eee);
+}
+
+.form-lock-banner {
+    font-family: 'Outfit Regular';
+    font-size: 13px;
+    line-height: 1.4;
+    color: #7a5200;
+    background: #fff6e0;
+    border: 1px solid #f0d089;
+    border-radius: 6px;
+    padding: 10px 12px;
 }
 
 .save-status {

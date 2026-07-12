@@ -14,10 +14,14 @@ const FIELD_TYPES = [
   { value: 'email', label: 'Email' },
 ];
 
-const props = defineProps<{
-  field: FormField;
-  index: number;
-}>();
+const props = withDefaults(
+  defineProps<{
+    field: FormField;
+    index: number;
+    readonly?: boolean;
+  }>(),
+  { readonly: false },
+);
 
 const emit = defineEmits<{
   'update:field': [field: FormField];
@@ -35,16 +39,19 @@ function slugify(text: string): string {
     .replace(/^_|_$/g, '');
 }
 
+/** Derive the key from the label unless the organizer has hand-edited it. */
 function autoKeyFromLabel() {
-  if (!local.value.key || local.value.key === slugify(local.value.label)) {
-    const newKey = slugify(local.value.label);
-    if (newKey) {
-      emit('update:field', { ...local.value, key: newKey });
-    }
+  if (props.readonly) return;
+  if (local.value.key && local.value.key !== slugify(local.value.label)) return;
+
+  const newKey = slugify(local.value.label);
+  if (newKey) {
+    emit('update:field', { ...local.value, key: newKey });
   }
 }
 
 function emitUpdate(patch: Partial<FormField>) {
+  if (props.readonly) return;
   emit('update:field', { ...local.value, ...patch });
 }
 
@@ -74,6 +81,7 @@ function updateOption(idx: number, value: string) {
         :value="local.label"
         @input="emitUpdate({ label: ($event.target as HTMLInputElement).value })"
         @blur="autoKeyFromLabel()"
+        :disabled="readonly"
         placeholder="e.g. Business Name"
         data-testid="form-field-label-input"
       />
@@ -85,7 +93,8 @@ function updateOption(idx: number, value: string) {
         class="field-input field-input-sm"
         :value="local.key"
         @input="emitUpdate({ key: ($event.target as HTMLInputElement).value })"
-        placeholder="auto-generated"
+        :disabled="readonly"
+        placeholder="auto-generated from label"
         data-testid="form-field-key-input"
       />
     </div>
@@ -96,6 +105,7 @@ function updateOption(idx: number, value: string) {
         class="field-input"
         :value="local.type"
         @change="emitUpdate({ type: ($event.target as HTMLSelectElement).value })"
+        :disabled="readonly"
         data-testid="form-field-type-select"
       >
         <option v-for="ft in FIELD_TYPES" :key="ft.value" :value="ft.value">
@@ -110,6 +120,7 @@ function updateOption(idx: number, value: string) {
         type="checkbox"
         :checked="local.required"
         @change="emitUpdate({ required: ($event.target as HTMLInputElement).checked })"
+        :disabled="readonly"
         data-testid="form-field-required-checkbox"
       />
     </div>
@@ -126,10 +137,12 @@ function updateOption(idx: number, value: string) {
             class="field-input"
             :value="opt"
             @input="updateOption(optIdx, ($event.target as HTMLInputElement).value)"
+            :disabled="readonly"
             :placeholder="`Option ${optIdx + 1}`"
             data-testid="form-field-option-input"
           />
           <button
+            v-if="!readonly"
             class="icon-button icon-remove"
             @click="removeOption(optIdx)"
             data-testid="form-field-remove-option-button"
@@ -137,7 +150,12 @@ function updateOption(idx: number, value: string) {
             <IconCloseRound />
           </button>
         </div>
-        <button class="add-option-btn" @click="addOption" data-testid="form-field-add-option-button">
+        <button
+          v-if="!readonly"
+          class="add-option-btn"
+          @click="addOption"
+          data-testid="form-field-add-option-button"
+        >
           <IconAddRound /> Add option
         </button>
       </div>
@@ -149,6 +167,7 @@ function updateOption(idx: number, value: string) {
         class="field-input"
         :value="local.helpText || ''"
         @input="emitUpdate({ helpText: ($event.target as HTMLInputElement).value || undefined })"
+        :disabled="readonly"
         placeholder="Optional hint shown to applicants"
         data-testid="form-field-help-input"
       />
@@ -195,6 +214,13 @@ function updateOption(idx: number, value: string) {
   font-size: 13px;
   border: 1px solid var(--mm-grey, #b0b0b0);
   border-radius: 4px;
+}
+
+.field-input:disabled,
+.field-input[disabled] {
+  background: #f0f0f0;
+  color: var(--mm-grey, #666);
+  cursor: not-allowed;
 }
 
 .field-input-sm {

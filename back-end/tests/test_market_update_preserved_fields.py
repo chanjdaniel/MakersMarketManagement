@@ -26,6 +26,28 @@ class FakeMarketsCollection:
         return SimpleNamespace(inserted_id="mongo-id")
 
 
+class FakeApplicationsCollection:
+    def count_documents(self, _query):
+        return 0
+
+
+class FakeDb(dict):
+    """Any collection other than the ones seeded here is a no-op stand-in."""
+
+    def __missing__(self, name):
+        return SimpleNamespace(update_one=lambda *_a, **_kw: None)
+
+
+@pytest.fixture(autouse=True)
+def no_applications(monkeypatch):
+    """The D9 lock counts applications; keep that off the real database."""
+    monkeypatch.setattr(
+        MarketsApi,
+        "db",
+        FakeDb({MarketsApi.APPLICATIONS_COLLECTION: FakeApplicationsCollection()}),
+    )
+
+
 def _stored_market(**overrides):
     doc = {
         "id": "market-123",
@@ -101,18 +123,25 @@ def test_update_keeps_conventioner_fields_the_body_omits(monkeypatch):
     assert written["discordGuildId"] == "guild-1"
 
 
-def test_update_writes_conventioner_fields_the_body_does_carry(collection):
+def test_update_writes_conventioner_fields_the_body_does_carry(monkeypatch):
+    """The application form is only writable while the market is still editable (draft, no
+    applications); the D9 lock covering the other case lives in test_application_form.py."""
+    fake = FakeMarketsCollection(_stored_market(phase=MarketPhase.DRAFT.value))
+    monkeypatch.setattr(MarketsApi, "markets_collection", fake)
+    monkeypatch.setattr(PermissionsApi, "user_has_permission", lambda *_args, **_kwargs: True)
+
     form = ApplicationForm(fields=[FormField(key="website", label="Website", type="text")])
 
     MarketsApi.update_market("market-123", _client_market(application_form=form), "user-1")
 
-    written = collection.last_update["$set"]
+    written = fake.last_update["$set"]
     assert written["applicationForm"]["fields"][0]["label"] == "Website"
 
 
 def test_update_clears_conventioner_fields_the_body_explicitly_nulls(monkeypatch):
     fake = FakeMarketsCollection(
         _stored_market(
+            phase=MarketPhase.DRAFT.value,
             applicationForm={
                 "fields": [
                     {"key": "shop_name", "label": "Shop name", "type": "text", "required": True}

@@ -22,6 +22,131 @@ logger = logging.getLogger(__name__)
 db = get_database()
 markets_collection = db["markets"]
 
+APPLICATIONS_COLLECTION = "applications"
+
+VALID_FORM_FIELD_TYPES = {"text", "number", "select", "multi_select", "checkbox", "date", "email"}
+
+
+def _load_organization(organization_id: Optional[str]):
+    """Resolve a market's organization, or None when absent or unparseable."""
+    if not organization_id:
+        return None
+    org_dict = OrgsApi.get_organization(organization_id)
+    if not org_dict:
+        return None
+    org_dict.pop('_id', None)
+    from datatypes import Organization
+    try:
+        return Organization(**org_dict)
+    except Exception as e:
+        logger.warning(f"Failed to parse organization {organization_id}: {e}")
+        return None
+
+
+def _load_market_for(market_id: str, requesting_user: str, role: MarketRole, action: str) -> Market:
+    """Load a market and assert the requesting user holds at least ``role`` on it."""
+    market_dict = markets_collection.find_one({"id": market_id})
+    if not market_dict:
+        raise ValueError("Market not found")
+
+    market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
+    try:
+        market = Market(**market_dict_snake)
+    except Exception as e:
+        raise ValueError(f"Invalid market data: {e}")
+
+    organization = _load_organization(market.organization_id)
+    if not PermissionsApi.user_has_permission(requesting_user, market, role, organization):
+        raise PermissionError(f"User does not have permission to {action} this market")
+
+    return market
+
+
+def count_applications(market_id: str) -> int:
+    return db[APPLICATIONS_COLLECTION].count_documents({"market_id": market_id})
+
+
+def application_form_lock_reason(market: Market) -> Optional[str]:
+    """The single source of truth for whether a market's application form may be edited.
+
+    Returns the human-readable reason the form is locked, or None when it is editable.
+    Phase gate: forms are editable only in ``draft``. D9: the form freezes for good once
+    any application exists, so applicants can never have answered a question that moved.
+    """
+    if market.phase != MarketPhase.DRAFT:
+        return (
+            "Application form can only be edited while the market is in draft phase. "
+            f"Current phase: {market.phase.value}."
+        )
+
+    existing_app_count = count_applications(market.id)
+    if existing_app_count > 0:
+        return (
+            "Application form is locked. "
+            f"{existing_app_count} application(s) already exist for this market. "
+            "The form cannot be modified once applicants have submitted."
+        )
+
+    return None
+
+
+def _assert_application_form_editable(market: Market) -> None:
+    reason = application_form_lock_reason(market)
+    if reason:
+        raise RuntimeError(reason)
+
+
+def _validate_application_form(application_form: ApplicationForm) -> None:
+    """Field keys are the primary key of every applicant's answers, so they must be
+    present and unique; a duplicate key would silently overwrite another field's data."""
+    if not application_form.fields:
+        raise ValueError("Application form must include at least one field")
+
+    seen_keys = set()
+    for field in application_form.fields:
+        key = (field.key or "").strip()
+        if not key:
+            raise ValueError(
+                f"Field '{field.label or '(untitled)'}' must have a non-empty key"
+            )
+        if key in seen_keys:
+            raise ValueError(f"Duplicate field key '{key}'. Field keys must be unique.")
+        seen_keys.add(key)
+
+        if not (field.label or "").strip():
+            raise ValueError(f"Field '{key}' must have a non-empty label")
+
+        if field.type not in VALID_FORM_FIELD_TYPES:
+            raise ValueError(
+                f"Unrecognized field type '{field.type}' for field '{key}'. "
+                f"Valid types: {', '.join(sorted(VALID_FORM_FIELD_TYPES))}"
+            )
+        if field.type in ("select", "multi_select") and not field.options:
+            raise ValueError(
+                f"Field '{key}' is type '{field.type}' but has no options defined"
+            )
+
+
+def _application_form_dump(market: Market) -> Optional[Dict[str, Any]]:
+    return market.application_form.model_dump() if market.application_form else None
+
+
+def _guard_application_form_write(
+    market_dict: Dict[str, Any], existing_market: Market
+) -> None:
+    """Route any application-form write through the same lock the dedicated endpoint uses.
+
+    A market update body carries the whole document, so without this a client could rewrite
+    or null a locked form by PUTting /markets/{id} instead of /markets/{id}/application-form.
+    """
+    incoming = market_dict.get("application_form")
+    if incoming == _application_form_dump(existing_market):
+        return
+
+    _assert_application_form_editable(existing_market)
+    if incoming is not None:
+        _validate_application_form(ApplicationForm(**incoming))
+
 
 def _strip_persisted_assignment_statistics(market_dict: Dict[str, Any]) -> None:
     """Keep assignment statistics derived at read-time only, never persisted."""
@@ -330,33 +455,12 @@ def create_market(market: Market, owner_email: str) -> tuple:
 
 def update_market(market_id: str, market: Market, requesting_user: str) -> UpdateResult:
     """Update an existing market. Requires EDIT permission."""
-    existing_market_dict = markets_collection.find_one({"id": market_id})
-    if not existing_market_dict:
-        raise ValueError("Market not found")
-    
-    existing_market_dict_snake = convert_keys_to_snake_case(existing_market_dict.copy())
-    try:
-        existing_market = Market(**existing_market_dict_snake)
-    except Exception as e:
-        raise ValueError(f"Invalid market data: {e}")
-    
-    organization = None
-    if existing_market.organization_id:
-        org_dict = OrgsApi.get_organization(existing_market.organization_id)
-        if org_dict:
-            org_dict.pop('_id', None)
-            try:
-                from datatypes import Organization
-                organization = Organization(**org_dict)
-            except Exception:
-                pass
-    
-    if not PermissionsApi.user_has_permission(requesting_user, existing_market, MarketRole.EDITOR, organization):
-        raise PermissionError("User does not have permission to edit this market")
-    
+    existing_market = _load_market_for(market_id, requesting_user, MarketRole.EDITOR, "edit")
+
     market_dict = market.model_dump()
     _strip_persisted_assignment_statistics(market_dict)
     _preserve_server_owned_fields(market_dict, market, existing_market)
+    _guard_application_form_write(market_dict, existing_market)
     market_dict["roles"] = _convert_roles_keys_to_user_ids(market_dict.get("roles", {}))
     market_dict = convert_keys_to_camel_case(market_dict)
     
@@ -1005,116 +1109,49 @@ def delete_market(market_id: str, requesting_user: str) -> DeleteResult:
 def save_application_form(market_id: str, application_form_data: dict, requesting_user: str) -> dict:
     """Save or update the application form for a market.
 
-    Phase gate: forms can only be edited when the market is in ``draft`` phase.
-    D9 lock: once any application exists for the market the form is frozen.
+    Editability is decided by ``application_form_lock_reason``, the same gate
+    ``update_market`` applies, so the D9 lock holds on every route into the field.
 
-    Returns the saved ``ApplicationForm`` as a dict on success.
+    Returns the saved ``ApplicationForm`` as a camelCase dict on success.
 
     Raises:
         ValueError: market not found or validation failure
         PermissionError: user lacks EDITOR+ permission
         RuntimeError: phase gate or D9 lock prevents editing
     """
-    market_dict = markets_collection.find_one({"id": market_id})
-    if not market_dict:
-        raise ValueError("Market not found")
-
-    market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
-    try:
-        market = Market(**market_dict_snake)
-    except Exception as e:
-        raise ValueError(f"Invalid market data: {e}")
-
-    organization = None
-    if market.organization_id:
-        org_dict = OrgsApi.get_organization(market.organization_id)
-        if org_dict:
-            org_dict.pop('_id', None)
-            try:
-                from datatypes import Organization
-                organization = Organization(**org_dict)
-            except Exception:
-                pass
-
-    if not PermissionsApi.user_has_permission(requesting_user, market, MarketRole.EDITOR, organization):
-        raise PermissionError("User does not have permission to edit this market")
-
-    # Only draft phase allows form editing
-    if market.phase != MarketPhase.DRAFT:
-        raise RuntimeError(
-            "Application form can only be edited while the market is in draft phase. "
-            f"Current phase: {market.phase.value}."
-        )
-
-    # D9: form freezes once any application exists
-    existing_app_count = db["applications"].count_documents({"market_id": market_id})
-    if existing_app_count > 0:
-        raise RuntimeError(
-            "Application form is locked. "
-            f"{existing_app_count} application(s) already exist for this market. "
-            "The form cannot be modified once applicants have submitted."
-        )
+    market = _load_market_for(market_id, requesting_user, MarketRole.EDITOR, "edit")
+    _assert_application_form_editable(market)
 
     try:
         application_form = ApplicationForm(**application_form_data)
     except Exception as e:
         raise ValueError(f"Invalid application form data: {e}")
 
-    if not application_form.fields:
-        raise ValueError("Application form must include at least one field")
+    _validate_application_form(application_form)
 
-    valid_types = {"text", "number", "select", "multi_select", "checkbox", "date", "email"}
-    for field in application_form.fields:
-        if field.type not in valid_types:
-            raise ValueError(
-                f"Unrecognized field type '{field.type}' for field '{field.key}'. "
-                f"Valid types: {', '.join(sorted(valid_types))}"
-            )
-        if field.type in ("select", "multi_select") and not field.options:
-            raise ValueError(
-                f"Field '{field.key}' is type '{field.type}' but has no options defined"
-            )
-
-    form_dict = application_form.model_dump()
+    form_dict = convert_keys_to_camel_case(application_form.model_dump())
     markets_collection.update_one(
         {"id": market_id},
-        {"$set": {"applicationForm": convert_keys_to_camel_case(form_dict)}}
+        {"$set": {"applicationForm": form_dict}}
     )
 
     return form_dict
 
 
 def get_application_form(market_id: str, requesting_user: str) -> dict:
-    """Retrieve the application form for a market.
+    """Retrieve the application form for a market along with its lock state.
 
-    Returns the ``ApplicationForm`` as a dict, or ``None`` if no form is set.
-    Requires VIEWER+ permission.
+    Requires VIEWER+ permission. ``application_form`` is camelCase, matching the
+    front-end contract and the persisted market document. ``editable``/``lock_reason``
+    let the builder render read-only before an organizer invests work in a locked form.
     """
-    market_dict = markets_collection.find_one({"id": market_id})
-    if not market_dict:
-        raise ValueError("Market not found")
+    market = _load_market_for(market_id, requesting_user, MarketRole.VIEWER, "view")
 
-    market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
-    try:
-        market = Market(**market_dict_snake)
-    except Exception as e:
-        raise ValueError(f"Invalid market data: {e}")
+    lock_reason = application_form_lock_reason(market)
+    form_dict = _application_form_dump(market)
 
-    organization = None
-    if market.organization_id:
-        org_dict = OrgsApi.get_organization(market.organization_id)
-        if org_dict:
-            org_dict.pop('_id', None)
-            try:
-                from datatypes import Organization
-                organization = Organization(**org_dict)
-            except Exception:
-                pass
-
-    if not PermissionsApi.user_has_permission(requesting_user, market, MarketRole.VIEWER, organization):
-        raise PermissionError("User does not have permission to view this market")
-
-    if market.application_form is None:
-        return None
-
-    return market.application_form.model_dump()
+    return {
+        "application_form": convert_keys_to_camel_case(form_dict) if form_dict else None,
+        "editable": lock_reason is None,
+        "lock_reason": lock_reason,
+    }

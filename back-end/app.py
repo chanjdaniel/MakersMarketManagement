@@ -657,6 +657,8 @@ def update_market(market_id: str) -> Response:
 
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 409
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
@@ -713,11 +715,7 @@ def get_application_form(market_id: str) -> Response:
         if not user:
             return jsonify({"error": "User not found"}), 404
 
-        result = MarketsApi.get_application_form(market_id, requesting_user)
-        if result is None:
-            return jsonify({"application_form": None}), 200
-
-        return jsonify({"application_form": result}), 200
+        return jsonify(MarketsApi.get_application_form(market_id, requesting_user)), 200
 
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403

@@ -1,78 +1,58 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { computed } from 'vue';
 import draggable from 'vuedraggable';
 import { type FormField, type ApplicationForm } from '@/assets/types/datatypes';
 import FormFieldEditor from './FormFieldEditor.vue';
 import IconAddRound from '@/components/icons/IconAddRound.vue';
 import IconClickDrag from '@/components/icons/IconClickDrag.vue';
 
-const props = defineProps<{
-  applicationForm: ApplicationForm | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    applicationForm: ApplicationForm | null;
+    readonly?: boolean;
+  }>(),
+  { readonly: false },
+);
 
 const emit = defineEmits<{
   'update:applicationForm': [form: ApplicationForm];
 }>();
 
-const fields = ref<FormField[]>(props.applicationForm?.fields ?? []);
-
-watch(
-  () => props.applicationForm,
-  (newForm) => {
-    if (newForm) {
-      fields.value = [...newForm.fields];
-    }
-  },
-  { deep: true },
-);
-
-watch(
-  fields,
-  (newFields) => {
+/**
+ * The parent owns the form; this component holds no copy of it. `order` is normalised to
+ * the array index on every write so it stays a stable, unique list key regardless of how
+ * fields were added, removed, or dragged.
+ */
+const fields = computed<FormField[]>({
+  get: () => props.applicationForm?.fields ?? [],
+  set: (newFields) => {
+    if (props.readonly) return;
     emit('update:applicationForm', {
-      fields: newFields,
+      fields: newFields.map((f, i) => ({ ...f, order: i })),
       publishedAt: props.applicationForm?.publishedAt,
     });
   },
-  { deep: true },
-);
-
-const nextOrder = computed(() =>
-  fields.value.length > 0
-    ? Math.max(...fields.value.map((f) => f.order)) + 1
-    : 0,
-);
+});
 
 function addField() {
-  const idx = fields.value.length + 1;
   const newField: FormField = {
-    key: `field_${idx}`,
+    key: '',
     label: '',
     type: 'text',
     required: false,
     options: [],
     helpText: undefined,
-    order: nextOrder.value,
+    order: fields.value.length,
   };
-  fields.value.push(newField);
+  fields.value = [...fields.value, newField];
 }
 
 function removeField(index: number) {
-  fields.value.splice(index, 1);
+  fields.value = fields.value.filter((_, i) => i !== index);
 }
 
 function updateField(index: number, field: FormField) {
-  fields.value[index] = field;
-}
-
-function onDragEnd() {
-  fields.value.forEach((f, i) => {
-    f.order = i;
-  });
-  emit('update:applicationForm', {
-    fields: fields.value,
-    publishedAt: props.applicationForm?.publishedAt,
-  });
+  fields.value = fields.value.map((f, i) => (i === index ? field : f));
 }
 
 const fieldCount = computed(() => fields.value.length);
@@ -85,6 +65,7 @@ const fieldCount = computed(() => fields.value.length);
         {{ fieldCount }} field{{ fieldCount !== 1 ? 's' : '' }}
       </span>
       <button
+        v-if="!readonly"
         class="add-field-btn"
         @click="addField"
         data-testid="form-builder-add-field-button"
@@ -94,7 +75,8 @@ const fieldCount = computed(() => fields.value.length);
     </div>
 
     <div v-if="fields.length === 0" class="empty-state" data-testid="form-builder-empty">
-      <p>No fields yet. Click "Add Field" to start building your application form.</p>
+      <p v-if="readonly">This market has no application form.</p>
+      <p v-else>No fields yet. Click "Add Field" to start building your application form.</p>
     </div>
 
     <draggable
@@ -103,12 +85,12 @@ const fieldCount = computed(() => fields.value.length);
       item-key="order"
       handle=".drag-handle"
       ghost-class="drag-ghost"
-      @end="onDragEnd"
+      :disabled="readonly"
       data-testid="form-builder-field-list"
     >
       <template #item="{ element, index }">
         <div class="field-item">
-          <div class="drag-handle" data-testid="form-builder-drag-handle">
+          <div v-if="!readonly" class="drag-handle" data-testid="form-builder-drag-handle">
             <IconClickDrag />
           </div>
           <div class="field-card">
@@ -118,6 +100,7 @@ const fieldCount = computed(() => fields.value.length);
               <span class="field-type-badge">{{ element.type }}</span>
               <span v-if="element.required" class="required-badge">required</span>
               <button
+                v-if="!readonly"
                 class="remove-btn"
                 @click="removeField(index)"
                 data-testid="form-builder-remove-field-button"
@@ -128,6 +111,7 @@ const fieldCount = computed(() => fields.value.length);
             <FormFieldEditor
               :field="element"
               :index="index"
+              :readonly="readonly"
               @update:field="(f: FormField) => updateField(index, f)"
               @remove="removeField(index)"
             />
