@@ -10,7 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import skip_without_real_dependencies
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+skip_without_real_dependencies()
 
 import app as app_module
 import api.markets as MarketsApi

@@ -379,7 +379,8 @@ def load_market_context(market_id: str) -> Optional[MarketContext]:
     market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
     try:
         market = Market(**market_dict_snake)
-    except Exception:
+    except Exception as e:
+        logger.warning("Stored market %s failed validation: %s", market_id, e)
         return MarketContext(market_dict, None, None, None)
 
     market.phase = phase_from_market_document(market_dict)
@@ -392,7 +393,11 @@ def load_market_context(market_id: str) -> Optional[MarketContext]:
             org_dict.pop('_id', None)
             try:
                 organization = Organization(**org_dict)
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "Organization %s owning market %s failed validation: %s",
+                    market.organization_id, market_id, e,
+                )
                 organization = None
 
     return MarketContext(market_dict, market, organization, org_dict)

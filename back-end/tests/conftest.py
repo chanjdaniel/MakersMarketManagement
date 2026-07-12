@@ -21,6 +21,8 @@ import pytest
 
 BACK_END_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+STUBBED_MODULES = set()
+
 for path in (BACK_END_DIR, os.path.join(BACK_END_DIR, "migrations")):
     if path not in sys.path:
         sys.path.insert(0, path)
@@ -45,9 +47,29 @@ def _needs_stub(module_name: str) -> bool:
     if module_name in sys.modules:
         return False
     try:
-        return importlib.util.find_spec(module_name) is None
+        missing = importlib.util.find_spec(module_name) is None
     except (ImportError, ValueError):
-        return True
+        missing = True
+    if missing:
+        STUBBED_MODULES.add(module_name)
+    return missing
+
+
+def skip_without_real_dependencies():
+    """Skip the calling module when the suite is running on the stubs below.
+
+    Route-level tests import app.py, which needs the real runtime stack (the Flask
+    class, flask_session, flask_bcrypt, flask_cors and the floorplan blueprints'
+    imaging dependencies). The stubs fake data-layer modules, not a web framework,
+    so those tests have to skip rather than fail at collection when requirements.txt
+    is not installed. Any stub at all means this is the dependency-free environment.
+    """
+    if STUBBED_MODULES:
+        pytest.skip(
+            "requires the real backend dependencies; running on stubs for "
+            + ", ".join(sorted(STUBBED_MODULES)),
+            allow_module_level=True,
+        )
 
 
 if _needs_stub("pymongo"):

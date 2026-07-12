@@ -103,3 +103,28 @@ def test_market_context_derives_phase_for_pre_migration_document(collection):
     context = MarketsApi.load_market_context("published-market")
 
     assert context.market.phase == MarketPhase.ARCHIVED
+
+
+def test_unrecognized_stored_phase_degrades_instead_of_breaking_the_list(collection):
+    """One market written by a newer build must not take the whole list down."""
+    collection.docs.append(
+        {
+            **_pre_migration_market("future-market", is_draft=False),
+            "phase": "phase_from_a_future_build",
+        }
+    )
+
+    listed = {m["id"]: m for m in MarketsApi.get_markets_for_user(USER_EMAIL)}
+
+    assert listed["future-market"]["phase"] == MarketPhase.ARCHIVED.value
+    assert listed["draft-market"]["phase"] == MarketPhase.DRAFT.value
+
+
+def test_corrupt_market_document_is_logged(collection, caplog):
+    collection.docs.append({**_pre_migration_market("corrupt-market", is_draft=True), "name": None})
+
+    with caplog.at_level("WARNING"):
+        context = MarketsApi.load_market_context("corrupt-market")
+
+    assert context.market is None
+    assert "corrupt-market" in caplog.text
