@@ -13,6 +13,7 @@ import ElementSectionSetup from '@/components/elements/ElementSectionSetup.vue';
 import ChoosePathOverlay from '@/components/floorplan/ChoosePathOverlay.vue';
 import { type SetupObject, type Market, type ApplicationForm } from '@/assets/types/datatypes';
 import { api, getApiErrorMessage, getApiErrorStatus } from '@/utils/api';
+import { applicationFormError, applicationFormHint } from '@/utils/applicationForm';
 import FormBuilder from '@/components/application/FormBuilder.vue';
 import FormPreview from '@/components/application/FormPreview.vue';
 
@@ -187,53 +188,15 @@ async function loadApplicationForm() {
     }
 }
 
-/** A form with no fields yet is an untouched starting state, not a mistake to flag. */
-const formIsEmpty = computed(() => (applicationForm.value?.fields ?? []).length === 0);
+/** Guidance for a form the organizer has not finished starting; not a mistake to flag in red. */
+const formIncompleteHint = computed(() => applicationFormHint(applicationForm.value));
 
-/** The charset the back-end holds field keys to; they become document keys on every answer. */
-const FIELD_KEY_PATTERN = /^[a-z0-9_]+$/;
-
-/**
- * Field keys and select options are the primary key and the persisted values of every
- * applicant's answers, so the back-end rejects blank, duplicate, or unaddressable ones. Say so
- * before the organizer clicks Save.
- */
-const formValidationError = computed<string | null>(() => {
-    const fields = applicationForm.value?.fields ?? [];
-
-    const seen = new Set<string>();
-    for (const field of fields) {
-        const key = (field.key ?? '').trim();
-        if (!field.label?.trim()) return 'Every field needs a label.';
-        if (!key) return `Field "${field.label}" needs a key.`;
-        if (!FIELD_KEY_PATTERN.test(key)) {
-            return `Key "${key}" is invalid. Use lowercase letters, numbers, and underscores only.`;
-        }
-        if (seen.has(key)) return `Duplicate field key "${key}". Keys must be unique.`;
-        seen.add(key);
-
-        if (field.type === 'select' || field.type === 'multi_select') {
-            if (field.options.length === 0) {
-                return `Field "${field.label}" is a ${field.type} and needs at least one option.`;
-            }
-            const seenOptions = new Set<string>();
-            for (const option of field.options) {
-                const value = option.trim();
-                if (!value) return `Field "${field.label}" has a blank option.`;
-                if (seenOptions.has(value)) {
-                    return `Field "${field.label}" repeats the option "${value}". Options must be unique.`;
-                }
-                seenOptions.add(value);
-            }
-        }
-    }
-    return null;
-});
+const formValidationError = computed(() => applicationFormError(applicationForm.value));
 
 const canSaveForm = computed(
     () =>
         formEditable.value &&
-        !formIsEmpty.value &&
+        formIncompleteHint.value === null &&
         formValidationError.value === null &&
         formSaveStatus.value !== 'saving',
 );
@@ -411,6 +374,13 @@ watch(pageIdx, (newIdx) => {
                                             data-testid="form-builder-validation-error"
                                         >
                                             {{ formValidationError }}
+                                        </span>
+                                        <span
+                                            v-else-if="formIncompleteHint"
+                                            class="save-status hint"
+                                            data-testid="form-builder-save-hint"
+                                        >
+                                            {{ formIncompleteHint }}
                                         </span>
                                         <span
                                             v-else-if="formSaveStatus === 'saved'"
@@ -823,5 +793,9 @@ h2 {
 
 .save-status.error {
     color: var(--mm-red, #cc0000);
+}
+
+.save-status.hint {
+    color: var(--mm-grey, #666);
 }
 </style>

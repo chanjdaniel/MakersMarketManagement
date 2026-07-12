@@ -62,13 +62,12 @@ const hasFields = computed(() => sortedFields.value.length > 0);
           disabled
         />
 
-        <label
+        <input
           v-else-if="field.type === 'checkbox'"
-          class="preview-checkbox-label"
-        >
-          <input type="checkbox" disabled />
-          <span>I agree</span>
-        </label>
+          class="preview-checkbox"
+          type="checkbox"
+          disabled
+        />
 
         <select
           v-else-if="field.type === 'select'"
@@ -76,7 +75,7 @@ const hasFields = computed(() => sortedFields.value.length > 0);
           disabled
         >
           <option value="">-- Select --</option>
-          <option v-for="opt in field.options" :key="opt" :value="opt">
+          <option v-for="(opt, optIdx) in field.options" :key="optIdx" :value="opt">
             {{ opt }}
           </option>
         </select>
@@ -86,8 +85,8 @@ const hasFields = computed(() => sortedFields.value.length > 0);
           class="preview-multiselect"
         >
           <label
-            v-for="opt in field.options"
-            :key="opt"
+            v-for="(opt, optIdx) in field.options"
+            :key="optIdx"
             class="preview-checkbox-label"
           >
             <input type="checkbox" disabled />
@@ -178,6 +177,12 @@ const hasFields = computed(() => sortedFields.value.length > 0);
   border: 1px solid var(--mm-grey, #b0b0b0);
   border-radius: 5px;
   background: #f8f8f8;
+}
+
+.preview-checkbox {
+  align-self: flex-start;
+  width: 16px;
+  height: 16px;
 }
 
 .preview-checkbox-label {
