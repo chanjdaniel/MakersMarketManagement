@@ -11,7 +11,7 @@ counts documents in that same collection by ``market_id``, sees them immediately
 
 import re
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from db_config import get_database
@@ -42,6 +42,19 @@ logger = logging.getLogger(__name__)
 
 MAX_OTP_ATTEMPTS = 5
 OTP_EXPIRY_MINUTES = 5
+
+# The shortest interval between two codes for the same application. This endpoint is public and
+# unauthenticated, and it sends mail to whatever address it is handed, so without a floor it is an
+# email relay anyone can point at anyone. The cooldown is also what keeps the attempt budget below
+# a budget *per request*: see ``request_applicant_key``.
+KEY_RESEND_COOLDOWN_SECONDS = 60
+
+# A number answer is stored in a BSON document, and BSON integers are 64-bit. A finite float such
+# as ``1e300`` is a number by every test above this bound and still cannot be written: the driver
+# raises at encode time, long after validation said yes, and the applicant gets a 500 where the
+# form should have said no. The range is the storage's, so the refusal is the validator's.
+INT64_MIN = -(2 ** 63)
+INT64_MAX = 2 ** 63 - 1
 
 # An answer is a form response, not a payload channel. Without a bound, every declared text key is
 # an unbounded write into the applications collection: the app-wide 50 MB body limit is the only
@@ -85,6 +98,14 @@ NO_PENDING_CODE_ERROR = (
 # was an application to send it for, and the caller cannot tell which happened.
 KEY_REQUEST_ACCEPTED_MESSAGE = (
     "If an application exists for this email, a verification code has been sent."
+)
+
+# A code whose attempt budget is spent is dead, and no new one is issued while it is still live, so
+# the wait is what the applicant has to be told: "request a new code" on its own is an instruction
+# that does nothing for up to ``OTP_EXPIRY_MINUTES``.
+ATTEMPTS_EXHAUSTED_ERROR = (
+    f"Too many incorrect attempts. This code is no longer usable. Please wait "
+    f"{OTP_EXPIRY_MINUTES} minutes for it to expire, then request a new one."
 )
 
 # ── slug helpers ───────────────────────────────────────────────────────────
@@ -177,6 +198,24 @@ def _find_application(market_id: str, email: str) -> Optional[Application]:
     return Application(**existing) if existing else None
 
 
+def _live_code_issued_at(app: Application) -> Optional[datetime]:
+    """When the application's current code was issued, or ``None`` if it has no live one.
+
+    A spent or expired code is not a live one, so it constrains nothing: this answers only for a
+    code that could still be verified right now. The issue time is not stored - it is the expiry
+    minus the fixed lifetime every code is minted with, which is the same fact by another name.
+    """
+    if not app.otp or not app.otp_expires or not verify_token_expiry(app.otp_expires):
+        return None
+    try:
+        expires = datetime.fromisoformat(app.otp_expires.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return expires - timedelta(minutes=OTP_EXPIRY_MINUTES)
+
+
 def _create_application(market_id: str, email: str) -> Application:
     """Start a new main application for this market + email."""
     app = Application(
@@ -210,6 +249,10 @@ def _is_answered(value: Any, field_type: str) -> bool:
     return True
 
 
+class NumberOutOfRange(ValueError):
+    """A finite number that no BSON document can hold. See ``INT64_MIN``/``INT64_MAX``."""
+
+
 def _as_number(value: Any) -> Any:
     """The numeric value of an answer to a ``number`` field. Raises if it is not one.
 
@@ -218,14 +261,35 @@ def _as_number(value: Any) -> Any:
     string, and every later reader - the reviewer UI, an export, the application-to-solver adapter
     - inherits it: a compare or a sort on it is silently lexicographic. A bool is rejected rather
     than folded to 1/0, and a non-finite float is rejected because it is not a value a document
-    can hold.
+    can hold. Magnitude is the same question as finiteness: a number outside the 64-bit range is
+    also not a value a document can hold, and this is the last place that can say so before the
+    driver does, at encode time, as a 500.
     """
     if isinstance(value, bool):
         raise TypeError("a boolean is not a number")
-    number = float(value)
-    if number != number or number in (float("inf"), float("-inf")):
-        raise ValueError("not a finite number")
-    return int(number) if number.is_integer() else number
+
+    # An integer answer is parsed as one, not by way of a float: ``float("9223372036854775807")``
+    # is 2**63, so a round-trip through a float refuses the largest number that does fit and would
+    # store the one that does not.
+    if isinstance(value, int):
+        number: Any = value
+    elif isinstance(value, str):
+        text = value.strip()
+        try:
+            number = int(text)
+        except ValueError:
+            number = float(text)
+    else:
+        number = float(value)
+
+    if isinstance(number, float):
+        if number != number or number in (float("inf"), float("-inf")):
+            raise ValueError("not a finite number")
+    if not INT64_MIN <= number <= INT64_MAX:
+        raise NumberOutOfRange("outside the storable range")
+    if isinstance(number, float) and number.is_integer():
+        return int(number)
+    return number
 
 
 def _unanswered_value(field_type: str) -> Any:
@@ -285,6 +349,11 @@ def _checked_value(field: Dict[str, Any], value: Any) -> Tuple[Optional[str], An
     elif ft == "number":
         try:
             return None, _as_number(value)
+        except NumberOutOfRange:
+            return (
+                f'"{label}" is too large. It must be between {INT64_MIN} and {INT64_MAX}.',
+                None,
+            )
         except (ValueError, TypeError, OverflowError):
             return f'"{label}" must be a number.', None
     elif ft == "select":
@@ -384,6 +453,17 @@ def request_applicant_key(market_slug: str, email: str) -> Tuple[Dict[str, Any],
     application page reads it from ``get_public_application_form`` and says so on screen); *which
     addresses are on its applicant list* is not, and only this endpoint knows that.
 
+    Sending is throttled, and the throttle is silent for that same reason. This route is public,
+    unauthenticated, and it mails whatever address it is handed, so unbounded it is two things at
+    once: an email relay anyone can aim at anyone, and an unlimited supply of fresh six-digit codes
+    to guess against. Two refusals bound it, and both of them issue no code and send no mail:
+    a code minted less than ``KEY_RESEND_COOLDOWN_SECONDS`` ago is not replaced, and a live code
+    whose attempt budget is spent is not replaced either - it has to expire first, which is what
+    holds the guess rate at ``MAX_OTP_ATTEMPTS`` per code lifetime rather than per request.
+    Both answer with the same accepted message as a send, because a 429 here would say out loud
+    what the generic message exists to hide: only an address with an application can be throttled,
+    so a distinguishable refusal is the applicant-list oracle again, through the third door.
+
     Args:
         market_slug: The URL-safe slug of the market.
         email: The applicant's email address.
@@ -413,11 +493,27 @@ def request_applicant_key(market_slug: str, email: str) -> Tuple[Dict[str, Any],
             return {"message": KEY_REQUEST_ACCEPTED_MESSAGE}, 200
         app = _create_application(market_id, email)
 
-    # Generate and store OTP
+    issued_at = _live_code_issued_at(app)
+    if issued_at is not None:
+        if app.otp_attempts >= MAX_OTP_ATTEMPTS:
+            return {"message": KEY_REQUEST_ACCEPTED_MESSAGE}, 200
+        if datetime.now(timezone.utc) - issued_at < timedelta(
+            seconds=KEY_RESEND_COOLDOWN_SECONDS
+        ):
+            return {"message": KEY_REQUEST_ACCEPTED_MESSAGE}, 200
+
+    # The attempt budget belongs to the code, not to the request. Emptying the counter on every
+    # send makes ``MAX_OTP_ATTEMPTS`` a bound on guesses *per code*, which is no bound at all: a
+    # caller loops request-key + five guesses and walks the six-digit space. The counter therefore
+    # carries forward for as long as the code it was spent against is live, and a burned budget is
+    # only refilled by that code expiring -- which is also the only thing a caller at the cap can
+    # wait for, since the two refusals above issue no code and send no mail.
+    attempts = app.otp_attempts if issued_at is not None else 0
+
     otp = generate_otp()
     app.otp = otp
     app.otp_expires = get_otp_expiry(minutes=OTP_EXPIRY_MINUTES)
-    app.otp_attempts = 0
+    app.otp_attempts = attempts
     ApplicationsApi.applications_collection.update_one(
         {"id": app.id},
         {"$set": {
@@ -493,9 +589,7 @@ def verify_applicant_key(
 
     # Check attempt limit
     if app.otp_attempts >= MAX_OTP_ATTEMPTS:
-        return {
-            "error": "Too many incorrect attempts. Please request a new code.",
-        }, 429
+        return {"error": ATTEMPTS_EXHAUSTED_ERROR}, 429
 
     # Check key
     if app.otp != key:
@@ -506,9 +600,7 @@ def verify_applicant_key(
         )
         remaining = MAX_OTP_ATTEMPTS - new_attempts
         if remaining <= 0:
-            return {
-                "error": "Too many incorrect attempts. Please request a new code.",
-            }, 429
+            return {"error": ATTEMPTS_EXHAUSTED_ERROR}, 429
         return {
             "error": f"Incorrect code. You have {remaining} attempt{'s' if remaining != 1 else ''} remaining.",
         }, 401

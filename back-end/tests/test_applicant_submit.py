@@ -610,6 +610,36 @@ class TestNumberAnswersAreStoredAsNumbers:
         assert status == 422
         assert "number" in result["error"].lower()
 
+    def test_a_number_too_large_to_store_is_refused_not_a_500(self, open_market, apps_coll):
+        """``1e300`` is finite, is an integer, and is typeable into the form's number input -- and
+        no BSON document can hold it. Refused here, or the driver raises at encode time and the
+        applicant gets a 500 from a validator that already said yes."""
+        _seeded_app(apps_coll)
+
+        result, status = self._save("1e300")
+
+        assert status == 422
+        assert "too large" in result["error"].lower()
+        assert apps_coll.find_one({"id": "app-xyz"})["form_data"].get("staff_count") is None
+
+    def test_a_number_below_the_storable_range_is_refused(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = self._save(-(2 ** 63) - 1)
+
+        assert status == 422
+        assert "too large" in result["error"].lower()
+
+    def test_the_largest_storable_integer_is_accepted(self, open_market, apps_coll):
+        """The bound is storage's, so it has to be exact: a parse by way of a float rounds this to
+        2**63 and refuses the largest number a document can actually hold."""
+        _seeded_app(apps_coll)
+
+        result, status = self._save(str(2 ** 63 - 1))
+
+        assert status == 200
+        assert result["application"]["formData"]["staff_count"] == 2 ** 63 - 1
+
 
 class TestDateAnswersAreStoredAsDates:
     """A field the form declares as a date is stored as the date the refusal message promises."""

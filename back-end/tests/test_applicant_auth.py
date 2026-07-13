@@ -1,4 +1,6 @@
 """Tests for applicant email-key auth flow (request-key, verify-key, token validation)."""
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from unittest.mock import patch
 
@@ -28,6 +30,32 @@ PUBLISHED_MARKET_DOC = stored_market(
     name="Test Market",
     applicationForm=VALID_FORM,
 )
+
+MAX_ATTEMPTS = ApplicantsApi.MAX_OTP_ATTEMPTS
+COOLDOWN = ApplicantsApi.KEY_RESEND_COOLDOWN_SECONDS
+# Longer ago than a code lives, so the seeded code is dead rather than merely old.
+EXPIRED = ApplicantsApi.OTP_EXPIRY_MINUTES * 60 + 1
+
+
+def _app_with_code(
+    email, *, attempts=0, issued_seconds_ago=0, otp="123456", market_id="market-123",
+):
+    """An application holding a code issued ``issued_seconds_ago`` seconds ago.
+
+    The issue time is not a stored field -- it is the expiry minus the fixed code lifetime -- so a
+    test dates a code by backdating its expiry, exactly as the endpoint reads it.
+    """
+    issued = datetime.now(timezone.utc) - timedelta(seconds=issued_seconds_ago)
+    expires = issued + timedelta(minutes=ApplicantsApi.OTP_EXPIRY_MINUTES)
+    return Application(
+        market_id=market_id,
+        applicant_email=email,
+        form_data={},
+        status=ApplicationStatus.OPEN,
+        otp=otp,
+        otp_expires=expires.isoformat(),
+        otp_attempts=attempts,
+    )
 
 
 class FakeSlugMarketsCollection:
@@ -241,21 +269,20 @@ class TestRequestKey:
         assert len(sent_emails) == 1
         assert sent_emails[0][0] == "vendor@example.com"
 
-    def test_empties_attempt_counter_when_resending(self, published_market, apps_coll, no_email):
-        app = Application(
-            market_id="market-123",
-            applicant_email="retry@example.com",
-            form_data={},
-            status=ApplicationStatus.OPEN,
-            otp=generate_otp(),
-            otp_expires=get_otp_expiry(),
-            otp_attempts=3,
-        )
-        apps_coll.insert_one(app.model_dump())
+    def test_empties_attempt_counter_once_the_spent_code_has_expired(
+        self, published_market, apps_coll, no_email,
+    ):
+        """A fresh code after the old one died is a fresh budget: the counter belongs to the code
+        it was spent against, and that code is gone."""
+        apps_coll.insert_one(_app_with_code(
+            "retry@example.com", attempts=MAX_ATTEMPTS, issued_seconds_ago=EXPIRED,
+        ).model_dump())
 
         ApplicantsApi.request_applicant_key("test-market", "retry@example.com")
+
         doc = apps_coll.documents[0]
         assert doc["otp_attempts"] == 0
+        assert doc["otp"] is not None
 
     def test_validates_missing_fields(self, apps_coll, no_email):
         result, status = ApplicantsApi.request_applicant_key("", "test@example.com")
@@ -273,6 +300,90 @@ class TestRequestKey:
 
         assert status == 400
         assert apps_coll.documents == []
+
+
+class TestKeyRequestThrottle:
+    """The bounds on a public, unauthenticated endpoint that mails whatever address it is handed.
+
+    Unthrottled it is an email relay anyone can aim at anyone, and an unlimited supply of fresh
+    six-digit codes to guess against -- the attempt cap bounds guesses per code, and without these
+    two refusals a caller just asks for another code.
+    """
+
+    def _sent(self, market_slug, email):
+        sent = []
+        with patch.object(
+            ApplicantsApi, "send_otp_email",
+            side_effect=lambda addr, otp: sent.append((addr, otp)) or True,
+        ):
+            result, status = ApplicantsApi.request_applicant_key(market_slug, email)
+        return sent, result, status
+
+    def test_a_second_code_inside_the_cooldown_is_not_sent(self, published_market, apps_coll):
+        apps_coll.insert_one(_app_with_code("vendor@example.com", issued_seconds_ago=5).model_dump())
+
+        sent, result, status = self._sent("test-market", "vendor@example.com")
+
+        assert status == 200
+        assert sent == []
+        doc = apps_coll.documents[0]
+        assert doc["otp"] == "123456"  # the live code stands; it is still the one that works
+
+    def test_the_throttled_answer_is_the_answer_a_send_gives(self, published_market, apps_coll):
+        """A 429 here would say out loud what the generic message exists to hide: only an address
+        with an application can be throttled at all."""
+        apps_coll.insert_one(_app_with_code("vendor@example.com", issued_seconds_ago=5).model_dump())
+
+        throttled = ApplicantsApi.request_applicant_key("test-market", "vendor@example.com")
+        fresh = ApplicantsApi.request_applicant_key("test-market", "stranger@example.com")
+
+        assert throttled == fresh == ({"message": ApplicantsApi.KEY_REQUEST_ACCEPTED_MESSAGE}, 200)
+
+    def test_a_code_is_resent_once_the_cooldown_has_passed(self, published_market, apps_coll):
+        apps_coll.insert_one(_app_with_code(
+            "vendor@example.com", issued_seconds_ago=COOLDOWN + 5,
+        ).model_dump())
+
+        sent, _result, status = self._sent("test-market", "vendor@example.com")
+
+        assert status == 200
+        assert len(sent) == 1
+        assert apps_coll.documents[0]["otp"] == sent[0][1] != "123456"
+
+    def test_the_attempt_budget_survives_a_resend(self, published_market, apps_coll):
+        """Emptying the counter on every send makes the cap a bound per *code*, which is no bound:
+        a caller loops request-key + five guesses and walks the six-digit space."""
+        apps_coll.insert_one(_app_with_code(
+            "vendor@example.com", attempts=3, issued_seconds_ago=COOLDOWN + 5,
+        ).model_dump())
+
+        _sent, _result, status = self._sent("test-market", "vendor@example.com")
+
+        assert status == 200
+        assert apps_coll.documents[0]["otp_attempts"] == 3
+
+    def test_a_spent_code_is_not_replaced_until_it_expires(self, published_market, apps_coll):
+        """The refusal that holds the guess rate: a budget burned against a live code is refilled
+        only by that code expiring, not by asking for another one."""
+        apps_coll.insert_one(_app_with_code(
+            "vendor@example.com", attempts=MAX_ATTEMPTS, issued_seconds_ago=COOLDOWN + 5,
+        ).model_dump())
+
+        sent, _result, status = self._sent("test-market", "vendor@example.com")
+
+        assert status == 200
+        assert sent == []
+        doc = apps_coll.documents[0]
+        assert doc["otp"] == "123456"
+        assert doc["otp_attempts"] == MAX_ATTEMPTS
+
+    def test_a_first_code_is_never_throttled(self, published_market, apps_coll):
+        """An application with no live code is the applicant who just arrived."""
+        sent, _result, status = self._sent("test-market", "new@example.com")
+
+        assert status == 200
+        assert len(sent) == 1
+        assert apps_coll.documents[0]["otp"] == sent[0][1]
 
 
 class TestVerifyKey:
