@@ -31,11 +31,11 @@ def _slugify(name: str) -> str:
 
 
 def get_published_market_by_slug(market_slug: str) -> Optional[Dict[str, Any]]:
-    """Find a published (is_draft=False) market whose slugified name equals slug."""
+    """Find a published (phase != draft) market whose slugified name equals slug."""
     if not market_slug:
         return None
     target = market_slug.strip().lower()
-    for doc in markets_collection.find(market_doc_filter("is_draft", False)):
+    for doc in markets_collection.find(market_doc_filter("phase", {"$ne": "draft"})):
         if _slugify(doc.get("name", "")) == target:
             return doc
     return None

@@ -860,9 +860,10 @@ def transition_market(market_id: str) -> Response:
             context.document["phase"] if "phase" in context.document
             else {"$exists": False}
         )
+        is_draft_after = to_phase == MarketPhase.DRAFT
         result = MarketsApi.markets_collection.update_one(
             {"id": market_id, "phase": stored_phase},
-            {"$set": {"phase": to_phase.value}},
+            {"$set": {"phase": to_phase.value, "isDraft": is_draft_after}},
         )
 
         if result.matched_count == 0:

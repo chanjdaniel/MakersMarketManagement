@@ -236,10 +236,16 @@ def _preserve_server_owned_fields(
     and stops a stale client copy of the market from silently reverting a saved form on the next
     PUT. Both are always taken from the stored market, whatever the payload carries.
 
+    `isDraft` is derived strictly from `phase` and updated here so the stored document never
+    carries a value that disagrees with its `phase` -- even though ``Market.is_draft`` is a
+    computed field that ignores the stored value at parse time, direct Mongo queries
+    (``get_published_market_by_slug``) still filter on it.
+
     The remaining Conventioner fields are carried over whenever the payload omits them, so a client
     that round-trips a market it fetched cannot null them out; an explicit null still clears them.
     """
     market_dict["phase"] = existing_market.phase.value
+    market_dict["is_draft"] = existing_market.is_draft
     market_dict["application_form"] = _application_form_dump(existing_market)
     for field in ("review_config", "discord_guild_id"):
         if field in market.model_fields_set:
@@ -550,6 +556,7 @@ def create_market(market: Market, owner_email: str) -> tuple:
     market_dict = market.model_dump()
     _strip_persisted_assignment_statistics(market_dict)
     market_dict["phase"] = MarketPhase.DRAFT.value
+    market_dict["is_draft"] = True  # phase is always DRAFT at creation; kept in sync for direct Mongo queries
     market_dict["application_form"] = (
         _normalized_application_form(market.application_form).model_dump()
         if market.application_form
