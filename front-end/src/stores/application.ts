@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import type { Application } from '@/assets/types/datatypes';
+import { getApiErrorMessage } from '@/utils/api';
 import { applicantApi, setApplicantToken } from '@/utils/applicantApi';
 
 export const useApplicationStore = defineStore('application', () => {
@@ -24,8 +25,7 @@ export const useApplicationStore = defineStore('application', () => {
         error.value = 'Unexpected response from server.';
       }
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      error.value = msg || 'Failed to send verification code. Please try again.';
+      error.value = getApiErrorMessage(err, 'Failed to send verification code. Please try again.');
     } finally {
       loading.value = false;
     }
@@ -49,8 +49,7 @@ export const useApplicationStore = defineStore('application', () => {
       error.value = 'No token returned.';
       return false;
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      error.value = msg || 'Verification failed. Please try again.';
+      error.value = getApiErrorMessage(err, 'Verification failed. Please try again.');
       return false;
     } finally {
       loading.value = false;
@@ -64,8 +63,7 @@ export const useApplicationStore = defineStore('application', () => {
       const { data } = await applicantApi.get('/public/applicant/application');
       application.value = data.application;
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      error.value = msg || 'Failed to load your application.';
+      error.value = getApiErrorMessage(err, 'Failed to load your application.');
     } finally {
       loading.value = false;
     }
@@ -79,19 +77,32 @@ export const useApplicationStore = defineStore('application', () => {
       application.value = data.application;
       return true;
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      error.value = msg || 'Failed to save your application.';
+      error.value = getApiErrorMessage(err, 'Failed to save your application.');
       return false;
     } finally {
       loading.value = false;
     }
   }
 
-  function logout() {
+  function clearSession() {
     token.value = null;
     application.value = null;
-    error.value = null;
     setApplicantToken(null);
+  }
+
+  function logout() {
+    clearSession();
+    error.value = null;
+  }
+
+  /**
+   * The applicant's token was refused, so the session is over whether or not they are done with
+   * it. Holding on to a token the back end has rejected is what turns an expiry into a dead end:
+   * the store keeps reading as authenticated, and every retry re-sends the same dead token.
+   */
+  function endExpiredSession() {
+    clearSession();
+    error.value = 'Your session has expired. Please sign in again to continue.';
   }
 
   return {
@@ -105,5 +116,6 @@ export const useApplicationStore = defineStore('application', () => {
     fetchApplication,
     saveApplication,
     logout,
+    endExpiredSession,
   };
 });

@@ -2,8 +2,10 @@
 import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import type { FormField, ApplicationForm } from '@/assets/types/datatypes';
+import ApplicationFormFields from '@/components/application/ApplicationFormFields.vue';
+import { getApiErrorMessage } from '@/utils/api';
 import { applicantApi } from '@/utils/applicantApi';
-import { requiredFieldError } from '@/utils/applicationForm';
+import { formValidationErrors, sortedFormFields } from '@/utils/applicationForm';
 import { useApplicationStore } from '@/stores/application';
 
 const route = useRoute();
@@ -23,10 +25,7 @@ const validationErrors = ref<Record<string, string>>({});
 const saving = ref(false);
 const saved = ref(false);
 
-const sortedFields = computed(() => {
-  if (!applicationForm.value?.fields) return [];
-  return [...applicationForm.value.fields].sort((a, b) => a.order - b.order);
-});
+const sortedFields = computed(() => sortedFormFields(applicationForm.value?.fields ?? []));
 
 onMounted(async () => {
   try {
@@ -39,9 +38,7 @@ onMounted(async () => {
     phaseLabel.value = data.phase_label || '';
     isOpen.value = data.is_open === true;
   } catch (err: unknown) {
-    const msg =
-      (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-    pageError.value = msg || 'Failed to load the application form.';
+    pageError.value = getApiErrorMessage(err, 'Failed to load the application form.');
   } finally {
     loading.value = false;
   }
@@ -58,28 +55,12 @@ watch(
   { immediate: true },
 );
 
-function getFieldError(field: FormField): string {
-  return validationErrors.value[field.key] || '';
-}
-
-function validateField(field: FormField): string {
-  return requiredFieldError(field, formData.value[field.key]);
-}
-
 function validateAll(): boolean {
-  const errors: Record<string, string> = {};
-  if (!sortedFields.value.length) return true;
-  for (const field of sortedFields.value) {
-    const err = validateField(field);
-    if (err) errors[field.key] = err;
-  }
-  validationErrors.value = errors;
-  return Object.keys(errors).length === 0;
+  validationErrors.value = formValidationErrors(sortedFields.value, formData.value);
+  return Object.keys(validationErrors.value).length === 0;
 }
 
-function onFieldChange(field: FormField, value: unknown) {
-  formData.value = { ...formData.value, [field.key]: value };
-  // Clear error on change
+function clearFieldError(field: FormField) {
   if (validationErrors.value[field.key]) {
     validationErrors.value = { ...validationErrors.value, [field.key]: '' };
   }
@@ -162,125 +143,13 @@ function goToLogin() {
             <a href="#" @click.prevent="goToLogin">view or edit it</a> at any time.
           </div>
 
-          <div
-            v-for="field in sortedFields"
-            :key="field.key"
-            class="apply-field"
-            :data-testid="`apply-field-${field.key}`"
-          >
-            <label class="apply-label" :for="`field-${field.key}`">
-              {{ field.label }}
-              <span v-if="field.required" class="apply-required">*</span>
-            </label>
-
-            <p v-if="field.helpText" class="apply-help">{{ field.helpText }}</p>
-
-            <!-- text / email -->
-            <input
-              v-if="field.type === 'text' || field.type === 'email'"
-              :id="`field-${field.key}`"
-              class="apply-input"
-              :class="{ error: getFieldError(field) }"
-              :type="field.type === 'email' ? 'email' : 'text'"
-              :value="(formData[field.key] as string) || ''"
-              @input="onFieldChange(field, ($event.target as HTMLInputElement).value)"
-              :data-testid="`apply-input-${field.key}`"
-            />
-
-            <!-- number -->
-            <input
-              v-else-if="field.type === 'number'"
-              :id="`field-${field.key}`"
-              class="apply-input"
-              :class="{ error: getFieldError(field) }"
-              type="number"
-              :value="(formData[field.key] as string) || ''"
-              @input="onFieldChange(field, ($event.target as HTMLInputElement).value)"
-              :data-testid="`apply-input-${field.key}`"
-            />
-
-            <!-- date -->
-            <input
-              v-else-if="field.type === 'date'"
-              :id="`field-${field.key}`"
-              class="apply-input"
-              :class="{ error: getFieldError(field) }"
-              type="date"
-              :value="(formData[field.key] as string) || ''"
-              @input="onFieldChange(field, ($event.target as HTMLInputElement).value)"
-              :data-testid="`apply-input-${field.key}`"
-            />
-
-            <!-- checkbox -->
-            <label
-              v-else-if="field.type === 'checkbox'"
-              class="apply-checkbox-label"
-            >
-              <input
-                type="checkbox"
-                :checked="!!formData[field.key]"
-                @change="onFieldChange(field, ($event.target as HTMLInputElement).checked)"
-                :data-testid="`apply-input-${field.key}`"
-              />
-              <span>Yes</span>
-            </label>
-
-            <!-- select -->
-            <select
-              v-else-if="field.type === 'select'"
-              :id="`field-${field.key}`"
-              class="apply-input"
-              :class="{ error: getFieldError(field) }"
-              :value="(formData[field.key] as string) || ''"
-              @change="onFieldChange(field, ($event.target as HTMLSelectElement).value)"
-              :data-testid="`apply-input-${field.key}`"
-            >
-              <option value="">-- Select --</option>
-              <option v-for="opt in field.options" :key="opt" :value="opt">
-                {{ opt }}
-              </option>
-            </select>
-
-            <!-- multi_select -->
-            <div
-              v-else-if="field.type === 'multi_select'"
-              class="apply-multiselect"
-              :class="{ error: getFieldError(field) }"
-            >
-              <label
-                v-for="opt in field.options"
-                :key="opt"
-                class="apply-checkbox-label"
-              >
-                <input
-                  type="checkbox"
-                  :checked="((formData[field.key] as string[]) || []).includes(opt)"
-                  @change="(e: Event) => {
-                    const checked = (e.target as HTMLInputElement).checked;
-                    const current = [...((formData[field.key] as string[]) || [])];
-                    onFieldChange(
-                      field,
-                      checked ? [...current, opt] : current.filter((v: string) => v !== opt),
-                    );
-                  }"
-                  :data-testid="`apply-input-${field.key}-${opt}`"
-                />
-                <span>{{ opt }}</span>
-              </label>
-            </div>
-
-            <div v-else class="apply-unsupported">
-              Unknown field type: {{ field.type }}
-            </div>
-
-            <p
-              v-if="getFieldError(field)"
-              class="apply-field-error"
-              :data-testid="`apply-error-${field.key}`"
-            >
-              {{ getFieldError(field) }}
-            </p>
-          </div>
+          <ApplicationFormFields
+            v-model="formData"
+            :fields="sortedFields"
+            :errors="validationErrors"
+            prefix="apply"
+            @field-change="clearFieldError"
+          />
 
           <div v-if="store.error && !saving" class="apply-server-error" data-testid="apply-server-error">
             {{ store.error }}
@@ -402,76 +271,6 @@ function goToLogin() {
   gap: 20px;
 }
 
-.apply-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.apply-label {
-  font-family: 'Outfit Regular';
-  font-size: 14px;
-  font-weight: bold;
-  color: var(--mm-black);
-}
-
-.apply-required {
-  color: var(--mm-red, #cc0000);
-}
-
-.apply-help {
-  font-family: 'Outfit Regular';
-  font-size: 12px;
-  color: var(--mm-grey, #666);
-  margin: 0;
-}
-
-.apply-input {
-  height: 36px;
-  padding: 4px 10px;
-  font-family: 'Outfit Regular';
-  font-size: 14px;
-  border: 1px solid var(--mm-grey, #b0b0b0);
-  border-radius: 5px;
-  background: white;
-}
-
-.apply-input.error {
-  border-color: var(--mm-red, #cc0000);
-}
-
-.apply-checkbox-label {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  font-family: 'Outfit Regular';
-  font-size: 14px;
-  color: var(--mm-black);
-  cursor: pointer;
-}
-
-.apply-multiselect {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px;
-  border: 1px solid var(--mm-grey, #ddd);
-  border-radius: 5px;
-  background: white;
-}
-
-.apply-multiselect.error {
-  border-color: var(--mm-red, #cc0000);
-}
-
-.apply-field-error {
-  font-family: 'Outfit Regular';
-  font-size: 12px;
-  color: var(--mm-red, #cc0000);
-  margin: 2px 0 0;
-}
-
 .apply-server-error {
   background: #f8d7da;
   border: 1px solid var(--mm-red, #cc0000);
@@ -480,13 +279,6 @@ function goToLogin() {
   font-family: 'Outfit Regular';
   font-size: 14px;
   color: #721c24;
-}
-
-.apply-unsupported {
-  font-family: 'Outfit Regular';
-  font-size: 12px;
-  color: var(--mm-red, #cc0000);
-  font-style: italic;
 }
 
 .apply-actions {

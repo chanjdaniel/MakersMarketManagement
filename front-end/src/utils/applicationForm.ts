@@ -51,6 +51,27 @@ export function requiredFieldError(field: FormField, value: unknown): string {
     return '';
 }
 
+/** The form's fields in the order the organizer put them in. */
+export function sortedFormFields(fields: FormField[]): FormField[] {
+    return [...fields].sort((a, b) => a.order - b.order);
+}
+
+/**
+ * Every unanswered required field, keyed by field key, so an applicant is refused per field rather
+ * than by one server error naming whichever field the back end reached first.
+ */
+export function formValidationErrors(
+    fields: FormField[],
+    formData: Record<string, unknown>,
+): Record<string, string> {
+    const errors: Record<string, string> = {};
+    for (const field of fields) {
+        const error = requiredFieldError(field, formData[field.key]);
+        if (error) errors[field.key] = error;
+    }
+    return errors;
+}
+
 /**
  * Field keys and select options are the primary key and the persisted values of every applicant's
  * answers, so the back-end rejects blank, duplicate, or unaddressable ones. Say so before the

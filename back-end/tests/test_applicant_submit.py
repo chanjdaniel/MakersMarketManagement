@@ -542,6 +542,64 @@ class TestRequiredFieldAnswers:
         assert result["application"]["formData"]["extra_days"] == []
 
 
+class TestNumberAnswersAreStoredAsNumbers:
+    """A field the form declares as a number is stored as one, whatever the browser sent."""
+
+    TOKEN = lambda self: {
+        "application_id": "app-xyz",
+        "market_id": "market-123",
+        "email": "vendor@example.com",
+    }
+
+    def _save(self, staff_count):
+        return ApplicantsApi.save_applicant_application(
+            self.TOKEN(),
+            {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small",
+             "agree": True, "staff_count": staff_count},
+        )
+
+    def test_numeric_string_is_coerced(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = self._save("3")
+
+        assert status == 200
+        assert result["application"]["formData"]["staff_count"] == 3
+        assert isinstance(apps_coll.find_one({"id": "app-xyz"})["form_data"]["staff_count"], int)
+
+    def test_decimal_string_keeps_its_fraction(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = self._save("2.5")
+
+        assert status == 200
+        assert result["application"]["formData"]["staff_count"] == 2.5
+
+    def test_blank_number_is_stored_as_none_not_empty_string(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = self._save("")
+
+        assert status == 200
+        assert result["application"]["formData"]["staff_count"] is None
+
+    def test_boolean_is_not_a_number(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = self._save(True)
+
+        assert status == 422
+        assert "number" in result["error"].lower()
+
+    def test_infinity_is_not_a_number(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = self._save("inf")
+
+        assert status == 422
+        assert "number" in result["error"].lower()
+
+
 class TestFormDataIsProjectedOntoTheForm:
     """Only the answers the market's form declares reach the applications collection."""
 

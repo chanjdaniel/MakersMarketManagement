@@ -2,8 +2,10 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useApplicationStore } from '@/stores/application';
+import ApplicationFormFields from '@/components/application/ApplicationFormFields.vue';
+import { getApiErrorMessage } from '@/utils/api';
 import { applicantApi } from '@/utils/applicantApi';
-import { requiredFieldError } from '@/utils/applicationForm';
+import { formValidationErrors, sortedFormFields } from '@/utils/applicationForm';
 import type { FormField } from '@/assets/types/datatypes';
 
 const route = useRoute();
@@ -24,9 +26,7 @@ const phaseLabel = ref('');
 const isOpen = ref(false);
 const formError = ref<string | null>(null);
 
-const sortedFields = computed(() => {
-  return [...applicationForm.value].sort((a, b) => a.order - b.order);
-});
+const sortedFields = computed(() => sortedFormFields(applicationForm.value));
 
 // The form fetch failing is fatal to this view even when the application itself loaded: without
 // the field list the view branch renders a status and no answers, which reads as an empty
@@ -58,9 +58,10 @@ async function loadAll() {
     phaseLabel.value = data.phase_label || '';
     isOpen.value = data.is_open === true;
   } catch (err: unknown) {
-    const msg =
-      (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-    formError.value = msg || 'Failed to load the application form. Please try again.';
+    formError.value = getApiErrorMessage(
+      err,
+      'Failed to load the application form. Please try again.',
+    );
   } finally {
     loading.value = false;
   }
@@ -68,8 +69,16 @@ async function loadAll() {
 
 onMounted(loadAll);
 
+// An application document exists from the moment the applicant asks for a login code, with the
+// status the pipeline starts every application in. That is not a submission, and `submittedAt` -
+// which the back end stamps on the first save and never again - is the only thing that records
+// one. Reading the status alone headlines an untouched form as "Submitted" directly above a meta
+// line reading "Not yet submitted".
+const isSubmitted = computed(() => Boolean(store.application?.submittedAt));
+
 const statusLabel = computed(() => {
   const s = store.application?.status;
+  if (s === 'open' && !isSubmitted.value) return 'Not Submitted';
   const labels: Record<string, string> = {
     open: 'Submitted',
     under_review: 'Under Review',
@@ -95,22 +104,12 @@ function cancelEditing() {
   validationErrors.value = {};
 }
 
-function validateField(field: FormField): string {
-  return requiredFieldError(field, formData.value[field.key]);
-}
-
 function validateAll(): boolean {
-  const errors: Record<string, string> = {};
-  for (const field of sortedFields.value) {
-    const err = validateField(field);
-    if (err) errors[field.key] = err;
-  }
-  validationErrors.value = errors;
-  return Object.keys(errors).length === 0;
+  validationErrors.value = formValidationErrors(sortedFields.value, formData.value);
+  return Object.keys(validationErrors.value).length === 0;
 }
 
-function onFieldChange(field: FormField, value: unknown) {
-  formData.value = { ...formData.value, [field.key]: value };
+function clearFieldError(field: FormField) {
   if (validationErrors.value[field.key]) {
     validationErrors.value = { ...validationErrors.value, [field.key]: '' };
   }
@@ -134,14 +133,10 @@ function logout() {
 
 function getFieldValue(field: FormField): string {
   const v = store.application?.formData?.[field.key];
-  if (v === undefined || v === null) return '\u2014';
-  if (Array.isArray(v)) return v.join(', ');
+  if (v === undefined || v === null || v === '') return '\u2014';
+  if (Array.isArray(v)) return v.length ? v.join(', ') : '\u2014';
   if (typeof v === 'boolean') return v ? 'Yes' : 'No';
   return String(v);
-}
-
-function getFieldError(field: FormField): string {
-  return validationErrors.value[field.key] || '';
 }
 </script>
 
@@ -151,6 +146,7 @@ function getFieldError(field: FormField): string {
       <h1>Your Application</h1>
       <span
         class="dash-status"
+        :class="{ 'dash-status-pending': !isSubmitted }"
         :data-testid="`applicant-dashboard-status-${store.application?.status}`"
       >
         {{ statusLabel }}
@@ -173,6 +169,17 @@ function getFieldError(field: FormField): string {
     <template v-else-if="store.application">
       <!-- View mode -->
       <div v-if="!editing" class="dash-view" data-testid="applicant-dashboard-view">
+        <p
+          v-if="!isSubmitted"
+          class="dash-unsubmitted"
+          data-testid="applicant-dashboard-unsubmitted"
+        >
+          You have not submitted an application yet.
+          {{ isOpen
+            ? 'Fill in the form and save it to apply.'
+            : `Applications are not open for this market (${phaseLabel} phase).` }}
+        </p>
+
         <div
           v-for="field in sortedFields"
           :key="field.key"
@@ -205,7 +212,7 @@ function getFieldError(field: FormField): string {
             @click="startEditing"
             data-testid="applicant-dashboard-edit-btn"
           >
-            Edit Application
+            {{ isSubmitted ? 'Edit Application' : 'Complete Application' }}
           </button>
           <button
             class="dash-btn dash-btn-secondary"
@@ -223,94 +230,13 @@ function getFieldError(field: FormField): string {
           {{ store.error }}
         </div>
 
-        <div
-          v-for="field in sortedFields"
-          :key="field.key"
-          class="dash-field"
-        >
-          <label :for="`edit-${field.key}`" class="dash-field-label dash-field-label-big">
-            {{ field.label }}
-            <span v-if="field.required" class="dash-required">*</span>
-          </label>
-
-          <!-- text / email -->
-          <input
-            v-if="field.type === 'text' || field.type === 'email'"
-            :id="`edit-${field.key}`"
-            class="dash-input"
-            :class="{ error: getFieldError(field) }"
-            :type="field.type === 'email' ? 'email' : 'text'"
-            :value="(formData[field.key] as string) || ''"
-            @input="onFieldChange(field, ($event.target as HTMLInputElement).value)"
-          />
-
-          <!-- number -->
-          <input
-            v-else-if="field.type === 'number'"
-            :id="`edit-${field.key}`"
-            class="dash-input"
-            :class="{ error: getFieldError(field) }"
-            type="number"
-            :value="(formData[field.key] as string) || ''"
-            @input="onFieldChange(field, ($event.target as HTMLInputElement).value)"
-          />
-
-          <!-- date -->
-          <input
-            v-else-if="field.type === 'date'"
-            :id="`edit-${field.key}`"
-            class="dash-input"
-            :class="{ error: getFieldError(field) }"
-            type="date"
-            :value="(formData[field.key] as string) || ''"
-            @input="onFieldChange(field, ($event.target as HTMLInputElement).value)"
-          />
-
-          <!-- checkbox -->
-          <label v-else-if="field.type === 'checkbox'" class="dash-checkbox-label">
-            <input
-              type="checkbox"
-              :checked="!!formData[field.key]"
-              @change="onFieldChange(field, ($event.target as HTMLInputElement).checked)"
-            />
-            <span>Yes</span>
-          </label>
-
-          <!-- select -->
-          <select
-            v-else-if="field.type === 'select'"
-            :id="`edit-${field.key}`"
-            class="dash-input"
-            :class="{ error: getFieldError(field) }"
-            :value="(formData[field.key] as string) || ''"
-            @change="onFieldChange(field, ($event.target as HTMLSelectElement).value)"
-          >
-            <option value="">-- Select --</option>
-            <option v-for="opt in field.options" :key="opt" :value="opt">
-              {{ opt }}
-            </option>
-          </select>
-
-          <!-- multi_select -->
-          <div v-else-if="field.type === 'multi_select'" class="dash-multiselect" :class="{ error: getFieldError(field) }">
-            <label v-for="opt in field.options" :key="opt" class="dash-checkbox-label">
-              <input
-                type="checkbox"
-                :checked="((formData[field.key] as string[]) || []).includes(opt)"
-                @change="(e: Event) => {
-                  const checked = (e.target as HTMLInputElement).checked;
-                  const current = [...((formData[field.key] as string[]) || [])];
-                  onFieldChange(field, checked ? [...current, opt] : current.filter((v: string) => v !== opt));
-                }"
-              />
-              <span>{{ opt }}</span>
-            </label>
-          </div>
-
-          <p v-if="getFieldError(field)" class="dash-field-error">
-            {{ getFieldError(field) }}
-          </p>
-        </div>
+        <ApplicationFormFields
+          v-model="formData"
+          :fields="sortedFields"
+          :errors="validationErrors"
+          prefix="applicant-dashboard-edit"
+          @field-change="clearFieldError"
+        />
 
         <div class="dash-actions">
           <button class="dash-btn dash-btn-primary" :disabled="saving" @click="saveEdits">
@@ -358,6 +284,22 @@ function getFieldError(field: FormField): string {
   color: white;
 }
 
+.dash-status-pending {
+  background: #f0f0f0;
+  color: var(--mm-grey, #666);
+}
+
+.dash-unsubmitted {
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin: 0;
+  font-family: 'Outfit Regular';
+  font-size: 14px;
+  color: #664d03;
+}
+
 .dash-market {
   font-family: 'Outfit Regular';
   font-size: 14px;
@@ -398,66 +340,11 @@ function getFieldError(field: FormField): string {
   letter-spacing: 0.5px;
 }
 
-.dash-field-label-big {
-  font-size: 14px;
-  color: var(--mm-black);
-  text-transform: none;
-  font-weight: bold;
-}
-
 .dash-field-value {
   font-family: 'Outfit Regular';
   font-size: 15px;
   color: var(--mm-black);
   word-break: break-word;
-}
-
-.dash-required {
-  color: var(--mm-red, #cc0000);
-}
-
-.dash-input {
-  height: 36px;
-  padding: 4px 10px;
-  font-family: 'Outfit Regular';
-  font-size: 14px;
-  border: 1px solid var(--mm-grey, #b0b0b0);
-  border-radius: 5px;
-}
-
-.dash-input.error {
-  border-color: var(--mm-red, #cc0000);
-}
-
-.dash-checkbox-label {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  font-family: 'Outfit Regular';
-  font-size: 14px;
-  cursor: pointer;
-}
-
-.dash-multiselect {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px;
-  border: 1px solid var(--mm-grey, #ddd);
-  border-radius: 5px;
-  background: white;
-}
-
-.dash-multiselect.error {
-  border-color: var(--mm-red, #cc0000);
-}
-
-.dash-field-error {
-  font-family: 'Outfit Regular';
-  font-size: 12px;
-  color: var(--mm-red, #cc0000);
-  margin: 2px 0 0;
 }
 
 .dash-meta {

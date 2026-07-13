@@ -24,7 +24,7 @@ from datatypes import (
     MarketPhase,
     phase_from_market_document,
 )
-from market_documents import published_market_by_slug
+from market_documents import market_doc_field, market_doc_filter, published_market_by_slug
 import api.applications as ApplicationsApi
 
 db = get_database()
@@ -97,66 +97,105 @@ def _is_answered(value: Any, field_type: str) -> bool:
     return True
 
 
-def _project_form_data(form_data: Dict[str, Any], fields: list) -> Dict[str, Any]:
-    """Keep only the answers the market's form actually declares.
+def _as_number(value: Any) -> Any:
+    """The numeric value of an answer to a ``number`` field. Raises if it is not one.
 
-    ``_validate_form_data`` iterates the declared fields, so a key the form never declared is
-    never looked at and would otherwise be persisted verbatim - an authenticated applicant could
-    write arbitrary keys of arbitrary size into the applications collection, from where they ride
-    along into every organizer-side view and export of ``form_data``. The stored document is
-    projected onto the form instead: a market with no form declares no keys and therefore stores
-    none.
+    The applicant's browser sends every input as text, so a ``number`` field arrives as ``"3"``.
+    Accepting that and storing it verbatim persists a field the form declares as a number under a
+    string, and every later reader - the reviewer UI, an export, the application-to-solver adapter
+    - inherits it: a compare or a sort on it is silently lexicographic. A bool is rejected rather
+    than folded to 1/0, and a non-finite float is rejected because it is not a value a document
+    can hold.
     """
-    declared = {field.get("key", "") for field in fields}
-    return {key: value for key, value in form_data.items() if key in declared}
+    if isinstance(value, bool):
+        raise TypeError("a boolean is not a number")
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        raise ValueError("not a finite number")
+    return int(number) if number.is_integer() else number
 
 
-def _validate_form_data(form_data: Dict[str, Any], fields: list) -> Optional[str]:
-    """Validate form data against the form fields. Returns an error message or None.
+def _checked_value(field: Dict[str, Any], value: Any) -> Tuple[Optional[str], Any]:
+    """Check one answered value against its field, and return the value as it should be stored.
 
     Every field type the builder can produce must validate -- no per-field special-casing.
     """
+    label = field.get("label", field.get("key", ""))
+    ft = field.get("type", "text")
+
+    if ft == "email":
+        if isinstance(value, str) and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value.strip()):
+            return f'"{label}" must be a valid email address.', None
+    elif ft == "number":
+        try:
+            return None, _as_number(value)
+        except (ValueError, TypeError, OverflowError):
+            return f'"{label}" must be a number.', None
+    elif ft == "select":
+        if value not in field.get("options", []):
+            return f'"{label}" has an invalid selection.', None
+    elif ft == "multi_select":
+        options = field.get("options", [])
+        if not isinstance(value, list):
+            return f'"{label}" must be a list of selections.', None
+        for v in value:
+            if v not in options:
+                return f'"{label}" contains an invalid selection: "{v}".', None
+    elif ft == "checkbox":
+        if not isinstance(value, bool):
+            return f'"{label}" must be true or false.', None
+    elif ft == "date":
+        if isinstance(value, str):
+            try:
+                datetime.fromisoformat(value.strip())
+            except (ValueError, TypeError):
+                return f'"{label}" must be a valid date (YYYY-MM-DD).', None
+
+    return None, value
+
+
+def _validated_form_data(
+    form_data: Dict[str, Any], fields: list,
+) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Validate the submitted answers against the market's form, and return what to store.
+
+    Validating and projecting are one pass over the declared fields, so the document that is
+    stored is exactly the one that was checked. Two passes could disagree, and both ways of
+    disagreeing are bugs that have already been written here: a key the form never declared is
+    never validated, and storing it anyway lets an applicant write arbitrary keys of arbitrary
+    size into the applications collection; and a value that is checked as a number but stored as
+    the string it arrived as is a field whose stored type contradicts the form. A market with no
+    form declares no fields and therefore stores no answers.
+
+    Returns ``(error_message, {})`` on the first field that fails, ``(None, stored)`` otherwise.
+
+    Anti-F6: the error names the offending field and what is wrong with it.
+    """
+    stored: Dict[str, Any] = {}
     for field in fields:
         key = field.get("key", "")
         label = field.get("label", key)
-        required = field.get("required", False)
         ft = field.get("type", "text")
         value = form_data.get(key)
+        answered = _is_answered(value, ft)
 
-        if required and not _is_answered(value, ft):
-            return f'"{label}" is required.'
+        if field.get("required", False) and not answered:
+            return f'"{label}" is required.', {}
 
-        if value is not None and value != "":
-            if ft == "email":
-                if isinstance(value, str) and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value.strip()):
-                    return f'"{label}" must be a valid email address.'
-            elif ft == "number":
-                try:
-                    float(value)
-                except (ValueError, TypeError):
-                    return f'"{label}" must be a number.'
-            elif ft == "select":
-                options = field.get("options", [])
-                if value not in options:
-                    return f'"{label}" has an invalid selection.'
-            elif ft == "multi_select":
-                options = field.get("options", [])
-                if isinstance(value, list):
-                    for v in value:
-                        if v not in options:
-                            return f'"{label}" contains an invalid selection: "{v}".'
-                else:
-                    return f'"{label}" must be a list of selections.'
-            elif ft == "checkbox":
-                if not isinstance(value, bool):
-                    return f'"{label}" must be true or false.'
-            elif ft == "date":
-                if isinstance(value, str):
-                    try:
-                        datetime.fromisoformat(value.strip())
-                    except (ValueError, TypeError):
-                        return f'"{label}" must be a valid date (YYYY-MM-DD).'
-    return None
+        if key not in form_data:
+            continue
+
+        if not answered:
+            # A blank answer to a number field is not the string "" -- it is no number at all.
+            stored[key] = None if ft == "number" else value
+            continue
+
+        error, checked = _checked_value(field, value)
+        if error:
+            return error, {}
+        stored[key] = checked
+
+    return None, stored
 
 
 # ── public endpoints ────────────────────────────────────────────────────────
@@ -363,7 +402,7 @@ def save_applicant_application(
         return {"error": "Application not found."}, 404
 
     # Check market phase
-    market_doc = markets_collection.find_one({"id": market_id})
+    market_doc = markets_collection.find_one(market_doc_filter("id", market_id))
     if not market_doc:
         return {"error": "Market not found."}, 404
 
@@ -376,14 +415,11 @@ def save_applicant_application(
         }, 403
 
     # Validate form data against the application form fields
-    application_form = market_doc.get("applicationForm")
+    application_form = market_doc_field(market_doc, "application_form")
     fields = (application_form or {}).get("fields") or []
-    if fields:
-        error = _validate_form_data(form_data, fields)
-        if error:
-            return {"error": error}, 422
-
-    stored_form_data = _project_form_data(form_data, fields)
+    error, stored_form_data = _validated_form_data(form_data, fields)
+    if error:
+        return {"error": error}, 422
 
     now = datetime.now(timezone.utc).isoformat()
     ApplicationsApi.applications_collection.update_one(
@@ -424,7 +460,7 @@ def get_public_application_form(market_slug: str) -> Tuple[Dict[str, Any], int]:
         return {"error": "Market not found. Check the URL and try again."}, 404
 
     phase = _get_market_phase(market_doc)
-    application_form = market_doc.get("applicationForm")
+    application_form = market_doc_field(market_doc, "application_form")
 
     if application_form:
         # Return the form with field-level details (camelCase for front-end)
