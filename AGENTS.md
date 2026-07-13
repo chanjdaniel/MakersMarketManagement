@@ -158,17 +158,25 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Public Applicant Endpoints (Conventioner sharp edge)
 
-- **The back end refuses to boot, anywhere, without `SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, and
-  `TRUSTED_PROXY_HOPS`** (`verify_public_endpoint_defenses()` in `back-end/app.py`).
-  All three defend `/public/applicant/*`, which is unauthenticated, writes to the database, and sends
-  mail from the product's domain, and all three silently degrade to nothing when unset:
-  `verify_recaptcha` passes every caller with no secret, and a rate limit keyed on `remote_addr`
+- **The back end refuses to boot, anywhere, without `SECRET_KEY`, `RECAPTCHA_SECRET_KEY`,
+  `TRUSTED_PROXY_HOPS`, and `CORS_ALLOWED_ORIGINS`** (`verify_public_endpoint_defenses()` in
+  `back-end/app.py`).
+  The first three defend `/public/applicant/*`, which is unauthenticated, writes to the database, and
+  sends mail from the product's domain; the fourth defends the organizer API beside it. All four
+  silently degrade to nothing when unset:
+  `verify_recaptcha` passes every caller with no secret, a rate limit keyed on `remote_addr`
   behind a proxy is one shared budget that locks out every real applicant instead of bounding an
-  attacker.
+  attacker, and a credentialed CORS policy with no origin list reflects whatever `Origin` the caller
+  sent - which, with a `SameSite=None` session cookie, is every website an organizer visits reading
+  and writing the organizer API as them.
   Set `TRUSTED_PROXY_HOPS` to the number of proxies of our own a request passes through
   (0 = Flask exposed directly, 1 on Vercel); ProxyFix then reads exactly that many `X-Forwarded-For`
   entries from the right, which is the part a client cannot forge.
-  The check runs all three and the refusal names *every* variable that is missing, in one message:
+  `CORS_ALLOWED_ORIGINS` (`back-end/utils/cors.py`) is the comma-separated origin list, and `*` is
+  refused in it: a credentialed wildcard is not a permissive setting, it is the absence of the
+  control. Under the escape hatch an unconfigured process allows *loopback* origins on any port -
+  still a list, just one nobody had to type, and one the dev server's moving port does not outgrow.
+  The check runs all four and the refusal names *every* variable that is missing, in one message:
   stopping at the first would cost the operator a redeploy per variable.
   This is a boot-time deploy contract - a deployment missing one serves nothing, organizer app
   included - so it is written down where the promotion is: `docs/RELEASING.md`, "Required Production

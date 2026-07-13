@@ -221,7 +221,7 @@ This document outlines the complete technology stack used in the Conventioner ap
 - **Rate Limiting**: OTP and password reset requests
 - **Token Expiration**: Time-limited tokens for verification and reset
 - **Secure Sessions**: HTTP-only, secure cookies in production
-- **CORS Protection**: Configured for specific origins
+- **CORS Protection**: Credentialed requests are allowed only from the origins listed in `CORS_ALLOWED_ORIGINS`; the app refuses to boot without that list, and refuses a wildcard in it
 - **Input Validation**: Pydantic models for type safety
 
 ## Environment Variables
@@ -230,17 +230,20 @@ This document outlines the complete technology stack used in the Conventioner ap
 - `RESEND_API_KEY` - Resend email service API key
 - `FRONTEND_URL` - Frontend URL for email links (e.g., `http://localhost:5173`)
 - `FROM_EMAIL` - Email address to send from (default: `onboarding@resend.dev`)
-- `RECAPTCHA_SECRET_KEY` - Google reCAPTCHA v3 secret key
-- `DISABLE_CAPTCHA` - Test-only flag to skip reCAPTCHA verification (default OFF; set `true`/`1`). Honored only when `FLASK_ENV` is not `production`
-- `DISABLE_EMAIL` - Test-only flag to skip sending verification, password reset, and OTP emails via Resend, treating them as sent (default OFF; set `true`/`1`). Honored only when `FLASK_ENV` is not `production`
+- `RECAPTCHA_SECRET_KEY` - **Required.** Google reCAPTCHA v3 secret key; with no secret the gate would pass every caller
+- `DISABLE_CAPTCHA` - Test-only flag to skip reCAPTCHA verification (default OFF; set `true`/`1`). Honored only when `ALLOW_INSECURE_LOCAL_DEV` is also set
+- `DISABLE_EMAIL` - Test-only flag to skip sending verification, password reset, and OTP emails via Resend, treating them as sent (default OFF; set `true`/`1`). Honored only when `ALLOW_INSECURE_LOCAL_DEV` is also set
+- `ALLOW_INSECURE_LOCAL_DEV` - Local-development escape hatch (default OFF). The only gate on the two bypasses above, and the only way to boot without the required variables below. Never set on a deployed environment; every defense it turns off is named in the log
+- `CORS_ALLOWED_ORIGINS` - **Required.** Comma-separated browser origins allowed to make credentialed requests (e.g. `https://app.example.com`). No default and no wildcard: see [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment)
+- `TRUSTED_PROXY_HOPS` - **Required.** How many proxies of ours a request passes through before Flask (`0` = exposed directly, `1` on Vercel). Decides which address the public applicant rate limits key on
 - `MONGODB_HOST` - MongoDB hostname (default: `mongodb` in Docker, `localhost` locally)
 - `MONGODB_PORT` - MongoDB port (default: `27017`)
 - `MONGODB_USER` - MongoDB username (default: `admin`)
 - `MONGODB_PASSWORD` - MongoDB password (default: `secret`)
 - `MONGODB_DB` - Database name (default: `conventioner`)
-- `FLASK_ENV` - Flask environment (`development` or `production`)
+- `FLASK_ENV` - Flask environment (`development` or `production`). Not a security gate: the Dockerfile ships `development` and nothing overrides it, so nothing that defends the app may key on it
 - `USE_HTTPS` - Enable HTTPS (default: `true`)
-- `SECRET_KEY` - Flask secret key for sessions
+- `SECRET_KEY` - **Required.** Signs the Flask session cookie and the application-scoped applicant token. There is deliberately no fallback
 
 ### Frontend
 - `VITE_FLASK_HOST` - API base path (default: `/api`)

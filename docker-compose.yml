@@ -43,6 +43,10 @@ services:
       # Compose publishes the dev server directly, so the peer address is the caller's already.
       # A deployment that fronts Flask with a proxy must say how many hops of its own it has.
       - TRUSTED_PROXY_HOPS=${TRUSTED_PROXY_HOPS:-0}
+      # Left empty on purpose: unset, the escape hatch above allows loopback origins on any port,
+      # which is what the dev server and the e2e stack need (the Vite port moves per worktree).
+      # A deployment has to name its front end's origin here - there is no wildcard.
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
       - MONGODB_HOST=mongodb
       - MONGODB_PORT=27017
       - MONGODB_USER=admin

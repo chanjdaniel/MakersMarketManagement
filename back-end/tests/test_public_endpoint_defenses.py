@@ -1,10 +1,10 @@
-"""The boot-time contract the public applicant endpoints rest on, and how it refuses.
+"""The boot-time contract this app's public surface rests on, and how it refuses.
 
-Three variables defend endpoints that are unauthenticated, write to the database, and send mail from
-this domain, and all three fail *silently* when unset. So the process refuses to start without them -
-and the refusal has to be one refusal, naming all of them. A check that stopped at the first would
-hand an operator one variable per redeploy, which turns one loud failure into three and invites the
-third to be met by giving up.
+Four variables defend endpoints that are unauthenticated, write to the database, send mail from this
+domain, and answer the organizer's browser with their session attached - and all four fail *silently*
+when unset. So the process refuses to start without them - and the refusal has to be one refusal,
+naming all of them. A check that stopped at the first would hand an operator one variable per
+redeploy, which turns one loud failure into four and invites the last to be met by giving up.
 
 Two unique indexes are part of the same contract, and fail the same way: they are what make an
 applicant one applicant and an address one login challenge, they cannot be enforced anywhere but the
@@ -23,11 +23,17 @@ import api.applications as ApplicationsApi
 import utils.captcha as captcha_mod
 
 from utils.captcha import RECAPTCHA_SECRET_KEY_VAR
+from utils.cors import CORS_ALLOWED_ORIGINS_VAR
 from utils.deployment import INSECURE_LOCAL_DEV_VAR
 from utils.proxy import TRUSTED_PROXY_HOPS_VAR
 from utils.secret_key import SECRET_KEY_VAR
 
-ALL_VARS = (RECAPTCHA_SECRET_KEY_VAR, SECRET_KEY_VAR, TRUSTED_PROXY_HOPS_VAR)
+ALL_VARS = (
+    RECAPTCHA_SECRET_KEY_VAR,
+    SECRET_KEY_VAR,
+    TRUSTED_PROXY_HOPS_VAR,
+    CORS_ALLOWED_ORIGINS_VAR,
+)
 
 
 @pytest.fixture
@@ -37,6 +43,7 @@ def deployed(monkeypatch):
     monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", None)
     monkeypatch.delenv(SECRET_KEY_VAR, raising=False)
     monkeypatch.delenv(TRUSTED_PROXY_HOPS_VAR, raising=False)
+    monkeypatch.delenv(CORS_ALLOWED_ORIGINS_VAR, raising=False)
 
 
 def test_the_refusal_names_every_missing_variable(deployed):
@@ -59,6 +66,7 @@ def test_the_refusal_points_at_the_deploy_documentation(deployed):
 def test_one_missing_variable_is_still_a_refusal(deployed, monkeypatch):
     monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", "prod-secret")
     monkeypatch.setenv(SECRET_KEY_VAR, "a-real-signing-secret")
+    monkeypatch.setenv(CORS_ALLOWED_ORIGINS_VAR, "https://app.example.com")
 
     with pytest.raises(app_module.PublicEndpointDefenseError) as exc:
         app_module.verify_public_endpoint_defenses()
@@ -67,6 +75,7 @@ def test_one_missing_variable_is_still_a_refusal(deployed, monkeypatch):
     assert TRUSTED_PROXY_HOPS_VAR in message
     assert RECAPTCHA_SECRET_KEY_VAR not in message
     assert SECRET_KEY_VAR not in message
+    assert CORS_ALLOWED_ORIGINS_VAR not in message
 
 
 def test_a_configured_deployment_boots_and_gets_its_signing_secret(deployed, monkeypatch):
@@ -75,6 +84,7 @@ def test_a_configured_deployment_boots_and_gets_its_signing_secret(deployed, mon
     # Zero hops is a legitimate answer - Flask exposed directly - and it is the one that leaves the
     # WSGI stack of the imported app untouched.
     monkeypatch.setenv(TRUSTED_PROXY_HOPS_VAR, "0")
+    monkeypatch.setenv(CORS_ALLOWED_ORIGINS_VAR, "https://app.example.com")
 
     assert app_module.verify_public_endpoint_defenses() == "a-real-signing-secret"
 

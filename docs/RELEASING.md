@@ -64,7 +64,7 @@ Once `v0.1.0` is tagged, remove the `release-as` field from `release-please-conf
 
 ## Pre-Deploy: Required Production Environment
 
-The back end **refuses to start** unless all three of these are set, and it fails at import, so a deployment that is missing one serves nothing at all - not the applicant endpoints, not the organizer app.
+The back end **refuses to start** unless all four of these are set, and it fails at import, so a deployment that is missing one serves nothing at all - not the applicant endpoints, not the organizer app.
 Set them in the hosting environment **before** promoting `dev` → `main`.
 The startup log names every variable that is missing, all of them at once.
 
@@ -73,6 +73,7 @@ The startup log names every variable that is missing, all of them at once.
 | `SECRET_KEY` | A long random string. Signs the Flask session cookie and the application-scoped applicant token. Generate with `python -c 'import secrets; print(secrets.token_urlsafe(48))'`. | Anyone could forge an applicant token and read or overwrite any application, past the one-time code, the captcha, and every rate limit - and forge an organizer session with it. |
 | `RECAPTCHA_SECRET_KEY` | The reCAPTCHA v3 secret ([admin console](https://www.google.com/recaptcha/admin)). Gates the public applicant login and the organizer signup. | The captcha would pass every caller, leaving an unauthenticated endpoint that writes to the database and sends mail from our domain with nothing in front of it. |
 | `TRUSTED_PROXY_HOPS` | How many proxies **of ours** a request passes through before it reaches Flask (a reverse proxy, load balancer, or serverless ingress is one each). `0` means Flask is exposed directly. On Vercel it is `1`. | The applicant rate limits would key on the proxy's address, which is the same address for every caller in the world: one shared budget that the first burst spends on everyone's behalf. |
+| `CORS_ALLOWED_ORIGINS` | The comma-separated list of browser origins allowed to make credentialed requests to the API, each written exactly as a browser sends it - `https://app.example.com`, no trailing slash, no path. Usually just the front end's own origin. | The API answers cross-site requests with `Access-Control-Allow-Credentials: true`, and the organizer's session cookie is `SameSite=None`, so with no origin list every website an organizer visits could read and write the organizer API - markets, vendors, applications - as them. `*` is refused for the same reason. |
 
 There is deliberately **no default** for any of them.
 A default that quietly becomes the production value is the failure each of these checks exists to prevent - the signing key was such a default, and it was a literal committed to this repository.

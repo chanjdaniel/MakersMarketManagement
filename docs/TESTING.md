@@ -254,18 +254,26 @@ The suite is built on a Page Object Model plus a fixture layer under `front-end/
 
 The registration flow is protected by reCAPTCHA v3. For local development and E2E
 runs, set `DISABLE_CAPTCHA=true` (or `1`) so `verify_recaptcha` skips verification
-and returns a passing result. The bypass is honored only when `FLASK_ENV` is not
-`production`, defaults OFF, and never applies in production. The CI e2e job sets
-`DISABLE_CAPTCHA=true`, and `docker-compose.yml` forwards the variable to the
-back-end so `./scripts/seed_fixture.sh` and Playwright can register users without a
-real CAPTCHA token. On the front-end, `executeRecaptcha()` returns a placeholder
-token when `VITE_RECAPTCHA_SITE_KEY` is unset (as in test/dev builds), so the flow
-still reaches the back-end where the `DISABLE_CAPTCHA` bypass applies.
+and returns a passing result. Both bypasses default OFF and are honored **only by a
+back end that has also been told it is a local development one**, with
+`ALLOW_INSECURE_LOCAL_DEV=true` (`back-end/utils/deployment.py`) - `FLASK_ENV` is not
+consulted, because the Dockerfile ships `FLASK_ENV=development` and nothing overrides
+it, so a bypass gated on that variable would be live on every deployment built from
+our own image. `docker-compose.yml` sets `ALLOW_INSECURE_LOCAL_DEV` (it *is* the local
+stack) and forwards `DISABLE_CAPTCHA`; the CI e2e job sets `DISABLE_CAPTCHA=true`, so
+`./scripts/seed_fixture.sh` and Playwright can register users without a real CAPTCHA
+token. Running the back end outside `docker-compose` means setting
+`ALLOW_INSECURE_LOCAL_DEV=true` yourself, or `DISABLE_CAPTCHA` is silently ignored -
+and the process will not boot anyway without the deploy-contract variables in
+[RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment). On the
+front-end, `executeRecaptcha()` returns a placeholder token when
+`VITE_RECAPTCHA_SITE_KEY` is unset (as in test/dev builds), so the flow still reaches
+the back-end where the `DISABLE_CAPTCHA` bypass applies.
 
 Similarly, set `DISABLE_EMAIL=true` (or `1`) so the Resend-backed
 `send_verification_email`, `send_password_reset_email`, and `send_otp_email`
-helpers skip the actual send and report success. This is also honored only when
-`FLASK_ENV` is not `production`, defaults OFF, and is forwarded by
+helpers skip the actual send and report success. It is gated on
+`ALLOW_INSECURE_LOCAL_DEV` in exactly the same way, defaults OFF, and is forwarded by
 `docker-compose.yml`; the CI e2e job sets it too. The password-reset E2E test does
 not read the reset link from an email - it reads the token directly from MongoDB
 (via `docker exec` into the container named by `E2E_MONGO_CONTAINER`, default

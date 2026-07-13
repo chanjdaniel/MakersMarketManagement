@@ -20,7 +20,6 @@ from flask import Flask, request, jsonify, Response
 from flask_session import Session
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user
 from flask_bcrypt import Bcrypt
-from flask_cors import CORS
 from datetime import timedelta, datetime, timezone
 from datatypes import Market, MarketPhase, MarketRole, phase_from_market_document
 from assignment.utils import convert_keys_to_camel_case, convert_keys_to_snake_case
@@ -31,6 +30,7 @@ from market_documents import (
     market_doc_key,
 )
 from utils.captcha import CaptchaNotConfiguredError, assert_captcha_configured
+from utils.cors import CorsConfigError, apply_cors, describe_origins
 from utils.proxy import TrustedProxyConfigError, apply_trusted_proxy_fix
 from utils.secret_key import SecretKeyNotConfiguredError, signing_secret
 import db_config
@@ -106,16 +106,19 @@ class PublicEndpointDefenseError(RuntimeError):
 
 
 def verify_public_endpoint_defenses() -> str:
-    """Refuse to boot without the configuration the public endpoints are defended by.
+    """Refuse to boot without the configuration this app's public surface is defended by.
 
     The applicant login endpoints are unauthenticated, they write to the database, and they send
     mail from this domain. What keeps a script off them is a reCAPTCHA secret; what keeps their rate
     limits keyed on the caller rather than on a shared proxy address is a trusted-hop count; and
-    what makes the token they authenticate with mean anything is a signing secret. All three
-    silently degrade to nothing when unset - the captcha passes everybody, the limits lock out
-    everybody, and a token signed with a key the repository publishes is a token anyone can write -
-    so, as with the market-key migration above, an unknown state is never taken for a safe one: it
-    fails at boot, naming the variables, rather than in production, naming nothing.
+    what makes the token they authenticate with mean anything is a signing secret. The organizer API
+    beside them is defended by a different thing entirely - the list of browser origins allowed to
+    send it the organizer's session cookie. All four silently degrade to nothing when unset - the
+    captcha passes everybody, the limits lock out everybody, a token signed with a key the repository
+    publishes is a token anyone can write, and a credentialed CORS policy with no origin list hands
+    the organizer API to every website an organizer visits - so, as with the market-key migration
+    above, an unknown state is never taken for a safe one: it fails at boot, naming the variables,
+    rather than in production, naming nothing.
 
     Every check runs, and the refusal carries *all* of them. Stopping at the first would hand an
     operator one variable at a time and a redeploy between each, which turns one loud failure into a
@@ -136,6 +139,7 @@ def verify_public_endpoint_defenses() -> str:
     problems = []
     secret = ""
     trusted_proxy_hops = 0
+    origins = []
 
     try:
         assert_captcha_configured()
@@ -152,10 +156,15 @@ def verify_public_endpoint_defenses() -> str:
     except TrustedProxyConfigError as e:
         problems.append(str(e))
 
+    try:
+        origins = apply_cors(app)
+    except CorsConfigError as e:
+        problems.append(str(e))
+
     if problems:
         message = "\n\n".join([
-            f"Refusing to start: {len(problems)} of the defenses the public applicant endpoints "
-            f"rest on are not configured. All of them are named below. See the required production "
+            f"Refusing to start: {len(problems)} of the defenses this app's public surface rests "
+            f"on are not configured. All of them are named below. See the required production "
             f"environment in docs/RELEASING.md before promoting.",
             *problems,
         ])
@@ -163,6 +172,7 @@ def verify_public_endpoint_defenses() -> str:
         raise PublicEndpointDefenseError(message)
 
     logger.info("Trusting %d proxy hop(s) for the client address", trusted_proxy_hops)
+    logger.info("Allowing credentialed browser requests from: %s", describe_origins(origins))
     return secret
 
 
@@ -199,16 +209,6 @@ bcrypt = Bcrypt(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.session_protection = "strong"
-# Configure CORS based on environment
-frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
-if os.getenv("FLASK_ENV") == "production":
-    # In production, only allow the configured frontend URL
-    CORS(app, 
-         origins=[frontend_url],
-         supports_credentials=True)
-else:
-    # In development, allow all origins for easier local development
-    CORS(app, supports_credentials=True)
 
 app.register_blueprint(floorplans_bp, url_prefix="/floorplans")
 app.register_blueprint(floorplans_placement_bp, url_prefix="/floorplans")

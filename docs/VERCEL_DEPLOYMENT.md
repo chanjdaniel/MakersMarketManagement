@@ -24,9 +24,10 @@ FRONTEND_URL=https://your-frontend-domain.vercel.app
 USE_HTTPS=true
 RECAPTCHA_SECRET_KEY=your-recaptcha-secret-key
 TRUSTED_PROXY_HOPS=1
+CORS_ALLOWED_ORIGINS=https://your-frontend-domain.vercel.app
 ```
 
-`SECRET_KEY`, `RECAPTCHA_SECRET_KEY` and `TRUSTED_PROXY_HOPS` are **boot-time requirements**: the function refuses to start without them, so a deployment that is missing one serves nothing at all.
+`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `TRUSTED_PROXY_HOPS` and `CORS_ALLOWED_ORIGINS` are **boot-time requirements**: the function refuses to start without them, so a deployment that is missing one serves nothing at all.
 See [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment) for what each one defends and what an unset value would do.
 `TRUSTED_PROXY_HOPS=1` is the value for Vercel: its ingress is the one proxy of ours a request passes through, so ProxyFix reads exactly one `X-Forwarded-For` entry from the right - the entry the ingress appended, which is the part a caller cannot forge.
 
@@ -106,8 +107,9 @@ FROM_EMAIL=your-verified-email@domain.com
      - `FROM_EMAIL=your-verified-email@domain.com`
      - `RECAPTCHA_SECRET_KEY=your-recaptcha-secret-key`
      - `TRUSTED_PROXY_HOPS=1`
+     - `CORS_ALLOWED_ORIGINS=https://your-frontend-domain.vercel.app`
    - **Note**: `MONGODB_URI` should already be set if you used the MongoDB Atlas integration
-   - **Note**: `SECRET_KEY`, `RECAPTCHA_SECRET_KEY` and `TRUSTED_PROXY_HOPS` are checked at import. Miss one and the function does not boot; the log names every one that is missing.
+   - **Note**: `SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `TRUSTED_PROXY_HOPS` and `CORS_ALLOWED_ORIGINS` are checked at import. Miss one and the function does not boot; the log names every one that is missing.
    - Apply to Production, Preview, and Development environments as needed
 
 5. **Initialize / migrate the database** (before the first deploy, and before any deploy that carries a new migration)
@@ -138,6 +140,6 @@ back-end/
 - **Import Errors**: Ensure all dependencies are in `requirements.txt`
 - **MongoDB Connection Issues**: Check your MongoDB Atlas network access settings
 - **Session Issues**: Verify `SESSION_TYPE=null` is set for Vercel
-- **CORS Issues**: Ensure `FRONTEND_URL` matches your frontend domain exactly
-- **"Refusing to start: N of the defenses the public applicant endpoints rest on are not configured"**: one or more of `SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `TRUSTED_PROXY_HOPS` is unset. The log names every one of them, and each names what it defends. Set them and redeploy; do not work around it by setting `ALLOW_INSECURE_LOCAL_DEV`, which turns those defenses off. See [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment).
+- **CORS Issues**: Ensure `CORS_ALLOWED_ORIGINS` lists your frontend's origin exactly as the browser sends it (`https://your-frontend-domain.vercel.app` - scheme and host, no trailing slash, no path). A preview deployment served from a different domain is a different origin and has to be listed too. `FRONTEND_URL` is only used for the links in outgoing mail and has no say in CORS.
+- **"Refusing to start: N of the defenses this app's public surface rests on are not configured"**: one or more of `SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `TRUSTED_PROXY_HOPS`, `CORS_ALLOWED_ORIGINS` is unset. The log names every one of them, and each names what it defends. Set them and redeploy; do not work around it by setting `ALLOW_INSECURE_LOCAL_DEV`, which turns those defenses off. See [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment).
 - **"The market-key migration has not been applied to this database"**: the function is refusing to boot because it cannot confirm the migration (see step 5 above). Run `migrations/migrate_market_keys.py` against the Atlas database and redeploy. The same error appears when the marker simply cannot be read - an unknown migration state is treated as unmigrated - so check network access too.
