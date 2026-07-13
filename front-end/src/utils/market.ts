@@ -3,10 +3,13 @@ import { marketNameToKebabSlug } from '@/utils/marketSlug';
 
 /**
  * Where to send the user after choosing a market (draft → setup, else → kebab URL).
- * Phase is the single source of truth; ``isDraft`` is derived server-side.
+ * Phase is the single source of truth; ``isDraft`` is derived server-side, and is only
+ * consulted for a market with no phase at all - a published one left in localStorage by a
+ * build that predates the field, which would otherwise be routed back into the setup wizard.
  */
 export function pathAfterLoadingMarket(market: Market): string {
-    if (market.phase && market.phase !== 'draft') {
+    const published = market.phase ? market.phase !== 'draft' : market.isDraft === false;
+    if (published) {
         const slug = marketNameToKebabSlug(market.name);
         if (slug) return `/${slug}`;
     }

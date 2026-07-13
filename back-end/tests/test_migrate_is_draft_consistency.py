@@ -109,6 +109,38 @@ def test_consistent_markets_are_untouched_and_migration_is_idempotent():
     assert db.markets.docs[2]["isDraft"] is False
 
 
+class RacingCollection(FakeCollection):
+    """A collection whose documents are transitioned by the live app mid-migration."""
+
+    def __init__(self, docs, concurrent_write):
+        super().__init__(docs)
+        self.concurrent_write = concurrent_write
+
+    def update_many(self, query, update):
+        if self.concurrent_write is not None:
+            self.concurrent_write(self.docs)
+            self.concurrent_write = None
+        return super().update_many(query, update)
+
+
+def test_concurrent_phase_change_is_not_overwritten():
+    """Every repair filter must still name the disagreement it repairs, not just an _id.
+
+    A market the app publishes while the migration runs must not have the isDraft computed for
+    its old phase written back onto its new one -- that would recreate the exact disagreement
+    the migration exists to remove, invisibly.
+    """
+    db = FakeDatabase([{"_id": 1, "id": "m1", "phase": "draft", "isDraft": False}])
+
+    def publish(docs):
+        docs[0].update({"phase": "archived", "isDraft": False})
+
+    db.markets = RacingCollection(db.markets.docs, publish)
+    migrate(db)
+
+    assert only(db) == {"_id": 1, "id": "m1", "phase": "archived", "isDraft": False}
+
+
 def test_dry_run_changes_nothing():
     db = FakeDatabase([{"_id": 1, "id": "m1", "phase": "archived", "isDraft": True}])
     migrate(db, dry_run=True)
