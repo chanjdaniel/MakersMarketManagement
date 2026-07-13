@@ -6,6 +6,7 @@ import api.source_data as SourceDataApi
 import api.attendance as AttendanceApi
 import api.permissions as PermissionsApi
 import api.applicants as ApplicantsApi
+import api.applications as ApplicationsApi
 from api.floorplans import floorplans_bp
 from api.floorplans_placement import floorplans_placement_bp
 from api.floorplans_templates import floorplans_templates_bp
@@ -71,6 +72,33 @@ def verify_market_key_migration() -> None:
         raise
     finally:
         probe.client.close()
+
+
+def verify_applicant_identity_indexes() -> None:
+    """Refuse to boot unless the uniqueness the applicant endpoints rest on is enforced.
+
+    Two unique indexes carry guarantees that no amount of application code can carry: one applicant
+    is one application at a market (``api.applications``), and one address is one live login
+    challenge with one attempt budget (``api.applicants``). Both are written by an upsert on a
+    public, unauthenticated endpoint, so both are read-then-write races that only the database can
+    settle, and a process that could not build them would run with the guarantee silently absent -
+    duplicate applications on the organizer's list, and a guess budget an attacker sets for
+    themselves by asking for two codes at once.
+
+    So they are built here, once, at boot, and a build that fails takes the process with it, exactly
+    as a missing market-key migration and a missing captcha secret do. An index that will not build
+    almost always means the collection already holds the duplicates the index exists to forbid; that
+    is a state to stop and fix, not to serve more traffic into.
+
+    Building them here also takes them off the request path: the lazy build each module keeps is for
+    tooling and tests, and in a booted process it has already been done.
+    """
+    try:
+        ApplicationsApi.ensure_application_indexes()
+        ApplicantsApi.ensure_login_code_indexes()
+    except (ApplicationsApi.ApplicationIndexError, ApplicantsApi.LoginChallengeIndexError) as e:
+        logger.critical("Refusing to start: %s", e)
+        raise
 
 
 class PublicEndpointDefenseError(RuntimeError):
@@ -139,6 +167,7 @@ def verify_public_endpoint_defenses() -> str:
 
 
 verify_market_key_migration()
+verify_applicant_identity_indexes()
 
 app = Flask(__name__)
 

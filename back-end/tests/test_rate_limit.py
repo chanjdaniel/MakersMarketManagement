@@ -98,3 +98,80 @@ class TestRateLimit:
         assert RateLimit.rate_limit_exceeded(
             "scope", "1.2.3.4", limit=3, window_seconds=60, now=AT,
         ) is False
+
+
+IP = RateLimit.Budget(scope="ip", key="1.2.3.4", limit=3, window_seconds=60)
+CEILING = RateLimit.Budget(scope="global", key="", limit=2, window_seconds=60)
+
+
+def _charged(rate_limits, budget, at=AT):
+    """What the stored count of a budget's window is, from outside the limiter."""
+    window_start = int(at.timestamp()) // budget.window_seconds * budget.window_seconds
+    doc = rate_limits.find_one({"_id": f"{budget.scope}:{budget.key}:{window_start}"})
+    return (doc or {}).get("count", 0)
+
+
+class TestSeveralBudgetsAtOnce:
+    """A request is admitted by all of its budgets or by none of them.
+
+    The applicant endpoints charge a per-IP budget and a global ceiling for the same request, and
+    both are budgets somebody else is also spending: the per-IP one belongs to everybody behind a
+    convention hall's wifi, the ceiling to every market's applicants at once. So a request one of
+    them refuses must not have spent the other, in either direction.
+    """
+
+    def _spend(self, times, budgets, **kwargs):
+        return [RateLimit.any_budget_exceeded(budgets, now=AT, **kwargs) for _ in range(times)]
+
+    def test_an_admitted_request_is_charged_to_every_budget(self, rate_limits):
+        assert self._spend(2, [IP, CEILING]) == [False, False]
+
+        assert _charged(rate_limits, IP) == 2
+        assert _charged(rate_limits, CEILING) == 2
+
+    def test_the_request_the_ceiling_refuses_is_refused(self, rate_limits):
+        assert self._spend(3, [IP, CEILING]) == [False, False, True]
+
+    def test_a_ceiling_refusal_does_not_spend_the_per_ip_budget(self, rate_limits):
+        """The bug this exists for: an hour in which the product hits its global ceiling used to be
+        an hour that burned down the hourly budget of every shared NAT signing in at the time."""
+        self._spend(3, [IP, CEILING])
+
+        assert _charged(rate_limits, IP) == 2
+
+    def test_the_per_ip_budget_still_admits_its_full_limit_after_a_ceiling_refusal(
+        self, rate_limits,
+    ):
+        """The refund is not bookkeeping: the applicants behind that address get their budget back."""
+        self._spend(3, [IP, CEILING])
+
+        assert RateLimit.any_budget_exceeded(
+            [IP, RateLimit.Budget(scope="global", key="", limit=99, window_seconds=60)], now=AT,
+        ) is False
+
+    def test_a_budget_that_refuses_does_not_spend_itself(self, rate_limits):
+        self._spend(4, [IP, CEILING])
+
+        assert _charged(rate_limits, CEILING) == 2
+
+    def test_a_budget_behind_the_one_that_refused_is_not_charged_at_all(self, rate_limits):
+        self._spend(5, [CEILING, IP])
+
+        assert _charged(rate_limits, CEILING) == 2
+        assert _charged(rate_limits, IP) == 2
+
+    def test_a_refused_request_stays_refused(self, rate_limits):
+        """Refunding a refusal is not a way back in: the window sits at its limit for its length."""
+        self._spend(3, [IP, CEILING])
+
+        assert RateLimit.any_budget_exceeded([IP, CEILING], now=AT) is True
+
+    def test_a_budget_the_database_cannot_count_does_not_refuse_the_request(
+        self, rate_limits, monkeypatch,
+    ):
+        def boom(*_args, **_kwargs):
+            raise PyMongoError("no route to host")
+
+        monkeypatch.setattr(rate_limits, "find_one_and_update", boom)
+
+        assert RateLimit.any_budget_exceeded([IP, CEILING], now=AT) is False

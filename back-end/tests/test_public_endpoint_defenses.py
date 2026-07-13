@@ -5,14 +5,21 @@ this domain, and all three fail *silently* when unset. So the process refuses to
 and the refusal has to be one refusal, naming all of them. A check that stopped at the first would
 hand an operator one variable per redeploy, which turns one loud failure into three and invites the
 third to be met by giving up.
+
+Two unique indexes are part of the same contract, and fail the same way: they are what make an
+applicant one applicant and an address one login challenge, they cannot be enforced anywhere but the
+database, and a process that could not build them would serve on without them and say nothing.
 """
 import pytest
+from pymongo.errors import PyMongoError
 
 from conftest import skip_without_real_dependencies
 
 skip_without_real_dependencies()
 
 import app as app_module
+import api.applicants as ApplicantsApi
+import api.applications as ApplicationsApi
 import utils.captcha as captcha_mod
 
 from utils.captcha import RECAPTCHA_SECRET_KEY_VAR
@@ -70,3 +77,46 @@ def test_a_configured_deployment_boots_and_gets_its_signing_secret(deployed, mon
     monkeypatch.setenv(TRUSTED_PROXY_HOPS_VAR, "0")
 
     assert app_module.verify_public_endpoint_defenses() == "a-real-signing-secret"
+
+
+class TestTheIndexesTheApplicantEndpointsRestOn:
+    """An index that will not build is a guarantee the process does not have, so it does not start.
+
+    In production an index that will not build almost always means the collection already holds what
+    the index forbids - two applications for one applicant, two live codes for one address - which is
+    a state to stop and repair, not one to serve more public traffic into.
+    """
+
+    @pytest.fixture(autouse=True)
+    def unbuilt(self, monkeypatch):
+        """Importing app.py already built these; boot again from a process that has not."""
+        monkeypatch.setattr(ApplicationsApi, "_indexes_ready", False)
+        monkeypatch.setattr(ApplicantsApi, "_login_code_indexes_ready", False)
+
+    def _unbuildable(self, collection, monkeypatch):
+        def boom(*_args, **_kwargs):
+            raise PyMongoError("E11000 duplicate key error: index build failed")
+
+        monkeypatch.setattr(collection, "create_index", boom)
+
+    def test_boot_refuses_when_the_application_identity_index_will_not_build(
+        self, applications, monkeypatch,
+    ):
+        self._unbuildable(applications, monkeypatch)
+
+        with pytest.raises(ApplicationsApi.ApplicationIndexError):
+            app_module.verify_applicant_identity_indexes()
+
+    def test_boot_refuses_when_the_login_challenge_index_will_not_build(
+        self, login_codes, monkeypatch,
+    ):
+        self._unbuildable(login_codes, monkeypatch)
+
+        with pytest.raises(ApplicantsApi.LoginChallengeIndexError):
+            app_module.verify_applicant_identity_indexes()
+
+    def test_a_database_that_can_hold_them_boots(self, applications, login_codes):
+        app_module.verify_applicant_identity_indexes()
+
+        assert ApplicationsApi._indexes_ready is True
+        assert ApplicantsApi._login_code_indexes_ready is True

@@ -35,6 +35,10 @@ applications_collection = db[APPLICATIONS_COLLECTION]
 _indexes_ready = False
 
 
+class ApplicationIndexError(RuntimeError):
+    """The index that makes an applicant one applicant is not in place."""
+
+
 def ensure_application_indexes() -> None:
     """The identity of an application, enforced where it can actually hold.
 
@@ -51,6 +55,17 @@ def ensure_application_indexes() -> None:
     So uniqueness is the database's, and creation is written against it -- see
     ``find_or_create_application``.
 
+    A build that fails raises, and the caller fails with it. This index is not a decoration on a
+    guarantee the code keeps anyway: it *is* the guarantee, the whole of it, and a process that
+    cannot build it is a process where ``find_or_create_application`` is a read-then-insert with
+    nothing behind it. Logging that and serving anyway is the one thing this product does not do
+    with a defense it cannot confirm - the market-key migration and the public-endpoint
+    configuration both fail closed, and for the same reason: an unknown state is not a safe one.
+    The likeliest cause is duplicates already in the collection, which is precisely the corruption
+    the index exists to prevent, and which serving on would only deepen. ``app.py`` asserts this at
+    boot, so a deployment that cannot hold it says so before it takes a request rather than in the
+    middle of one.
+
     Built lazily rather than at import: an index build is a network call, and this module is
     imported by tooling and tests that never reach the database.
     """
@@ -63,9 +78,18 @@ def ensure_application_indexes() -> None:
             unique=True,
             name=APPLICANT_IDENTITY_INDEX,
         )
-        _indexes_ready = True
-    except PyMongoError as exc:  # pragma: no cover - index creation is best effort
-        logger.warning("Could not create the application identity index: %s", exc)
+    except PyMongoError as exc:
+        message = (
+            f"The unique index {APPLICANT_IDENTITY_INDEX} on "
+            f"({MARKET_ID_FIELD}, {APPLICANT_EMAIL_FIELD}, {APPLICATION_TYPE_FIELD}) could not be "
+            f"built, so nothing is stopping one applicant from holding two applications at one "
+            f"market. If the collection already holds duplicates, that is what is blocking the "
+            f"build, and they have to be merged or removed before applications can be served: "
+            f"{exc}"
+        )
+        logger.critical("%s", message)
+        raise ApplicationIndexError(message) from exc
+    _indexes_ready = True
 
 
 def market_filter(market_id: str) -> Dict[str, Any]:

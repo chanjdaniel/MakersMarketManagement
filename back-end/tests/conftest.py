@@ -457,3 +457,16 @@ class _MigratedProbeDatabase:
 
 
 db_config.get_migration_probe_database = lambda *_args, **_kwargs: _MigratedProbeDatabase()
+
+# app.py also refuses to boot unless it can build the two unique indexes the public applicant
+# endpoints rest on, and it builds them for real, against the collections those modules hold. Here
+# those collections are the fakes below - installed at import, not only per test, because a test
+# module that imports app.py imports it at collection time, before any fixture has run. The autouse
+# fixtures above still hand each test its own empty collection; this is only what the boot check
+# builds its indexes against.
+if not STUBBED_MODULES:
+    import api.applicants as _applicants_module
+    import api.applications as _applications_module
+
+    _applications_module.applications_collection = FakeApplicationsCollection()
+    _applicants_module.login_codes_collection = FakeKeyedCollection()

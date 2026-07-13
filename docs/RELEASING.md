@@ -94,6 +94,8 @@ python migrations/create_applications_collection.py   # creates the applications
 
 `create_applications_collection.py` builds the unique index on (`market_id`, `applicant_email`, `application_type`), which is what stops one address from holding two applications: the public request-key endpoint reads the applicant list before it writes to it, so without the index two concurrent requests for one address each insert an application, and the one nothing can reach afterwards double-counts that applicant through review, assignment, and the D9 form lock.
 A database that already holds such a duplicate cannot take the index; the migration names the documents and stops, because which of the two is the applicant's is the organizer's call.
+The back end builds that index (and the unique index on the applicant login-challenge store) at boot and **refuses to start** if either will not build, so a database it cannot enforce this on fails at startup instead of serving public applicant traffic with the guarantee silently absent.
+Skipping the migration is therefore safe in one direction only: on a clean collection the boot build creates the indexes itself, while on a collection that already holds duplicates the process will not start until they are resolved.
 
 `migrate_is_draft_consistency.py` **must** be run with the code that makes `phase` the single source of truth, and it is the migration whose omission is visible to vendors.
 A market the old build published carries `phase: "draft"` + `isDraft: false` (publishing was a `PUT` of `isDraft: false`; nothing advanced the phase), and every read now derives the market's state from `phase`.

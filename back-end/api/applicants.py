@@ -49,7 +49,7 @@ from utils.tokens import generate_otp
 from utils.email import send_otp_email
 from utils.application_token import generate_application_token, verify_application_token
 from utils.captcha import verify_recaptcha
-from utils.rate_limit import rate_limit_exceeded
+from utils.rate_limit import Budget, any_budget_exceeded, rate_limit_exceeded
 
 logger = logging.getLogger(__name__)
 
@@ -278,7 +278,11 @@ def _find_application(market_id: str, email: str) -> Optional[Application]:
 _login_code_indexes_ready = False
 
 
-def _ensure_login_code_indexes() -> None:
+class LoginChallengeIndexError(RuntimeError):
+    """The index that holds one address to one login challenge is not in place."""
+
+
+def ensure_login_code_indexes() -> None:
     """The two invariants of the challenge store, enforced where they can actually hold.
 
     The address is the key, and the store is written by an upsert on a public endpoint, so the
@@ -288,6 +292,13 @@ def _ensure_login_code_indexes() -> None:
 
     The TTL is what keeps the collection from growing for as long as the product runs: a challenge
     is dead the moment it expires, and a dead one is of no use to anybody.
+
+    A build that fails raises, and the caller fails with it. The attempt cap is what bounds guessing
+    against a five-minute code, and the uniqueness is what makes the cap a cap rather than a cap per
+    document a caller can create at will; a process that cannot build the index has neither, and has
+    no way to know how many challenges an address is holding. That is not a state to serve a public
+    login endpoint from, so it refuses instead - and ``app.py`` asserts the index at boot, so the
+    refusal lands before the first applicant rather than on them.
 
     Built lazily rather than at import: an index build is a network call, and this module is
     imported by tooling and tests that never reach the database.
@@ -300,9 +311,18 @@ def _ensure_login_code_indexes() -> None:
             [("market_id", 1), ("email", 1)], unique=True, name="market_email_unique",
         )
         login_codes_collection.create_index("purge_at", expireAfterSeconds=0)
-        _login_code_indexes_ready = True
-    except PyMongoError as exc:  # pragma: no cover - index creation is best effort
-        logger.warning("Could not create the applicant login-code indexes: %s", exc)
+    except PyMongoError as exc:
+        message = (
+            "The applicant login-challenge indexes could not be built. Without the unique index on "
+            "(market_id, email), one address can hold several live codes at once, each with its own "
+            "attempt budget, which is a guess budget an attacker sets themselves; without the TTL "
+            "index, spent challenges are never reaped. If the collection already holds two "
+            "challenges for one address, that is what is blocking the build, and it has to be "
+            f"cleared before applicant sign-in can be served: {exc}"
+        )
+        logger.critical("%s", message)
+        raise LoginChallengeIndexError(message) from exc
+    _login_code_indexes_ready = True
 
 
 def _as_utc(value: Any) -> Optional[datetime]:
@@ -357,7 +377,7 @@ def _issue_challenge(market_id: str, email: str, code: Optional[str]) -> None:
     even that loses, a live challenge for this address exists either way, which is all this function
     promised.
     """
-    _ensure_login_code_indexes()
+    ensure_login_code_indexes()
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(minutes=OTP_EXPIRY_MINUTES)
     for _attempt in range(2):
@@ -707,20 +727,25 @@ def request_applicant_key(
     if not captcha_ok:
         return {"error": CAPTCHA_REQUIRED_ERROR}, 400
 
-    if rate_limit_exceeded(
-        "applicant_request_key_ip",
-        client_ip or "unknown",
-        limit=REQUEST_KEY_IP_LIMIT,
-        window_seconds=REQUEST_KEY_IP_WINDOW_SECONDS,
-    ):
-        return {"error": RATE_LIMITED_ERROR}, 429
-
-    if rate_limit_exceeded(
-        "applicant_request_key_global",
-        "",
-        limit=REQUEST_KEY_GLOBAL_LIMIT,
-        window_seconds=REQUEST_KEY_GLOBAL_WINDOW_SECONDS,
-    ):
+    # Both budgets in one charge, because this request is admitted by both of them or by neither.
+    # Charged separately, the per-IP budget is spent on a request the global ceiling then refuses,
+    # and that increment is never given back - so an hour in which the product hits its global
+    # ceiling is an hour that quietly burns down the budget of every shared NAT signing in at the
+    # time. See ``utils.rate_limit.any_budget_exceeded``.
+    if any_budget_exceeded([
+        Budget(
+            scope="applicant_request_key_ip",
+            key=client_ip or "unknown",
+            limit=REQUEST_KEY_IP_LIMIT,
+            window_seconds=REQUEST_KEY_IP_WINDOW_SECONDS,
+        ),
+        Budget(
+            scope="applicant_request_key_global",
+            key="",
+            limit=REQUEST_KEY_GLOBAL_LIMIT,
+            window_seconds=REQUEST_KEY_GLOBAL_WINDOW_SECONDS,
+        ),
+    ]):
         return {"error": RATE_LIMITED_ERROR}, 429
 
     market_doc = _get_market_doc_by_slug(market_slug)

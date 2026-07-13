@@ -239,6 +239,23 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   double-counting that applicant through review, assignment, and the D9 lock.
   Creation therefore goes through `find_or_create_application()`, a conditional upsert that hands the
   loser of the race the winner's document. Never insert an application document directly.
+  The same holds for the login-challenge store's unique index on (`market_id`, `email`)
+  (`ApplicantsApi.ensure_login_code_indexes()`): it is what makes the per-code attempt cap a cap,
+  rather than one budget per document a caller mints by asking for two codes at once.
+  Both indexes *are* their guarantees, not decorations on ones the code keeps anyway, so a build that
+  fails raises and `verify_applicant_identity_indexes()` (`back-end/app.py`) asserts both at boot: a
+  process that cannot enforce them does not serve. Do not soften either back into a logged warning -
+  an index that will not build almost always means the collection already holds the duplicates the
+  index forbids, which is the state serving on would deepen.
+- **A request is admitted by all of its budgets or by none of them.** The applicant endpoints charge
+  a per-IP budget and a global ceiling for the same request, and both are budgets *other people* are
+  also spending, so they are charged together through `any_budget_exceeded()`
+  (`back-end/utils/rate_limit.py`), which gives back every increment it took as soon as one budget
+  refuses. Charging them one call at a time is a live bug in either order: charge the IP budget first
+  and an hour in which the product hits its global ceiling burns down the hourly budget of every
+  shared NAT signing in at the time; charge the ceiling first and one abusive IP burns the shared
+  ceiling with requests its own budget already refused. The stored count of every window stays what
+  `utils/rate_limit.py` promises: the number of requests that were *admitted*, and nothing else.
 - **The captcha is the control against scripts here; the rate limits are safety ceilings, not the
   control.**
   Applicants share addresses (a hall's wifi is one; carrier CGNAT pools thousands) and a market whose
