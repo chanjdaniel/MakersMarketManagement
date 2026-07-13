@@ -88,7 +88,7 @@ Before a promotion reaches production, run the pending migrations in `back-end/m
 
 ```bash
 python migrations/migrate_phase.py                    # backfills `phase` on existing markets
-python migrations/migrate_market_keys.py              # rewrites markets under the canonical camelCase keys
+python migrations/migrate_market_keys.py              # rewrites markets into canonical form: camelCase keys, stored+indexed slug
 python migrations/migrate_is_draft_consistency.py     # makes `isDraft` agree with `phase` on markets that have one
 python migrations/create_applications_collection.py   # creates the applications collection and its indexes
 ```
@@ -106,7 +106,9 @@ Run it after `migrate_phase.py`: the two are disjoint by construction (one touch
 
 `migrate_market_keys.py` **must** be run before the code that reads market documents by the canonical key only.
 An unmigrated market is invisible to every such read: vendors are told the market does not exist at check-in, and organization members get an empty market list.
-The migration records a marker document in the `schema_migrations` collection when it completes, and the back end refuses to boot unless it can read that marker; the fatal log names the script to run.
+It also backfills each market's `slug` - the segment every public URL names it by - and builds the index the public slug lookup queries; a market with no stored slug is reachable at no public URL at all.
+**Run it again even on a database an earlier build already migrated**: that build recorded only the key marker and knew nothing about slugs, so its markets have none.
+The migration records a marker per part in the `schema_migrations` collection when it completes, and the back end refuses to boot unless it can read all of them; the fatal log names every missing marker and the one script that records them.
 The check fails closed on anything short of a confirmed marker - an unknown migration state is not a migrated one - so a deploy that skipped the migration fails loudly at startup rather than quietly serving half the data.
 
 ## Files

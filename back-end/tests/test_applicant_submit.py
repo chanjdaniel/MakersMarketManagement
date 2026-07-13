@@ -12,6 +12,7 @@ from unittest.mock import patch
 from conftest import (
     FakeApplicationsCollection,
     FakeMarketsCollection,
+    mongo_matches,
     stored_market,
 )
 from datatypes import (
@@ -43,25 +44,22 @@ VALID_FORM = {
 
 
 class FakeSlugMarketsCollection:
-    """Stand-in for the markets collection that supports find_one and find."""
+    """Stand-in for the markets collection, matching filters the way Mongo does.
+
+    ``find`` applies the filter rather than handing back everything, so the public slug lookup is
+    exercised as it actually runs: it queries the *stored* slug, and a document that does not carry
+    one is a market Mongo would never return.
+    """
 
     def __init__(self, docs):
         self.docs = docs if isinstance(docs, list) else [docs]
         self.last_update = None
 
     def find_one(self, query):
-        for doc in self.docs:
-            match = True
-            for k, v in (query or {}).items():
-                if doc.get(k) != v:
-                    match = False
-                    break
-            if match:
-                return dict(doc)
-        return None
+        return next(self.find(query), None)
 
     def find(self, query, projection=None):
-        matched = [dict(d) for d in self.docs]
+        matched = [dict(d) for d in self.docs if mongo_matches(d, query)]
         if projection:
             matched = [{k: v for k, v in d.items() if k in projection} for d in matched]
         return iter(matched)
@@ -525,6 +523,57 @@ class TestGetPublicApplicationForm:
         result, status = ApplicantsApi.get_public_application_form("draft")
 
         assert status == 404
+
+
+class TestPublicFormCeiling:
+    """This is the one public applicant surface with no captcha in front of it - it is a page load,
+    and a browser that has not run a script yet must still be able to open a market's application
+    URL. The per-IP ceiling is therefore the only bound it has."""
+
+    def _load(self, ip="1.2.3.4", times=1):
+        for _ in range(times - 1):
+            ApplicantsApi.get_public_application_form(MARKET_SLUG, ip)
+        return ApplicantsApi.get_public_application_form(MARKET_SLUG, ip)
+
+    def test_a_caller_over_the_ceiling_is_refused(self, open_market, monkeypatch):
+        monkeypatch.setattr(ApplicantsApi, "PUBLIC_FORM_IP_LIMIT", 3)
+
+        _result, status = self._load(times=3)
+        assert status == 200
+
+        result, status = self._load()
+        assert status == 429
+        assert result["error"] == ApplicantsApi.RATE_LIMITED_ERROR
+
+    def test_the_ceiling_is_per_caller(self, open_market, monkeypatch):
+        """A budget shared by every applicant at every market is one an attacker reaches on
+        purpose, and what breaks when they do is the application form for all of them. There is
+        deliberately no global ceiling here."""
+        monkeypatch.setattr(ApplicantsApi, "PUBLIC_FORM_IP_LIMIT", 3)
+
+        self._load(ip="1.2.3.4", times=4)
+
+        _result, status = self._load(ip="5.6.7.8")
+        assert status == 200
+
+    def test_an_applicant_loading_every_screen_is_nowhere_near_it(self, open_market):
+        """The real bound: the sign-in budget already assumes no more than REQUEST_KEY_IP_LIMIT
+        sign-ins an hour from one address, and this allows ten form loads for each of them - so a
+        hall's shared wifi cannot spend it, which is the whole point of a ceiling."""
+        assert (
+            ApplicantsApi.PUBLIC_FORM_IP_LIMIT
+            >= 10 * ApplicantsApi.REQUEST_KEY_IP_LIMIT
+        )
+
+    def test_a_refused_load_is_not_counted(self, open_market, monkeypatch, rate_limits):
+        """Refusals are refunded, so a shared window cannot be held down by callers already turned
+        away. See ``utils.rate_limit``."""
+        monkeypatch.setattr(ApplicantsApi, "PUBLIC_FORM_IP_LIMIT", 2)
+
+        self._load(times=4)
+
+        counts = [doc["count"] for doc in rate_limits.documents]
+        assert counts == [2], "the window counts admitted requests and nothing else"
 
 
 class TestRequiredFieldAnswers:

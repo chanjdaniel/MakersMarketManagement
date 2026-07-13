@@ -34,6 +34,19 @@ const key = ref('');
 const step = ref<'email' | 'key'>('email');
 const submitting = ref(false);
 
+/**
+ * Where signing in leads. It is the same answer whether the applicant signs in here or turns out to
+ * be signed in already: an applicant sent here mid-save is carrying a draft, and the page that can
+ * restore it - and finish the save - is the one they came from. Landing them on the dashboard
+ * instead would leave those answers in storage with nothing on screen to put them back.
+ */
+function goOnward() {
+  router.push({
+    name: redirect.value === 'apply' ? 'apply' : 'applicant-dashboard',
+    params: { marketSlug: marketSlug.value },
+  });
+}
+
 const requestedEmail = ref('');
 const cooldownRemaining = ref(0);
 let cooldownTimer: ReturnType<typeof setInterval> | undefined;
@@ -62,10 +75,7 @@ onUnmounted(() => clearInterval(cooldownTimer));
 onMounted(async () => {
   // Only a session for *this* market skips the sign-in; a token for another one signs in nobody here.
   if (store.isAuthenticatedFor(marketSlug.value)) {
-    router.push({
-      name: 'applicant-dashboard',
-      params: { marketSlug: marketSlug.value },
-    });
+    goOnward();
     return;
   }
 
@@ -113,10 +123,7 @@ async function verifyKey() {
   );
   submitting.value = false;
   if (ok) {
-    router.push({
-      name: redirect.value === 'apply' ? 'apply' : 'applicant-dashboard',
-      params: { marketSlug: marketSlug.value },
-    });
+    goOnward();
   }
 }
 

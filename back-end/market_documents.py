@@ -1,10 +1,21 @@
-"""The key convention raw market documents are stored under.
+"""The canonical form a raw market document is stored in, and the reads that name it.
 
-Every market write camel-cases the whole document (``convert_keys_to_camel_case`` in
-``create_market`` and ``update_market``), so ``organization_id`` is persisted as
-``organizationId``. camelCase is the one canonical spelling: documents written before that
-convention used snake_case, and ``migrations/migrate_market_keys.py`` rewrites them, so no
-stored document carries both spellings and no read has to guess.
+Two things make a stored market document canonical, and one migration establishes both.
+
+**The key convention.** Every market write camel-cases the whole document
+(``convert_keys_to_camel_case`` in ``create_market`` and ``update_market``), so
+``organization_id`` is persisted as ``organizationId``. camelCase is the one canonical spelling:
+documents written before that convention used snake_case, and ``migrations/migrate_market_keys.py``
+rewrites them, so no stored document carries both spellings and no read has to guess.
+
+**The stored slug.** A market's public URL names it by the slug of its name, and the public
+lookup behind that URL is unauthenticated. Deriving the slug per document at read time makes that
+lookup a decode of every published market in the database, driven by anyone who can type a URL, so
+the slug is persisted (``Market.slug``, a computed field, so no write can leave it disagreeing
+with the name) and indexed, and ``published_market_by_slug`` is one indexed query. The same
+migration backfills it onto documents written before the field existed - which is why it is part
+of what ``normalize_market_document`` means by canonical, and why the boot check below waits on it
+too: a market with no stored slug is a market whose public URL 404s.
 
 Tolerating both spellings at read time does not converge - a write only ever refreshes the
 camelCase key, so a legacy snake_case key keeps its value forever and any filter that still
@@ -16,32 +27,48 @@ think about this. Code that touches a raw document or writes a Mongo filter does
 these helpers rather than a string literal, so the spelling is decided in exactly one place.
 
 Reading one key only means the data has to be normalized first, and nothing auto-runs the
-migration: rewriting stored documents is a deliberate operator action. The migration records a
-marker document in ``schema_migrations`` when it completes, and the app refuses to boot unless
-that marker is there (``assert_market_key_migration_recorded``, called from ``app.py``).
-Serving unmigrated data would hide markets from the check-in lookup and from org-scoped lists
-with no error anywhere; a loud refusal at startup is the only failure mode that cannot be
-deployed by accident. The marker is a single document read by ``_id``, so the check is one
-indexed lookup rather than a scan over every market - cheap enough to fail closed on, which is
-what it does: an unknown migration state is not a migrated one.
+migration: rewriting stored documents is a deliberate operator action. The migration records its
+marker documents in ``schema_migrations`` when it completes, and the app refuses to boot unless
+they are there (``assert_market_key_migration_recorded``, called from ``app.py``).
+Serving unmigrated data would hide markets from the check-in lookup, from the applicant's public
+URL, and from org-scoped lists with no error anywhere; a loud refusal at startup is the only
+failure mode that cannot be deployed by accident. Each marker is a single document read by
+``_id``, so the check is a couple of indexed lookups rather than a scan over every market - cheap
+enough to fail closed on, which is what it does: an unknown migration state is not a migrated one.
+
+There are two markers rather than one because the canonical form grew: the older one says the keys
+were rewritten, the newer one says the slugs were backfilled. One run of the one migration records
+both, so the operator still has one command to paste - but a database migrated by an older build
+carries only the first, which is precisely the state that has to be caught, and a build rolled
+*back* still finds the marker it knows.
 """
-import re
-import unicodedata
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from assignment.utils import (
     convert_keys_to_camel_case,
     convert_keys_to_snake_case,
     snake_to_camel,
 )
-from datatypes import Market, MarketPhase, phase_from_market_document
+from datatypes import (
+    Market,
+    MarketPhase,
+    market_name_slug,
+    phase_from_market_document,
+)
 
 MONGO_ID_KEY = "_id"
 
 MARKETS_COLLECTION = "markets"
 SCHEMA_COLLECTION = "schema_migrations"
 MARKET_KEY_MIGRATION_ID = "market_document_keys"
+MARKET_SLUG_MIGRATION_ID = "market_slugs"
+
+# Every marker the current canonical form rests on. A database is migrated when it carries all of
+# them, and the one migration below records all of them.
+MARKET_MIGRATION_IDS = (MARKET_KEY_MIGRATION_ID, MARKET_SLUG_MIGRATION_ID)
+
+MARKET_SLUG_INDEX = "market_slug"
 
 MARKET_KEY_MIGRATION = "migrations/migrate_market_keys.py"
 
@@ -60,28 +87,32 @@ MARKET_KEY_MIGRATION_RECOVERY = (
 
 
 class MarketKeyMigrationError(RuntimeError):
-    """The market-key migration could not be confirmed as applied to this database."""
+    """The market-document migration could not be confirmed as applied to this database."""
 
 
 class MarketKeyMigrationMissingError(MarketKeyMigrationError):
-    """The migration has demonstrably not run: its marker is absent."""
+    """The migration has demonstrably not run: one of its markers is absent."""
 
-    def __init__(self) -> None:
+    def __init__(self, missing: Sequence[str]) -> None:
         super().__init__(
-            f"The market-key migration has not been applied to this database: no "
-            f"'{MARKET_KEY_MIGRATION_ID}' marker in the '{SCHEMA_COLLECTION}' collection. "
-            f"Readers name the canonical camelCase key only, so any market still stored under "
-            f"legacy snake_case keys is invisible to the public check-in lookup and to "
-            f"organization-scoped market lists.\n{MARKET_KEY_MIGRATION_RECOVERY}"
+            f"The market-document migration has not been applied to this database: no "
+            f"{', '.join(repr(marker) for marker in missing)} marker in the "
+            f"'{SCHEMA_COLLECTION}' collection. Readers name the canonical camelCase key only, so "
+            f"any market still stored under legacy snake_case keys is invisible to the public "
+            f"check-in lookup and to organization-scoped market lists; the public slug lookup "
+            f"names the stored slug, so any market that has not been given one is invisible to "
+            f"every public URL it appears on.\n{MARKET_KEY_MIGRATION_RECOVERY}"
         )
+        self.missing = tuple(missing)
 
 
 class MarketKeyMigrationUnverifiableError(MarketKeyMigrationError):
-    """The marker could not be read at all, so the migration state is unknown."""
+    """A marker could not be read at all, so the migration state is unknown."""
 
     def __init__(self, cause: BaseException) -> None:
         super().__init__(
-            f"Could not read the '{MARKET_KEY_MIGRATION_ID}' marker from the "
+            f"Could not read the market-document migration markers "
+            f"({', '.join(repr(marker) for marker in MARKET_MIGRATION_IDS)}) from the "
             f"'{SCHEMA_COLLECTION}' collection: {cause!r}. An unknown migration state is not a "
             f"migrated one, so this refuses to serve rather than risk hiding every market "
             f"stored under legacy keys. Make the database reachable, then confirm the "
@@ -90,38 +121,60 @@ class MarketKeyMigrationUnverifiableError(MarketKeyMigrationError):
         self.cause = cause
 
 
-def read_market_key_migration_marker(db: Any) -> Optional[Dict[str, Any]]:
-    """The migration's marker document, or None if the migration has not run."""
-    return db[SCHEMA_COLLECTION].find_one({MONGO_ID_KEY: MARKET_KEY_MIGRATION_ID})
+def read_market_key_migration_marker(
+    db: Any, migration_id: str = MARKET_KEY_MIGRATION_ID,
+) -> Optional[Dict[str, Any]]:
+    """One of the migration's marker documents, or None if that part has not run."""
+    return db[SCHEMA_COLLECTION].find_one({MONGO_ID_KEY: migration_id})
 
 
 def assert_market_key_migration_recorded(db: Any) -> None:
-    """Refuse to serve a database whose market documents may predate the canonical keys.
+    """Refuse to serve a database whose market documents may not be in canonical form.
 
-    Any failure to read the marker is a failure to confirm the migration, and is fatal for the
+    Any failure to read a marker is a failure to confirm the migration, and is fatal for the
     same reason a missing marker is: the alternative is serving markets nobody can see. A
     database that cannot answer a single ``_id`` lookup cannot serve a request either, so
     nothing is lost by refusing.
+
+    Every marker is checked and the refusal names all the missing ones at once, for the same
+    reason the boot-time defense check names every unset variable: one run of one migration
+    records them all, so an operator should never have to discover them one restart at a time.
     """
-    try:
-        marker = read_market_key_migration_marker(db)
-    except Exception as e:
-        raise MarketKeyMigrationUnverifiableError(e) from e
-    if marker is None:
-        raise MarketKeyMigrationMissingError()
+    missing = []
+    for migration_id in MARKET_MIGRATION_IDS:
+        try:
+            marker = read_market_key_migration_marker(db, migration_id)
+        except Exception as e:
+            raise MarketKeyMigrationUnverifiableError(e) from e
+        if marker is None:
+            missing.append(migration_id)
+    if missing:
+        raise MarketKeyMigrationMissingError(missing)
 
 
 def record_market_key_migration(db: Any) -> None:
-    """Record that every market document is stored under the canonical keys."""
-    db[SCHEMA_COLLECTION].update_one(
-        {MONGO_ID_KEY: MARKET_KEY_MIGRATION_ID},
-        {"$set": {"appliedAt": datetime.now(timezone.utc).isoformat()}},
-        upsert=True,
-    )
+    """Record that every market document is in canonical form."""
+    applied_at = datetime.now(timezone.utc).isoformat()
+    for migration_id in MARKET_MIGRATION_IDS:
+        db[SCHEMA_COLLECTION].update_one(
+            {MONGO_ID_KEY: migration_id},
+            {"$set": {"appliedAt": applied_at}},
+            upsert=True,
+        )
+
+
+def ensure_market_slug_index(db: Any) -> None:
+    """Index the stored slug, which is what the public lookup queries markets by.
+
+    Not unique: two organizations may each run a market called "Spring Market", and refusing the
+    second one's *creation* over a public URL collision is not this index's call to make. What it
+    is for is keeping the unauthenticated lookup off a collection scan.
+    """
+    db[MARKETS_COLLECTION].create_index(market_doc_key("slug"), name=MARKET_SLUG_INDEX)
 
 
 def pending_market_key_rewrites(db: Any) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
-    """Every stored market that is not already under the canonical keys, with its rewrite."""
+    """Every stored market that is not already in canonical form, with its rewrite."""
     rewrites = (
         (doc, normalize_market_document(doc)) for doc in db[MARKETS_COLLECTION].find({})
     )
@@ -129,10 +182,10 @@ def pending_market_key_rewrites(db: Any) -> List[Tuple[Dict[str, Any], Dict[str,
 
 
 def apply_market_key_migration(db: Any) -> int:
-    """Rewrite every market under the canonical keys and record that it happened.
+    """Rewrite every market into canonical form, index the slug, and record that it happened.
 
-    Idempotent: a database that is already canonical has nothing to rewrite, and the marker is
-    upserted either way, so re-recording it is harmless.
+    Idempotent: a database that is already canonical has nothing to rewrite, the index build is a
+    no-op when the index is there, and the markers are upserted either way.
     """
     rewritten = 0
     for doc, normalized in pending_market_key_rewrites(db):
@@ -140,6 +193,7 @@ def apply_market_key_migration(db: Any) -> int:
             {MONGO_ID_KEY: doc[MONGO_ID_KEY]}, normalized
         )
         rewritten += result.modified_count
+    ensure_market_slug_index(db)
     record_market_key_migration(db)
     return rewritten
 
@@ -183,87 +237,43 @@ def non_draft_market_prefilter() -> Dict[str, Any]:
     }
 
 
-def slug_match_projection() -> Dict[str, Any]:
-    """The only fields the slug match pass has to read off a candidate market.
-
-    ``market_name_slug`` reads ``name`` and ``phase_from_market_document`` reads ``phase`` and
-    ``isDraft`` (with the legacy snake_case spelling as its own fallback, so both are projected
-    rather than letting a projection change what the phase mapping decides); ``id`` is what the
-    winner is re-fetched by. Everything else on a market document -- ``setupObject``,
-    ``assignmentObject``, the floorplan -- is the largest data this database stores and none of
-    it is part of the decision, so the pass that runs over every published market on an
-    unauthenticated request does not pull it over the wire.
-    """
-    return {
-        "id": 1,
-        "name": 1,
-        market_doc_key("phase"): 1,
-        market_doc_key("is_draft"): 1,
-        "is_draft": 1,
-    }
-
-
-def market_name_slug(name: str) -> str:
-    """The URL path segment a market name is reachable under.
-
-    The front end builds every public link from the same rule
-    (``marketNameToKebabSlug`` in ``front-end/src/utils/marketSlug.ts``): decompose to NFKD and
-    drop combining marks, so an accented name and its ASCII fold produce the same segment. A
-    second copy of this rule that skips the fold does not merely differ in style - it computes
-    ``caf-market`` where the link says ``cafe-market``, and every lookup behind that link 404s.
-    So there is one copy, and every public slug lookup goes through it.
-    """
-    if not name:
-        return ""
-    s = unicodedata.normalize("NFKD", name.strip())
-    s = "".join(c for c in s if not unicodedata.combining(c))
-    s = s.lower()
-    s = re.sub(r"[^a-z0-9]+", "-", s)
-    return re.sub(r"-+", "-", s).strip("-")
-
-
 def published_market_by_slug(collection: Any, market_slug: str) -> Optional[Dict[str, Any]]:
     """The published (phase != draft) market whose slugified name equals ``market_slug``.
 
-    A Mongo condition cannot decide this: ``{"phase": {"$ne": "draft"}}`` also matches a document
-    that carries no ``phase`` at all, which is exactly what a draft written before the field
-    existed looks like - it would put an unpublished market on a public URL.
-    ``phase_from_market_document`` is the one authority on a document's effective phase, so the
-    draft test goes through it in Python. ``non_draft_market_prefilter`` only prunes the documents
-    that are unambiguously drafts, keeping this off a full-collection decode on an unauthenticated
-    endpoint without letting a Mongo condition decide what counts as published.
+    The candidates come from the stored slug, which is indexed (``ensure_market_slug_index``), so
+    this is one indexed query rather than a pass over every published market. That matters because
+    every caller of this is unauthenticated: the public check-in page, the applicant's application
+    form, and the applicant login endpoints all resolve their market this way, and a lookup that
+    decoded the collection per call would be an O(markets) scan any stranger could drive at will,
+    with a slug that matches nothing costing exactly as much as one that matches.
+
+    The stored slug narrows; it does not decide. The name is what the rule is defined over
+    (``market_name_slug``, the same rule the front end builds its links from), so the name of each
+    candidate is re-checked against it here. A stored slug is a derivation of the name that a
+    computed field keeps in step with it, and this is what makes that a performance detail rather
+    than a second source of truth: a document the migration has not reached is unreachable, which
+    the boot check refuses to serve on, but it can never be reachable under the *wrong* slug.
+
+    Nor can a Mongo condition decide the draft question: ``{"phase": {"$ne": "draft"}}`` also
+    matches a document that carries no ``phase`` at all, which is exactly what a draft written
+    before the field existed looks like - it would put an unpublished market on a public URL.
+    ``phase_from_market_document`` is the one authority on a document's effective phase, so that
+    test goes through it in Python too. ``non_draft_market_prefilter`` only prunes the documents
+    that are unambiguously drafts; it prunes, it does not judge.
 
     The collection is a parameter because the public surfaces that need this each hold their own
     handle; the rule they share is the slug and the draft test, and those live here.
-
-    The match pass reads only ``slug_match_projection()``, so the scan costs one small document
-    per published market rather than a full market decode each; the winner is then re-fetched
-    whole, because every caller wants the market itself. The re-fetched document is put through
-    the same draft test again: it is the document being returned, and a market unpublished
-    between the two reads must not be served on a public URL by a decision made about the
-    version before it.
-
-    A candidate with no ``id`` is skipped rather than re-fetched: ``find_one({"id": None})`` is not
-    a lookup that misses, it is a filter that matches every document whose ``id`` is null *or
-    absent*, so it would answer with some other market entirely and that market's name is never
-    re-checked against the slug. Nothing writes a market without an id, and this is what keeps that
-    true of the read as well.
     """
     if not market_slug:
         return None
     target = market_slug.strip().lower()
-    for candidate in collection.find(non_draft_market_prefilter(), slug_match_projection()):
+    query = {**non_draft_market_prefilter(), **market_doc_filter("slug", target)}
+    for candidate in collection.find(query):
         if market_name_slug(candidate.get("name", "")) != target:
             continue
         if phase_from_market_document(candidate) == MarketPhase.DRAFT:
             continue
-        market_id = candidate.get("id")
-        if not market_id:
-            continue
-        doc = collection.find_one({"id": market_id})
-        if doc is None or phase_from_market_document(doc) == MarketPhase.DRAFT:
-            continue
-        return doc
+        return candidate
     return None
 
 
@@ -289,11 +299,18 @@ def market_from_document(
 
 
 def normalize_market_document(document: Dict[str, Any]) -> Dict[str, Any]:
-    """Rewrite a stored market document under the canonical keys.
+    """Rewrite a stored market document into canonical form.
 
     Where a document carries both spellings of a field, the canonical one wins: it is the
     only one any write path has refreshed, so the snake_case value is stale by definition.
     ``_id`` is Mongo's own key and is left exactly as it is.
+
+    The slug is *derived*, not carried over: it is a computed field on the model
+    (``Market.slug``), so every write since it existed has stamped it from the name, and a stored
+    one that disagreed with the name could only have come from an edit nothing in this codebase
+    makes. Recomputing it here is what backfills the documents written before the field existed -
+    and, in the same pass, repairs any that were hand-edited out of step. A market with no name
+    slugs to the empty string, which no lookup can ask for.
     """
     normalized: Dict[str, Any] = {}
     for key, value in document.items():
@@ -304,4 +321,6 @@ def normalize_market_document(document: Dict[str, Any]) -> Dict[str, Any]:
         if canonical_key != key and canonical_key in document:
             continue
         normalized[canonical_key] = convert_keys_to_camel_case(value)
+
+    normalized[market_doc_key("slug")] = market_name_slug(normalized.get("name") or "")
     return normalized

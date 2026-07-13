@@ -120,6 +120,18 @@ export const useApplicationStore = defineStore('application', () => {
     }
   }
 
+  /**
+   * The draft is written *before* the request, not after it fails, and that ordering is the whole
+   * fix. This request is the one that can end the session: the token lives 30 minutes, an applicant
+   * filling in a long form will hit an expired one on Save, and the 401 handler drops the token,
+   * ends the session and redirects to sign in - which unmounts whichever form was on screen and
+   * takes its component-local answers with it. Nothing after the `await` runs on that page again,
+   * so a draft written in the `catch` is a draft written into a component that no longer exists.
+   *
+   * Every save goes through here, so every save is covered by that: the application page's
+   * signed-in Save, the save it finishes on the applicant's behalf after they sign in, and the
+   * dashboard's edit. A rule kept in each component is a rule the next component forgets.
+   */
   async function saveApplication(
     slug: string,
     formData: Record<string, unknown>,
@@ -128,6 +140,7 @@ export const useApplicationStore = defineStore('application', () => {
       error.value = 'Please sign in to save your application for this market.';
       return false;
     }
+    rememberDraft(slug, formData);
     loading.value = true;
     error.value = null;
     try {
@@ -151,6 +164,9 @@ export const useApplicationStore = defineStore('application', () => {
    * Answers typed before signing in, kept somewhere that outlives the redirect to the login screen.
    * See `@/utils/applicantDraft`: the application page unmounts on that redirect, and its answers go
    * with it unless something holds them.
+   *
+   * This is the one save path that never reaches `saveApplication` - there is no session to save
+   * into yet - so it is the one that has to hand its answers over itself.
    */
   function rememberDraftAnswers(slug: string, formData: Record<string, unknown>): void {
     rememberDraft(slug, formData);
@@ -158,6 +174,16 @@ export const useApplicationStore = defineStore('application', () => {
 
   function draftAnswers(slug: string): Record<string, unknown> | null {
     return readDraft(slug);
+  }
+
+  /**
+   * The applicant abandoned the edit those answers belonged to. A draft is what a save or a session
+   * left *unfinished*, so one the applicant has finished with by discarding it must go: kept, it
+   * would be restored over their saved answers the next time they opened the page, which is the
+   * data loss this whole mechanism exists to prevent, pointed the other way.
+   */
+  function discardDraftAnswers(slug: string): void {
+    forgetDraft(slug);
   }
 
   function clearSession() {
@@ -209,6 +235,7 @@ export const useApplicationStore = defineStore('application', () => {
     saveApplication,
     rememberDraftAnswers,
     draftAnswers,
+    discardDraftAnswers,
     logout,
     endExpiredSession,
   };

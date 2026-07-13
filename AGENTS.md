@@ -305,15 +305,61 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   to its ceiling and take sign-in away from every real applicant behind a venue's wifi or a carrier's
   CGNAT pool - the ceiling *becoming* the outage it was sized to prevent. Any future endpoint that
   charges a shared budget inherits this rule.
+- **`GET /public/markets/<slug>/application-form` is the one public applicant endpoint with no
+  captcha, and it cannot have one**: it is a page load, every applicant screen calls it on mount, and
+  a deep link into it must work in a browser that has not run a script yet. What it serves is public
+  by design. So its per-IP ceiling (`PUBLIC_FORM_IP_LIMIT`) is the only bound it has, which means the
+  endpoint has to stay cheap enough that a bound is all it needs - hence the indexed slug lookup
+  above. There is deliberately **no global ceiling** on it: a global cap on an unauthenticated read is
+  a cap an attacker reaches on purpose, and what breaks when they do is the application form for every
+  applicant at every market, which is the outage the limit was written to prevent (the same reason
+  there is no per-market cap on `request-key`).
+
+## Applicant Answers Across a Redirect (Conventioner sharp edge)
+
+- **The applicant's answers live in a component ref, and two normal paths unmount that component
+  mid-form.** Signing in from `ApplicationPage` is a redirect (the "Save & Continue" button cannot
+  save before there is a session), and the applicant token expires after 30 minutes, so a Save at the
+  end of a long form gets a 401, and `utils/applicantApi`'s interceptor ends the session and
+  redirects. Either way the page unmounts and every unsaved answer goes with it. `utils/applicantDraft`
+  (sessionStorage, keyed by market) is what outlives both.
+- **The draft is written *before* the request, in `useApplicationStore.saveApplication`, not in a
+  component and not in a failure handler.** Nothing after the `await` runs on the page that holds the
+  answers - the 401 has already unmounted it - so a draft written in the `catch` is written too late.
+  Putting it in the store is what makes it hold for *every* save path at once; the per-component
+  version of this rule is the bug, and it has been written here twice. The only save that does not go
+  through `saveApplication` is the signed-out one (there is no session to save into), and that is what
+  `rememberDraftAnswers` is for.
+- **Every path that ends the session must send the applicant back to the page they were on**
+  (`utils/applicantSessionExpiry`, and the `redirect` query `ApplicantLogin` honors - including when
+  it finds a session already live). A draft restored on a page the applicant never returns to is a
+  draft that was not saved. `ApplicationPage.completePendingSave()` finishes the save the button
+  promised; `ApplicantDashboard.restorePendingEdits()` reopens the edit form over it.
+- **A draft is what an *unfinished* save left behind, so anything that finishes it clears it**: a
+  successful save (`forgetDraft`), a deliberate sign-out (a shared machine must not prefill the next
+  person's form), and Cancel on the dashboard edit. Only `endExpiredSession` deliberately keeps it -
+  that is the one moment the applicant most needs their answers to still be there.
 
 ## Market Document Keys (Conventioner sharp edge)
 
-- **The back end refuses to boot** unless `migrations/migrate_market_keys.py` has recorded its
-  marker in the `schema_migrations` collection. A dev Mongo volume created before the migration
-  existed has no marker, so an existing stack hits this on first pull. The fix is the migration
-  itself: `docker compose run --rm backend python migrations/migrate_market_keys.py`
+- **The back end refuses to boot** unless `migrations/migrate_market_keys.py` has recorded *both* of
+  its markers (`MARKET_MIGRATION_IDS`) in the `schema_migrations` collection. A dev Mongo volume
+  created before the migration existed has no marker, and one migrated by a build that predates the
+  stored slug has only the first, so an existing stack hits this on first pull. The fix is the
+  migration itself, and it is one command either way:
+  `docker compose run --rm backend python migrations/migrate_market_keys.py`
   (`run`, not `exec` - the back end is crash-looping). Do not "fix" it by softening the check:
   it fails closed because an unmigrated market is invisible, not broken.
+- **A market's slug is stored (`Market.slug`) and indexed, and that is what the public lookup
+  queries.** Every public URL a market appears on - check-in, the application form, applicant
+  sign-in - names it by the slug of its name, on an unauthenticated endpoint, so deriving the slug
+  per document at read time made a single public request an O(markets) decode that any stranger
+  could drive by typing a URL. `published_market_by_slug()` is one indexed query now. The stored
+  slug only *narrows*: the name is re-checked against `market_name_slug()` (the one rule the front
+  end's links are built from, `front-end/src/utils/marketSlug.ts`), and the draft test still runs in
+  Python. Never add a read-time fallback that scans when the slug misses - the miss path is exactly
+  the one an attacker drives. `Market.slug` is a computed field for the same reason `is_draft` is:
+  a derived value that a write could leave contradicting its source is worse than no derived value.
 - **Market documents are stored camelCase, and that is the only spelling reads may name.**
   Every write camel-cases the whole document, so a hand-written filter on `organization_id`
   matches nothing. Anything touching a raw document or a Mongo filter goes through

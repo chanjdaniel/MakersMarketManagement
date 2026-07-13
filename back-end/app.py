@@ -1134,7 +1134,9 @@ def get_market_tables(market_id: str) -> Response:
 def public_get_application_form(market_slug: str) -> Response:
     """Public: return the market's application form. No authentication required."""
     try:
-        result, status_code = ApplicantsApi.get_public_application_form(market_slug)
+        result, status_code = ApplicantsApi.get_public_application_form(
+            market_slug, request.remote_addr
+        )
         return jsonify(result), status_code
     except Exception as e:
         logger.error(f"Error in public_get_application_form {market_slug}: {e}")

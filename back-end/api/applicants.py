@@ -92,6 +92,23 @@ REQUEST_KEY_GLOBAL_WINDOW_SECONDS = 3600
 VERIFY_KEY_IP_LIMIT = 600
 VERIFY_KEY_IP_WINDOW_SECONDS = 3600
 
+# ``get_public_application_form`` is the one public applicant surface with no captcha in front of
+# it, and it cannot have one: it is a page load. Every applicant screen calls it on mount, a deep
+# link into it must work in a browser that has not run a script yet, and what it serves - the form,
+# the market's name, its phase - is public by design. So the ceiling is all there is here, and it
+# is sized as one: a ceiling, not a control.
+#
+# It is per-IP and there is deliberately *no* global one. A global cap on an unauthenticated read
+# is a cap an attacker reaches on purpose, and what breaks when they do is the application form for
+# every applicant at every market - which hands them the outage the limit was written to prevent,
+# the same reason there is no per-market cap on request-key above. The per-IP budget bounds a
+# runaway script's share of the database and nothing else, and it is set well above what a shared
+# address of real applicants could spend: the sign-in budget already assumes no more than
+# ``REQUEST_KEY_IP_LIMIT`` sign-ins an hour from one address, and this allows ten form loads for
+# each of them.
+PUBLIC_FORM_IP_LIMIT = 3000
+PUBLIC_FORM_IP_WINDOW_SECONDS = 3600
+
 # In the phases where request-key branches on the applicant list, every answer it gives takes at
 # least this long, whatever it did to get there. The OTP mail is a network round-trip to Resend that
 # happens for an address on the organizer's applicant list and does not happen for one that is not,
@@ -1083,7 +1100,9 @@ def save_applicant_application(
     return {"application": _application_response(app)}, 200
 
 
-def get_public_application_form(market_slug: str) -> Tuple[Dict[str, Any], int]:
+def get_public_application_form(
+    market_slug: str, client_ip: Optional[str] = None,
+) -> Tuple[Dict[str, Any], int]:
     """Return the public application form for a market.
 
     Accessible without authentication. The form is returned for every published market, in every
@@ -1092,8 +1111,16 @@ def get_public_application_form(market_slug: str) -> Tuple[Dict[str, Any], int]:
     against this field list, so a market that has closed still has to be able to hand it over -
     which means nothing phase-sensitive may be added to this payload without a gate of its own.
 
+    It carries a per-IP ceiling and, alone among the public applicant endpoints, no captcha: it is
+    a page load, and a browser that has not run a script yet must still be able to open a market's
+    application URL. That makes the ceiling the only bound there is here, so this endpoint must
+    stay cheap enough that a bound is all it needs - which is why the slug lookup it makes is an
+    indexed query rather than a pass over every market (``published_market_by_slug``). See
+    ``PUBLIC_FORM_IP_LIMIT`` for how the ceiling is sized and why there is no global one.
+
     Args:
         market_slug: The URL-safe slug of the market.
+        client_ip: The caller's IP, for the per-IP ceiling.
 
     Returns:
         Tuple of (response_body, status_code).
@@ -1102,6 +1129,14 @@ def get_public_application_form(market_slug: str) -> Tuple[Dict[str, Any], int]:
     """
     if not market_slug or not market_slug.strip():
         return {"error": "Market identifier is required."}, 400
+
+    if rate_limit_exceeded(
+        "applicant_public_form_ip",
+        client_ip or "unknown",
+        limit=PUBLIC_FORM_IP_LIMIT,
+        window_seconds=PUBLIC_FORM_IP_WINDOW_SECONDS,
+    ):
+        return {"error": RATE_LIMITED_ERROR}, 429
 
     market_doc = _get_market_doc_by_slug(market_slug)
     if not market_doc:

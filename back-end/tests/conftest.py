@@ -159,7 +159,13 @@ if _needs_stub("resend"):
 
 from pymongo import ReturnDocument
 
-from datatypes import AssignmentObject, Market, MarketPhase, MarketRole
+from datatypes import (
+    AssignmentObject,
+    Market,
+    MarketPhase,
+    MarketRole,
+    market_name_slug,
+)
 
 
 class FakeMarketsCollection:
@@ -182,17 +188,52 @@ class FakeMarketsCollection:
         return SimpleNamespace(inserted_id="mongo-id")
 
 
+def mongo_matches(doc: dict, query: dict) -> bool:
+    """Evaluate a Mongo filter the way the server does.
+
+    The fakes that stand in for the markets collection share this, because a fake that ignores the
+    filter is a fake that passes a document Mongo would never have handed back - which is exactly
+    how a lookup querying a field no document carries would go unnoticed here and 404 in
+    production. ``$ne``, ``$exists``, ``$in`` and ``$nor`` are modelled because the public slug
+    lookup is built out of them.
+    """
+    for key, condition in (query or {}).items():
+        if key == "$nor":
+            if any(mongo_matches(doc, clause) for clause in condition):
+                return False
+            continue
+        present = key in doc
+        if isinstance(condition, dict):
+            if "$exists" in condition and present != condition["$exists"]:
+                return False
+            if "$ne" in condition and doc.get(key) == condition["$ne"]:
+                return False
+            if "$in" in condition and doc.get(key) not in condition["$in"]:
+                return False
+        elif not present or doc[key] != condition:
+            return False
+    return True
+
+
 def stored_market(phase: MarketPhase = MarketPhase.DRAFT, **overrides) -> dict:
-    """A market document as Mongo holds it: camelCase, with the server-owned phase stamped on."""
+    """A market document as Mongo holds it: camelCase, phase and slug stamped on by the server.
+
+    The slug is derived from the name here for the same reason ``Market.slug`` derives it on every
+    write: it is what the public lookup queries, so a test document without one is a market no
+    public URL can reach, and a fixture that hard-coded one could pin a market to a URL its name
+    does not spell.
+    """
+    name = overrides.pop("name", "Test Market")
     doc = {
         "id": "market-123",
-        "name": "Test Market",
+        "name": name,
         "creationDate": "2026-01-01T00:00:00Z",
         "roles": {"user-1": "owner"},
         "modificationList": [],
         "assignmentObject": {"vendorAssignments": [], "assignmentStatistics": None},
         "isDraft": phase == MarketPhase.DRAFT,
         "phase": phase.value,
+        "slug": market_name_slug(name),
     }
     doc.update(overrides)
     return doc

@@ -14,6 +14,7 @@ from unittest.mock import patch
 from conftest import (
     FakeApplicationsCollection,
     FakeKeyedCollection,
+    mongo_matches,
     stored_market,
 )
 from datatypes import (
@@ -73,26 +74,22 @@ def _stored_challenge(login_codes, email, market_id="market-123"):
 
 
 class FakeSlugMarketsCollection:
-    """Stand-in for the markets collection that supports both find_one and find
-    (the latter is needed by _get_market_doc_by_slug which iterates with find())."""
+    """Stand-in for the markets collection, matching filters the way Mongo does.
+
+    ``find`` applies the filter rather than handing back everything, so the public slug lookup is
+    exercised as it actually runs: it queries the *stored* slug, and a document that does not carry
+    one is a market Mongo would never return.
+    """
 
     def __init__(self, docs):
         self.docs = docs if isinstance(docs, list) else [docs]
         self.last_update = None
 
     def find_one(self, query):
-        for doc in self.docs:
-            match = True
-            for k, v in (query or {}).items():
-                if doc.get(k) != v:
-                    match = False
-                    break
-            if match:
-                return dict(doc)
-        return None
+        return next(self.find(query), None)
 
     def find(self, query, projection=None):
-        matched = [dict(d) for d in self.docs]
+        matched = [dict(d) for d in self.docs if mongo_matches(d, query)]
         if projection:
             matched = [{k: v for k, v in d.items() if k in projection} for d in matched]
         return iter(matched)

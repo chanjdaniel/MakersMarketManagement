@@ -65,6 +65,32 @@ async function loadAll() {
   } finally {
     loading.value = false;
   }
+
+  restorePendingEdits();
+}
+
+/**
+ * The applicant pressed Save, the session had expired, and they signed back in and were sent here.
+ * Their answers were written to the draft before that request went out (see `saveApplication`), so
+ * they still exist - and this is what puts them back on screen, in the edit form they were typing
+ * into, over the answers the server still has. Without it the draft would sit in storage while the
+ * page rendered the stale saved copy, which is the data loss it exists to prevent, one step later.
+ *
+ * The save is not re-attempted for them: unlike the application page, where the applicant pressed a
+ * button that promised to sign them in *and* save, an edit here is theirs to finish. The answers are
+ * in front of them and Save is one press away.
+ *
+ * Only while the market is still open, because that is the only time an edit could be saved at all -
+ * and the edit form is not reachable otherwise.
+ */
+function restorePendingEdits() {
+  if (!isOpen.value || !store.application) return;
+
+  const draft = store.draftAnswers(marketSlug.value);
+  if (!draft || Object.keys(draft).length === 0) return;
+
+  formData.value = { ...(store.application.formData || {}), ...draft };
+  editing.value = true;
 }
 
 onMounted(loadAll);
@@ -100,6 +126,10 @@ function startEditing() {
 }
 
 function cancelEditing() {
+  // Cancelling is the applicant discarding these answers, so the draft holding them goes too -
+  // otherwise the edit they just abandoned would be restored over their saved answers on the next
+  // visit. See `discardDraftAnswers`; only an unfinished save leaves a draft behind.
+  store.discardDraftAnswers(marketSlug.value);
   editing.value = false;
   validationErrors.value = {};
 }
