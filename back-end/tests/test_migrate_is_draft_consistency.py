@@ -2,6 +2,8 @@
 import copy
 from types import SimpleNamespace
 
+from datatypes import MarketPhase, phase_from_market_document
+from market_documents import non_draft_market_prefilter
 from migrate_is_draft_consistency import migrate
 
 
@@ -13,6 +15,10 @@ def _matches(doc, query):
     market written before `phase` existed looked like a market whose phase was not draft.
     """
     for key, condition in (query or {}).items():
+        if key == "$nor":
+            if any(_matches(doc, clause) for clause in condition):
+                return False
+            continue
         present = key in doc
         if isinstance(condition, dict):
             if "$exists" in condition and present != condition["$exists"]:
@@ -54,6 +60,19 @@ def only(db):
     return db.markets.docs[0]
 
 
+def is_served_publicly(doc):
+    """The exact rule ``api/attendance.get_published_market_by_slug`` applies to a stored doc.
+
+    The prefilter prunes in Mongo, ``phase_from_market_document`` decides in Python. Asserting
+    against the real pair is what makes the migration's result mean "the public check-in URL
+    resolves" rather than "a field has the value we expected".
+    """
+    return (
+        _matches(doc, non_draft_market_prefilter())
+        and phase_from_market_document(doc) != MarketPhase.DRAFT
+    )
+
+
 def test_legacy_draft_without_phase_is_left_alone():
     """Regression: `{"phase": {"$ne": "draft"}}` also matches a document with no phase.
 
@@ -79,10 +98,33 @@ def test_non_draft_phase_with_stale_is_draft_true_is_corrected():
     assert only(db)["isDraft"] is False
 
 
-def test_draft_phase_with_stale_is_draft_false_is_corrected():
+def test_market_published_by_the_old_build_stays_published():
+    """`phase: draft` + `isDraft: false` is a PUBLISHED market, and must come out published.
+
+    The old build published with `PUT isDraft: false`; `create_market` had already stamped
+    `phase: draft` and `update_market` re-applied it, so the phase never moved and `isDraft` was
+    the only publish signal the document had. Resolving the disagreement the other way -- setting
+    `isDraft: true` and confirming these as drafts -- would take a live market's public check-in
+    URL off the air, because the slug lookup now decides on phase.
+    """
+    doc = {"_id": 1, "id": "m1", "name": "Old Market", "phase": "draft", "isDraft": False}
+    db = FakeDatabase([doc])
+
+    # Under the new lookup rule this market is invisible on its public URL: that is the break.
+    assert is_served_publicly(only(db)) is False
+
+    migrate(db)
+
+    assert only(db)["phase"] == "archived"
+    assert only(db)["isDraft"] is False
+    assert is_served_publicly(only(db)) is True
+
+
+def test_publishing_an_old_build_market_is_idempotent():
     db = FakeDatabase([{"_id": 1, "id": "m1", "phase": "draft", "isDraft": False}])
     migrate(db)
-    assert only(db)["isDraft"] is True
+    migrate(db)
+    assert only(db) == {"_id": 1, "id": "m1", "phase": "archived", "isDraft": False}
 
 
 def test_missing_is_draft_is_backfilled_from_phase():
@@ -123,22 +165,37 @@ class RacingCollection(FakeCollection):
         return super().update_many(query, update)
 
 
-def test_concurrent_phase_change_is_not_overwritten():
+def test_concurrent_unpublish_is_not_overwritten():
     """Every repair filter must still name the disagreement it repairs, not just an _id.
 
-    A market the app publishes while the migration runs must not have the isDraft computed for
-    its old phase written back onto its new one -- that would recreate the exact disagreement
-    the migration exists to remove, invisibly.
+    The old app keeps serving writes while this runs, and unpublishing there is `PUT isDraft:
+    true`. A market the owner unpublishes between the survey read and the write is a real draft
+    by the time the write lands; a repair keyed on `_id` would publish it anyway, from a value
+    computed for the shape the document no longer has.
     """
     db = FakeDatabase([{"_id": 1, "id": "m1", "phase": "draft", "isDraft": False}])
 
-    def publish(docs):
-        docs[0].update({"phase": "archived", "isDraft": False})
+    def unpublish(docs):
+        docs[0].update({"isDraft": True})
 
-    db.markets = RacingCollection(db.markets.docs, publish)
+    db.markets = RacingCollection(db.markets.docs, unpublish)
     migrate(db)
 
-    assert only(db) == {"_id": 1, "id": "m1", "phase": "archived", "isDraft": False}
+    assert only(db) == {"_id": 1, "id": "m1", "phase": "draft", "isDraft": True}
+    assert is_served_publicly(only(db)) is False
+
+
+def test_concurrent_phase_change_is_not_overwritten():
+    """The same guarantee on the isDraft repair: a phase the app moves mid-run wins."""
+    db = FakeDatabase([{"_id": 1, "id": "m1", "phase": "applications_open", "isDraft": True}])
+
+    def back_to_draft(docs):
+        docs[0].update({"phase": "draft", "isDraft": True})
+
+    db.markets = RacingCollection(db.markets.docs, back_to_draft)
+    migrate(db)
+
+    assert only(db) == {"_id": 1, "id": "m1", "phase": "draft", "isDraft": True}
 
 
 def test_dry_run_changes_nothing():
