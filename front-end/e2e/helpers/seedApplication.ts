@@ -27,7 +27,6 @@ export function seedApplication(marketId: string, applicantEmail = 'applicant@ex
     application_type: 'main',
     submitted_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
-    otp_attempts: 0,
   };
 
   execFileSync(

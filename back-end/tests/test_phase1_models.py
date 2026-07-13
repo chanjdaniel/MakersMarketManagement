@@ -112,10 +112,14 @@ class TestApplication:
         assert app.application_type == ApplicationType.MAIN
         assert app.main_application_id is None
         assert app.submitted_at is None
-        assert app.otp is None
-        assert app.otp_expires is None
-        assert app.otp_attempts == 0
         assert app.assigned_reviewer_id is None
+
+    def test_the_login_challenge_is_not_part_of_an_application(self):
+        """The emailed code and its attempt counter live in their own collection, keyed by
+        (market, email) -- see ``api.applicants``. On the application they could only exist where an
+        application does, which makes every login refusal that reads them an answer to "has this
+        address applied?"."""
+        assert not {"otp", "otp_expires", "otp_attempts"} & set(Application.model_fields)
 
     def test_waitlist_application(self):
         app = Application(

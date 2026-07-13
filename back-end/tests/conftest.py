@@ -239,6 +239,74 @@ class FakeApplicationsCollection:
         return self.count + matched
 
 
+class FakeKeyedCollection:
+    """Stand-in for a small Mongo collection addressed by an exact-match filter.
+
+    Supports the operations the applicant login-code store and the rate limiter actually use:
+    ``find_one``/``update_one``/``delete_one`` with ``$set`` and ``$inc``, upserts, and the
+    ``find_one_and_update`` the limiter counts with. ``create_index`` is a no-op, as it is for a
+    collection that only lives for the length of a test.
+    """
+
+    def __init__(self):
+        self.documents: list = []
+
+    def create_index(self, *_args, **_kwargs):
+        return "fake-index"
+
+    def _matches(self, doc, query):
+        return all(doc.get(k) == v for k, v in (query or {}).items())
+
+    def _find(self, query):
+        for doc in self.documents:
+            if self._matches(doc, query):
+                return doc
+        return None
+
+    def find_one(self, query):
+        doc = self._find(query)
+        return dict(doc) if doc else None
+
+    def insert_one(self, document):
+        self.documents.append(dict(document))
+        return SimpleNamespace(inserted_id=str(len(self.documents)))
+
+    def _apply(self, doc, update):
+        for key, value in (update.get("$set") or {}).items():
+            doc[key] = value
+        for key, value in (update.get("$inc") or {}).items():
+            doc[key] = doc.get(key, 0) + value
+        return doc
+
+    def update_one(self, query, update, upsert=False):
+        doc = self._find(query)
+        if doc is None:
+            if not upsert:
+                return SimpleNamespace(matched_count=0, modified_count=0, upserted_id=None)
+            doc = dict(query)
+            doc.update(update.get("$setOnInsert") or {})
+            self.documents.append(doc)
+            self._apply(doc, update)
+            return SimpleNamespace(matched_count=0, modified_count=0, upserted_id="fake-id")
+        self._apply(doc, update)
+        return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
+
+    def find_one_and_update(self, query, update, upsert=False, return_document=None):
+        self.update_one(query, update, upsert=upsert)
+        doc = self._find(query)
+        return dict(doc) if doc else None
+
+    def delete_one(self, query):
+        doc = self._find(query)
+        if doc is None:
+            return SimpleNamespace(deleted_count=0)
+        self.documents.remove(doc)
+        return SimpleNamespace(deleted_count=1)
+
+    def count_documents(self, query):
+        return sum(1 for doc in self.documents if self._matches(doc, query))
+
+
 @pytest.fixture(autouse=True)
 def applications(monkeypatch):
     """The D9 lock counts applications; keep that off the real database everywhere."""
@@ -246,6 +314,31 @@ def applications(monkeypatch):
 
     fake = FakeApplicationsCollection()
     monkeypatch.setattr(ApplicationsApi, "applications_collection", fake)
+    return fake
+
+
+@pytest.fixture(autouse=True)
+def login_codes(monkeypatch):
+    """The applicant login challenge store; keep it off the real database everywhere."""
+    import api.applicants as ApplicantsApi
+
+    fake = FakeKeyedCollection()
+    monkeypatch.setattr(ApplicantsApi, "login_codes_collection", fake)
+    return fake
+
+
+@pytest.fixture(autouse=True)
+def rate_limits(monkeypatch):
+    """Every public applicant endpoint counts against a rate limit, and the counter is in Mongo.
+
+    Faked for the whole suite, and *counting* rather than disabled: a test that means to exhaust a
+    budget must be able to, and a test that does not mean to must not silently be exempt from one.
+    """
+    import utils.rate_limit as RateLimit
+
+    fake = FakeKeyedCollection()
+    monkeypatch.setattr(RateLimit, "rate_limits_collection", fake)
+    monkeypatch.setattr(RateLimit, "_ttl_index_ready", False)
     return fake
 
 # app.py refuses to boot unless the market-key migration is recorded as applied, and it fails

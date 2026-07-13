@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import type { Application } from '@/assets/types/datatypes';
 import { getApiErrorMessage } from '@/utils/api';
 import { applicantApi, setApplicantToken } from '@/utils/applicantApi';
+import { executeRecaptcha } from '@/utils/captcha';
 
 /** The applicant's application on one market. Both routes name the market they act on. */
 function applicationUrl(marketSlug: string): string {
@@ -34,13 +35,21 @@ export const useApplicationStore = defineStore('application', () => {
     return token.value !== null && marketSlug.value === slug;
   }
 
+  /**
+   * The back end refuses this request without a captcha token: it is public, unauthenticated, and
+   * it sends mail to whatever address it is handed, so it carries the same gate the organizer-side
+   * signup does. A captcha that cannot be obtained is not a reason to skip the call - the token is
+   * scored by the back end, which is the only place that can decide what a bad score means.
+   */
   async function requestKey(slug: string, email: string): Promise<void> {
     loading.value = true;
     error.value = null;
     try {
+      const captchaToken = await executeRecaptcha('applicant_request_key').catch(() => '');
       const { data } = await applicantApi.post('/public/applicant/request-key', {
         marketSlug: slug,
         email,
+        captchaToken,
       });
       // 200 means the code was sent (or would have been, if the email matched)
       if (!data.message) {

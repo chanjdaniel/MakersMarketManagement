@@ -7,12 +7,20 @@ identified by a short-lived application-scoped JWT once they verify their email 
 Storage contract: application documents are persisted through ``api.applications``
 (the single owner of the ``applications`` collection) so the D9 form lock, which
 counts documents in that same collection by ``market_id``, sees them immediately.
+
+The login challenge -- the emailed code and the attempts spent against it -- is *not* stored on the
+application. It is a document of its own, keyed by (market, email), in a collection this module
+owns. That is a security boundary, not a filing preference: a challenge that lived on the
+application could only exist where an application does, so every refusal that reads it would answer
+"this address has applied" to anyone who asked. See ``_challenge_for``.
 """
 
 import re
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
+
+from pymongo.errors import PyMongoError
 
 from db_config import get_database
 from datatypes import (
@@ -34,20 +42,54 @@ import api.applications as ApplicationsApi
 
 db = get_database()
 markets_collection = db["markets"]
-from utils.tokens import generate_otp, get_otp_expiry, verify_token_expiry
+login_codes_collection = db["applicant_login_codes"]
+from utils.tokens import generate_otp
 from utils.email import send_otp_email
 from utils.application_token import generate_application_token, verify_application_token
+from utils.captcha import verify_recaptcha
+from utils.rate_limit import rate_limit_exceeded
 
 logger = logging.getLogger(__name__)
 
 MAX_OTP_ATTEMPTS = 5
 OTP_EXPIRY_MINUTES = 5
 
-# The shortest interval between two codes for the same application. This endpoint is public and
+# The shortest interval between two codes for the same address. This endpoint is public and
 # unauthenticated, and it sends mail to whatever address it is handed, so without a floor it is an
-# email relay anyone can point at anyone. The cooldown is also what keeps the attempt budget below
-# a budget *per request*: see ``request_applicant_key``.
+# email relay anyone can point at anyone.
 KEY_RESEND_COOLDOWN_SECONDS = 60
+
+# What bounds this surface *across* addresses, which the per-address cooldown cannot: it is keyed on
+# the address, so a caller that names a thousand of them is throttled by it a thousand times over,
+# which is to say not at all. Unbounded, that caller sends a thousand pieces of mail from the
+# product's domain and puts a thousand empty applications on the organizer's list -- which also
+# trips the D9 form lock, freezing a form the organizer is still writing. The captcha is what stops
+# a script from being one of those callers; the per-IP budget is what bounds the ones that get past
+# it; the global budget is the ceiling on how much mail the product will send in an hour, whoever
+# asks for it, because domain reputation is a single shared resource.
+#
+# The budgets are generous on purpose: applicants share IPs (a convention hall's wifi is one
+# address), so a limit tight enough to be interesting to an attacker who has already solved a
+# captcha would lock a room full of vendors out of their own applications.
+REQUEST_KEY_IP_LIMIT = 20
+REQUEST_KEY_IP_WINDOW_SECONDS = 3600
+REQUEST_KEY_GLOBAL_LIMIT = 1000
+REQUEST_KEY_GLOBAL_WINDOW_SECONDS = 3600
+
+# Guessing is bounded per code by ``MAX_OTP_ATTEMPTS`` and per address by the resend cooldown, and
+# this is what bounds it per *caller*: without it a script cycles request + guess + request against
+# one address for as long as it likes.
+VERIFY_KEY_IP_LIMIT = 60
+VERIFY_KEY_IP_WINDOW_SECONDS = 3600
+
+RATE_LIMITED_ERROR = (
+    "Too many requests from this location. Please wait a few minutes and try again."
+)
+
+CAPTCHA_REQUIRED_ERROR = (
+    "We could not verify that this request came from a browser. Please reload the page and "
+    "try again."
+)
 
 # A number answer is stored in a BSON document, and BSON integers are 64-bit. A finite float such
 # as ``1e300`` is a number by every test above this bound and still cannot be written: the driver
@@ -100,12 +142,11 @@ KEY_REQUEST_ACCEPTED_MESSAGE = (
     "If an application exists for this email, a verification code has been sent."
 )
 
-# A code whose attempt budget is spent is dead, and no new one is issued while it is still live, so
-# the wait is what the applicant has to be told: "request a new code" on its own is an instruction
-# that does nothing for up to ``OTP_EXPIRY_MINUTES``.
+# A code whose attempt budget is spent is dead. Requesting another one is what fixes that -- the new
+# code carries its own budget -- so that is what the applicant is told to do, and it is advice that
+# works: the only wait is the resend cooldown.
 ATTEMPTS_EXHAUSTED_ERROR = (
-    f"Too many incorrect attempts. This code is no longer usable. Please wait "
-    f"{OTP_EXPIRY_MINUTES} minutes for it to expire, then request a new one."
+    "Too many incorrect attempts. This code is no longer usable. Please request a new code."
 )
 
 # ── slug helpers ───────────────────────────────────────────────────────────
@@ -198,22 +239,107 @@ def _find_application(market_id: str, email: str) -> Optional[Application]:
     return Application(**existing) if existing else None
 
 
-def _live_code_issued_at(app: Application) -> Optional[datetime]:
-    """When the application's current code was issued, or ``None`` if it has no live one.
+_login_code_indexes_ready = False
 
-    A spent or expired code is not a live one, so it constrains nothing: this answers only for a
-    code that could still be verified right now. The issue time is not stored - it is the expiry
-    minus the fixed lifetime every code is minted with, which is the same fact by another name.
+
+def _ensure_login_code_indexes() -> None:
+    """The two invariants of the challenge store, enforced where they can actually hold.
+
+    The address is the key, and the store is written by an upsert on a public endpoint, so the
+    uniqueness has to be the database's: two concurrent requests for the same address would
+    otherwise both find no document and both insert one, leaving an address with two live codes and
+    two attempt budgets - which is a doubled guess budget for anyone who asks for two codes at once.
+
+    The TTL is what keeps the collection from growing for as long as the product runs: a challenge
+    is dead the moment it expires, and a dead one is of no use to anybody.
+
+    Built lazily rather than at import: an index build is a network call, and this module is
+    imported by tooling and tests that never reach the database.
     """
-    if not app.otp or not app.otp_expires or not verify_token_expiry(app.otp_expires):
-        return None
+    global _login_code_indexes_ready
+    if _login_code_indexes_ready:
+        return
     try:
-        expires = datetime.fromisoformat(app.otp_expires.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
+        login_codes_collection.create_index(
+            [("market_id", 1), ("email", 1)], unique=True, name="market_email_unique",
+        )
+        login_codes_collection.create_index("purge_at", expireAfterSeconds=0)
+        _login_code_indexes_ready = True
+    except PyMongoError as exc:  # pragma: no cover - index creation is best effort
+        logger.warning("Could not create the applicant login-code indexes: %s", exc)
+
+
+def _as_utc(value: Any) -> Optional[datetime]:
+    """A stored timestamp as an aware UTC datetime. Mongo hands back naive ones."""
+    if not isinstance(value, datetime):
         return None
-    if expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
-    return expires - timedelta(minutes=OTP_EXPIRY_MINUTES)
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _challenge_for(market_id: str, email: str) -> Optional[Dict[str, Any]]:
+    """The live login challenge for this address, or ``None`` if there is not one.
+
+    A challenge exists for any address that has asked for a code, whether or not an application
+    exists for it. That is the whole point of it being its own document: an attempt counter that
+    lived on the application would be present for an applicant and absent for a stranger, and every
+    refusal that reads it -- "incorrect code, 4 attempts remaining" against "there is no pending
+    code" -- would then answer, to an unauthenticated caller, which addresses are on the organizer's
+    applicant list.
+
+    An expired challenge is not a live one, so it is not returned: a dead code and no code at all
+    are the same state, and this is where they become it.
+    """
+    doc = login_codes_collection.find_one({"market_id": market_id, "email": email})
+    if not doc:
+        return None
+    expires_at = _as_utc(doc.get("expires_at"))
+    if not expires_at or expires_at <= datetime.now(timezone.utc):
+        return None
+    return doc
+
+
+def _issue_challenge(market_id: str, email: str, code: Optional[str]) -> None:
+    """Replace this address's challenge with a fresh one, carrying a fresh attempt budget.
+
+    The budget belongs to the code, not to the address. Carrying a spent budget forward onto a new
+    code hands anyone who knows an applicant's address a way to lock them out of their own
+    application: burn the five attempts the moment the code is mailed, and every code the applicant
+    asks for after that is born dead. Resetting is safe because the new code goes to the applicant's
+    inbox, not to the caller's -- what bounds guessing is the code's entropy, the per-code attempt
+    cap, the resend cooldown, and the per-IP budgets, none of which a reset touches.
+
+    ``code`` is ``None`` when there is no application to mail a code to. The challenge is still
+    written, and it still counts attempts, so that a caller cannot tell the two apart: no string a
+    caller submits equals ``None``, so such a challenge simply refuses every guess, exactly as a
+    real one refuses a wrong guess.
+    """
+    _ensure_login_code_indexes()
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=OTP_EXPIRY_MINUTES)
+    login_codes_collection.update_one(
+        {"market_id": market_id, "email": email},
+        {"$set": {
+            "market_id": market_id,
+            "email": email,
+            "code": code,
+            "attempts": 0,
+            "issued_at": now,
+            "expires_at": expires_at,
+            "purge_at": expires_at,
+        }},
+        upsert=True,
+    )
+
+
+def _spend_challenge_attempt(market_id: str, email: str) -> None:
+    login_codes_collection.update_one(
+        {"market_id": market_id, "email": email},
+        {"$inc": {"attempts": 1}},
+    )
+
+
+def _clear_challenge(market_id: str, email: str) -> None:
+    login_codes_collection.delete_one({"market_id": market_id, "email": email})
 
 
 def _create_application(market_id: str, email: str) -> Application:
@@ -431,7 +557,12 @@ def _validated_form_data(
 # ── public endpoints ────────────────────────────────────────────────────────
 
 
-def request_applicant_key(market_slug: str, email: str) -> Tuple[Dict[str, Any], int]:
+def request_applicant_key(
+    market_slug: str,
+    email: str,
+    captcha_token: str = "",
+    client_ip: Optional[str] = None,
+) -> Tuple[Dict[str, Any], int]:
     """Stage 1 of the applicant login flow: send a one-time key to the applicant's email.
 
     Signing in is not applying, so the phase does not gate it. An applicant can reach their own
@@ -443,8 +574,9 @@ def request_applicant_key(market_slug: str, email: str) -> Tuple[Dict[str, Any],
 
     What the phase does gate is *starting* an application: a market that is not open takes no new
     ones, and creating a document for an address that never applied would put a stranger with an
-    empty form on the organizer's applicant list after review has begun. That refusal is silent,
-    though - see below.
+    empty form on the organizer's applicant list after review has begun. That refusal is silent - a
+    challenge is still written for the address, holding no code, so that nothing downstream of here
+    can tell a stranger from an applicant either.
 
     Returns the same generic message in every phase, whether or not an application was found. Who
     applied to a market is the organizer's private data, so this endpoint cannot answer it: naming
@@ -453,20 +585,26 @@ def request_applicant_key(market_slug: str, email: str) -> Tuple[Dict[str, Any],
     application page reads it from ``get_public_application_form`` and says so on screen); *which
     addresses are on its applicant list* is not, and only this endpoint knows that.
 
-    Sending is throttled, and the throttle is silent for that same reason. This route is public,
-    unauthenticated, and it mails whatever address it is handed, so unbounded it is two things at
-    once: an email relay anyone can aim at anyone, and an unlimited supply of fresh six-digit codes
-    to guess against. Two refusals bound it, and both of them issue no code and send no mail:
-    a code minted less than ``KEY_RESEND_COOLDOWN_SECONDS`` ago is not replaced, and a live code
-    whose attempt budget is spent is not replaced either - it has to expire first, which is what
-    holds the guess rate at ``MAX_OTP_ATTEMPTS`` per code lifetime rather than per request.
-    Both answer with the same accepted message as a send, because a 429 here would say out loud
-    what the generic message exists to hide: only an address with an application can be throttled,
-    so a distinguishable refusal is the applicant-list oracle again, through the third door.
+    The bounds on the surface come in three layers, and each one answers something the others
+    cannot. The captcha keeps a script from being a caller at all - it is the same reCAPTCHA gate
+    ``register_user_with_captcha`` puts on the organizer-side signup, because this is the same kind
+    of surface. The per-IP and global budgets bound what a caller that got past it can spend, across
+    *all* addresses: the resend cooldown below is keyed on one address, so it does nothing about a
+    caller that names a thousand of them, and a thousand of them is a thousand pieces of mail from
+    the product's domain and a thousand empty applications on the organizer's list. And the resend
+    cooldown holds the mail to one message per address per minute.
+
+    The cooldown is the one refusal that answers with the accepted message rather than a 429,
+    because it is the only one keyed on the *address*: only an address with a live code can be
+    cooled down, so a distinguishable refusal there is the applicant-list oracle again, through a
+    side door. The captcha and rate-limit refusals are keyed on the caller, know nothing about the
+    address, and so can say plainly what is wrong.
 
     Args:
         market_slug: The URL-safe slug of the market.
         email: The applicant's email address.
+        captcha_token: The reCAPTCHA token the browser obtained for this action.
+        client_ip: The caller's IP, for the per-IP budget and for the captcha's own scoring.
 
     Returns:
         Tuple of (response_body, status_code).
@@ -480,6 +618,26 @@ def request_applicant_key(market_slug: str, email: str) -> Tuple[Dict[str, Any],
     if refusal:
         return refusal
 
+    if rate_limit_exceeded(
+        "applicant_request_key_ip",
+        client_ip or "unknown",
+        limit=REQUEST_KEY_IP_LIMIT,
+        window_seconds=REQUEST_KEY_IP_WINDOW_SECONDS,
+    ):
+        return {"error": RATE_LIMITED_ERROR}, 429
+
+    if rate_limit_exceeded(
+        "applicant_request_key_global",
+        "",
+        limit=REQUEST_KEY_GLOBAL_LIMIT,
+        window_seconds=REQUEST_KEY_GLOBAL_WINDOW_SECONDS,
+    ):
+        return {"error": RATE_LIMITED_ERROR}, 429
+
+    captcha_ok, _score = verify_recaptcha(captcha_token, client_ip)
+    if not captcha_ok:
+        return {"error": CAPTCHA_REQUIRED_ERROR}, 400
+
     market_doc = _get_market_doc_by_slug(market_slug)
     if not market_doc:
         return {"error": "Market not found. Check the URL and try again."}, 404
@@ -488,62 +646,53 @@ def request_applicant_key(market_slug: str, email: str) -> Tuple[Dict[str, Any],
     phase = _get_market_phase(market_doc)
 
     app = _find_application(market_id, email)
-    if not app:
-        if phase != MarketPhase.APPLICATIONS_OPEN:
-            return {"message": KEY_REQUEST_ACCEPTED_MESSAGE}, 200
+    if not app and phase == MarketPhase.APPLICATIONS_OPEN:
         app = _create_application(market_id, email)
 
-    issued_at = _live_code_issued_at(app)
-    if issued_at is not None:
-        if app.otp_attempts >= MAX_OTP_ATTEMPTS:
-            return {"message": KEY_REQUEST_ACCEPTED_MESSAGE}, 200
-        if datetime.now(timezone.utc) - issued_at < timedelta(
+    challenge = _challenge_for(market_id, email)
+    if challenge is not None:
+        issued_at = _as_utc(challenge.get("issued_at"))
+        if issued_at is not None and datetime.now(timezone.utc) - issued_at < timedelta(
             seconds=KEY_RESEND_COOLDOWN_SECONDS
         ):
             return {"message": KEY_REQUEST_ACCEPTED_MESSAGE}, 200
 
-    # The attempt budget belongs to the code, not to the request. Emptying the counter on every
-    # send makes ``MAX_OTP_ATTEMPTS`` a bound on guesses *per code*, which is no bound at all: a
-    # caller loops request-key + five guesses and walks the six-digit space. The counter therefore
-    # carries forward for as long as the code it was spent against is live, and a burned budget is
-    # only refilled by that code expiring -- which is also the only thing a caller at the cap can
-    # wait for, since the two refusals above issue no code and send no mail.
-    attempts = app.otp_attempts if issued_at is not None else 0
+    # A stranger's challenge holds no code, so no guess can ever match it, and no mail is sent for
+    # it. It is still written, and it still counts attempts, because the challenge is the only thing
+    # ``verify_applicant_key`` reads: an address with no challenge document would be answered
+    # differently from one with a live code, and that difference is the applicant list.
+    otp = generate_otp() if app else None
+    _issue_challenge(market_id, email, otp)
 
-    otp = generate_otp()
-    app.otp = otp
-    app.otp_expires = get_otp_expiry(minutes=OTP_EXPIRY_MINUTES)
-    app.otp_attempts = attempts
-    ApplicationsApi.applications_collection.update_one(
-        {"id": app.id},
-        {"$set": {
-            "otp": app.otp,
-            "otp_expires": app.otp_expires,
-            "otp_attempts": app.otp_attempts,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }},
-    )
-
-    # Send email (fire-and-forget -- the message is generic either way)
-    send_otp_email(email, otp)
+    if otp:
+        send_otp_email(email, otp)
 
     return {"message": KEY_REQUEST_ACCEPTED_MESSAGE}, 200
 
 
 def verify_applicant_key(
-    market_slug: str, email: str, key: str,
+    market_slug: str, email: str, key: str, client_ip: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], int]:
     """Stage 2 of the applicant login flow: verify the one-time key.
 
     On success returns a short-lived application-scoped JWT + application data.
-    On failure returns a specific error message describing exactly what went wrong -- with the one
-    exception that no refusal may reveal whether an application exists for the address, so an
-    address that never applied is answered identically to one whose code has expired or was spent.
+
+    Every refusal names exactly what is wrong - except that none of them may reveal whether an
+    application exists for the address, and here that is not a matter of wording. It is why the
+    challenge this reads is a document of its own rather than a field on the application: the
+    endpoint never looks the address up on the applicant list at all, so it has nothing to leak.
+    Whether the caller named an applicant or a stranger, ``request_applicant_key`` left a challenge
+    behind, and the sequence of answers it gives - "incorrect code, 4 attempts remaining", then 3,
+    then the 429 - is the same one, with the same statuses and the same bodies, either way.
+
+    The application is loaded only once the code has already been proven correct, which a stranger's
+    challenge - which holds no code - can never be.
 
     Args:
         market_slug: The URL-safe slug of the market.
         email: The applicant's email address.
         key: The 6-digit verification code.
+        client_ip: The caller's IP, for the per-IP guess budget.
 
     Returns:
         Tuple of (response_body, status_code).
@@ -562,60 +711,50 @@ def verify_applicant_key(
 
     key = key.strip()
 
+    if rate_limit_exceeded(
+        "applicant_verify_key_ip",
+        client_ip or "unknown",
+        limit=VERIFY_KEY_IP_LIMIT,
+        window_seconds=VERIFY_KEY_IP_WINDOW_SECONDS,
+    ):
+        return {"error": RATE_LIMITED_ERROR}, 429
+
     market_doc = _get_market_doc_by_slug(market_slug)
     if not market_doc:
         return {"error": "Market not found. Check the URL and try again."}, 404
 
     market_id = market_doc.get("id", "")
 
-    app_doc = ApplicationsApi.applications_collection.find_one({
-        ApplicationsApi.MARKET_ID_FIELD: market_id,
-        "applicant_email": email,
-        "application_type": ApplicationType.MAIN.value,
-    })
-
-    # An address with no application is answered exactly as an application with no live code: the
-    # same status, the same message. Naming the missing application here would confirm, to anyone
-    # who asks, which addresses are on this market's applicant list - the same leak the request
-    # endpoint's generic message exists to prevent, through the other door.
-    if not app_doc:
+    challenge = _challenge_for(market_id, email)
+    if challenge is None:
         return {"error": NO_PENDING_CODE_ERROR}, 401
 
-    app = Application(**app_doc)
-
-    # Check expiry
-    if not app.otp_expires or not verify_token_expiry(app.otp_expires):
-        return {"error": NO_PENDING_CODE_ERROR}, 401
-
-    # Check attempt limit
-    if app.otp_attempts >= MAX_OTP_ATTEMPTS:
+    attempts = challenge.get("attempts", 0)
+    if attempts >= MAX_OTP_ATTEMPTS:
         return {"error": ATTEMPTS_EXHAUSTED_ERROR}, 429
 
-    # Check key
-    if app.otp != key:
-        new_attempts = app.otp_attempts + 1
-        ApplicationsApi.applications_collection.update_one(
-            {"id": app.id},
-            {"$set": {"otp_attempts": new_attempts}},
-        )
-        remaining = MAX_OTP_ATTEMPTS - new_attempts
+    # A challenge with no code refuses every guess, which is exactly what a challenge with a code
+    # does to a wrong one. The comparison is the same comparison; there is no branch here that a
+    # stranger takes and an applicant does not.
+    if challenge.get("code") != key:
+        _spend_challenge_attempt(market_id, email)
+        remaining = MAX_OTP_ATTEMPTS - (attempts + 1)
         if remaining <= 0:
             return {"error": ATTEMPTS_EXHAUSTED_ERROR}, 429
         return {
             "error": f"Incorrect code. You have {remaining} attempt{'s' if remaining != 1 else ''} remaining.",
         }, 401
 
-    # Success -- clear OTP fields
+    app = _find_application(market_id, email)
+    if not app:
+        # Unreachable by guessing: a challenge only carries a code when an application existed to
+        # mail it to. It is reachable if that application was deleted in the meantime, and the
+        # answer is the one every other dead end gives.
+        _clear_challenge(market_id, email)
+        return {"error": NO_PENDING_CODE_ERROR}, 401
+
     token = generate_application_token(app.id, market_id, email)
-    ApplicationsApi.applications_collection.update_one(
-        {"id": app.id},
-        {"$set": {
-            "otp": None,
-            "otp_expires": None,
-            "otp_attempts": 0,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }},
-    )
+    _clear_challenge(market_id, email)
 
     return {
         "token": token,

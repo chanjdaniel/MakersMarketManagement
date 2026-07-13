@@ -1050,7 +1050,10 @@ def public_request_applicant_key() -> Response:
         data = request.json or {}
         market_slug = data.get('marketSlug') or data.get('market_slug') or ''
         email = data.get('email') or ''
-        result, status_code = ApplicantsApi.request_applicant_key(market_slug, email)
+        captcha_token = data.get('captchaToken') or data.get('captcha_token') or ''
+        result, status_code = ApplicantsApi.request_applicant_key(
+            market_slug, email, captcha_token, request.remote_addr
+        )
         return jsonify(result), status_code
     except Exception as e:
         logger.error(f"Error in public_request_applicant_key: {e}")
@@ -1066,7 +1069,9 @@ def public_verify_applicant_key() -> Response:
         market_slug = data.get('marketSlug') or data.get('market_slug') or ''
         email = data.get('email') or ''
         key = data.get('key') or ''
-        result, status_code = ApplicantsApi.verify_applicant_key(market_slug, email, key)
+        result, status_code = ApplicantsApi.verify_applicant_key(
+            market_slug, email, key, request.remote_addr
+        )
         return jsonify(result), status_code
     except Exception as e:
         logger.error(f"Error in public_verify_applicant_key: {e}")

@@ -334,10 +334,11 @@ class Application(BaseModel):
     main_application_id: Optional[str] = None  # FK for waitlist prefill (D11)
     submitted_at: Optional[str] = None
     updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
-    otp: Optional[str] = None             # for email-key login
-    otp_expires: Optional[str] = None
-    otp_attempts: int = 0
     assigned_reviewer_id: Optional[str] = None
+    # The email-key login challenge is deliberately *not* here. It lives in its own collection,
+    # keyed by (market, email), because it has to exist for an address that has no application:
+    # a code and an attempt counter that only existed alongside an application would make every
+    # login refusal an answer to "has this address applied?". See ``api.applicants``.
 
 
 def to_camel(string: str) -> str:

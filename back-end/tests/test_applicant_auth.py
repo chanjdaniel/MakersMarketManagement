@@ -1,4 +1,8 @@
-"""Tests for applicant email-key auth flow (request-key, verify-key, token validation)."""
+"""Tests for applicant email-key auth flow (request-key, verify-key, token validation).
+
+The login endpoints are public, unauthenticated, and they send mail to whatever address they are
+handed, so most of what is pinned here is what they *refuse* and what they refuse to *say*.
+"""
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -6,6 +10,7 @@ from unittest.mock import patch
 
 from conftest import (
     FakeApplicationsCollection,
+    FakeKeyedCollection,
     stored_market,
 )
 from datatypes import (
@@ -14,7 +19,7 @@ from datatypes import (
     ApplicationType,
     MarketPhase,
 )
-from utils.tokens import generate_otp, get_otp_expiry
+from utils.tokens import generate_otp
 
 import api.applicants as ApplicantsApi
 import api.applications as ApplicationsApi
@@ -33,29 +38,35 @@ PUBLISHED_MARKET_DOC = stored_market(
 
 MAX_ATTEMPTS = ApplicantsApi.MAX_OTP_ATTEMPTS
 COOLDOWN = ApplicantsApi.KEY_RESEND_COOLDOWN_SECONDS
-# Longer ago than a code lives, so the seeded code is dead rather than merely old.
+# Longer ago than a code lives, so the seeded challenge is dead rather than merely old.
 EXPIRED = ApplicantsApi.OTP_EXPIRY_MINUTES * 60 + 1
 
 
-def _app_with_code(
-    email, *, attempts=0, issued_seconds_ago=0, otp="123456", market_id="market-123",
+def _seed_challenge(
+    login_codes, email, *, code="123456", attempts=0, issued_seconds_ago=0,
+    market_id="market-123",
 ):
-    """An application holding a code issued ``issued_seconds_ago`` seconds ago.
+    """A login challenge as ``request_applicant_key`` would have written it.
 
-    The issue time is not a stored field -- it is the expiry minus the fixed code lifetime -- so a
-    test dates a code by backdating its expiry, exactly as the endpoint reads it.
+    ``code=None`` is the challenge written for an address with no application: it holds nothing a
+    caller can match, and it exists so that nothing about the answers ``verify_applicant_key`` gives
+    depends on whether the address is on the organizer's applicant list.
     """
     issued = datetime.now(timezone.utc) - timedelta(seconds=issued_seconds_ago)
     expires = issued + timedelta(minutes=ApplicantsApi.OTP_EXPIRY_MINUTES)
-    return Application(
-        market_id=market_id,
-        applicant_email=email,
-        form_data={},
-        status=ApplicationStatus.OPEN,
-        otp=otp,
-        otp_expires=expires.isoformat(),
-        otp_attempts=attempts,
-    )
+    login_codes.insert_one({
+        "market_id": market_id,
+        "email": email,
+        "code": code,
+        "attempts": attempts,
+        "issued_at": issued,
+        "expires_at": expires,
+        "purge_at": expires,
+    })
+
+
+def _stored_challenge(login_codes, email, market_id="market-123"):
+    return login_codes.find_one({"market_id": market_id, "email": email})
 
 
 class FakeSlugMarketsCollection:
@@ -135,7 +146,7 @@ class TestRequestKey:
     def test_a_closed_market_takes_no_new_application(self, apps_coll, no_email, monkeypatch):
         """The phase gates *starting* an application, so a stranger with an empty form cannot land
         on the organizer's applicant list after review has begun -- but the refusal is silent, so
-        that it does not become an oracle for who applied (see the enumeration test below)."""
+        that it does not become an oracle for who applied (see the enumeration tests below)."""
         fake = FakeSlugMarketsCollection([
             stored_market(phase=MarketPhase.APPLICATIONS_CLOSED, name="Closed Market",
                           id="closed-1")
@@ -149,7 +160,7 @@ class TestRequestKey:
         assert apps_coll.documents == []
 
     def test_an_existing_applicant_can_sign_in_after_applications_close(
-        self, apps_coll, no_email, monkeypatch,
+        self, apps_coll, login_codes, no_email, monkeypatch,
     ):
         """Signing in is not applying. The dashboard exists to show the applicant the states their
         application reaches *after* the window closes, so the login cannot close with it."""
@@ -171,7 +182,8 @@ class TestRequestKey:
 
         assert status == 200, result
         assert len(apps_coll.documents) == 1
-        assert apps_coll.documents[0]["otp"] is not None
+        challenge = _stored_challenge(login_codes, "applied@example.com", market_id="closed-1")
+        assert challenge["code"] is not None
 
     def test_an_existing_applicant_can_sign_in_after_the_market_is_archived(
         self, apps_coll, no_email, monkeypatch,
@@ -202,15 +214,16 @@ class TestRequestKey:
         assert "valid email" in result["error"].lower()
         assert apps_coll.documents == []
 
-    def test_creates_application_on_first_request(self, published_market, apps_coll, no_email):
+    def test_creates_application_on_first_request(
+        self, published_market, apps_coll, login_codes, no_email,
+    ):
         result, status = ApplicantsApi.request_applicant_key("test-market", "new@example.com")
 
         assert status == 200
         assert "code has been sent" in result["message"]
         assert len(apps_coll.documents) == 1
-        doc = apps_coll.documents[0]
-        assert doc["applicant_email"] == "new@example.com"
-        assert doc["otp"] is not None
+        assert apps_coll.documents[0]["applicant_email"] == "new@example.com"
+        assert _stored_challenge(login_codes, "new@example.com")["code"] is not None
 
     def test_reuses_existing_application(self, published_market, apps_coll, no_email):
         app = Application(
@@ -227,10 +240,24 @@ class TestRequestKey:
         assert len(apps_coll.documents) == 1  # no duplicate created
         assert apps_coll.documents[0]["form_data"]["business_name"] == "Existing Co"
 
+    def test_the_login_challenge_is_not_stored_on_the_application(
+        self, published_market, apps_coll, login_codes, no_email,
+    ):
+        """The code and its attempt counter live in their own collection, keyed by (market, email).
+
+        That is the whole enumeration fix: a challenge that lived on the application could only
+        exist where an application does, and every refusal that reads it would then answer "this
+        address has applied" to an unauthenticated caller.
+        """
+        ApplicantsApi.request_applicant_key("test-market", "new@example.com")
+
+        doc = apps_coll.documents[0]
+        assert "otp" not in doc and "otp_attempts" not in doc and "otp_expires" not in doc
+        assert _stored_challenge(login_codes, "new@example.com") is not None
+
     def test_generic_message_preventing_email_enumeration(self, published_market, apps_coll, no_email):
         """The response message must be the same whether or not an app exists."""
         result, _ = ApplicantsApi.request_applicant_key("test-market", "unknown@example.com")
-        # The key fact: the message says "If an application exists"
         assert "If an application exists" in result["message"]
 
     def test_a_closed_market_answers_an_applicant_and_a_stranger_identically(
@@ -256,6 +283,25 @@ class TestRequestKey:
 
         assert applied == stranger
 
+    def test_a_stranger_gets_a_challenge_that_holds_no_code(
+        self, apps_coll, login_codes, no_email, monkeypatch,
+    ):
+        """The challenge is written for an address with no application too -- carrying no code, so
+        no mail is sent for it and no guess can ever match it. Without it, verify-key would answer
+        "there is no pending code" for a stranger and "incorrect code" for an applicant."""
+        fake = FakeSlugMarketsCollection([
+            stored_market(phase=MarketPhase.APPLICATIONS_CLOSED, name="Closed Market",
+                          id="closed-1")
+        ])
+        monkeypatch.setattr(ApplicantsApi, "markets_collection", fake)
+
+        ApplicantsApi.request_applicant_key("closed-market", "stranger@example.com")
+
+        challenge = _stored_challenge(login_codes, "stranger@example.com", market_id="closed-1")
+        assert challenge is not None
+        assert challenge["code"] is None
+        assert challenge["attempts"] == 0
+
     def test_sends_email_to_applicant(self, published_market, apps_coll):
         sent_emails = []
 
@@ -269,20 +315,25 @@ class TestRequestKey:
         assert len(sent_emails) == 1
         assert sent_emails[0][0] == "vendor@example.com"
 
-    def test_empties_attempt_counter_once_the_spent_code_has_expired(
-        self, published_market, apps_coll, no_email,
+    def test_no_mail_is_sent_for_an_address_that_never_applied(
+        self, apps_coll, no_email, monkeypatch,
     ):
-        """A fresh code after the old one died is a fresh budget: the counter belongs to the code
-        it was spent against, and that code is gone."""
-        apps_coll.insert_one(_app_with_code(
-            "retry@example.com", attempts=MAX_ATTEMPTS, issued_seconds_ago=EXPIRED,
-        ).model_dump())
+        """The silent challenge must stay silent: a market that takes no new applications must not
+        become a way to send mail from the product's domain to any address a caller names."""
+        fake = FakeSlugMarketsCollection([
+            stored_market(phase=MarketPhase.APPLICATIONS_CLOSED, name="Closed Market",
+                          id="closed-1")
+        ])
+        monkeypatch.setattr(ApplicantsApi, "markets_collection", fake)
+        sent = []
 
-        ApplicantsApi.request_applicant_key("test-market", "retry@example.com")
+        with patch.object(
+            ApplicantsApi, "send_otp_email",
+            side_effect=lambda addr, otp: sent.append(addr) or True,
+        ):
+            ApplicantsApi.request_applicant_key("closed-market", "stranger@example.com")
 
-        doc = apps_coll.documents[0]
-        assert doc["otp_attempts"] == 0
-        assert doc["otp"] is not None
+        assert sent == []
 
     def test_validates_missing_fields(self, apps_coll, no_email):
         result, status = ApplicantsApi.request_applicant_key("", "test@example.com")
@@ -305,108 +356,235 @@ class TestRequestKey:
 class TestKeyRequestThrottle:
     """The bounds on a public, unauthenticated endpoint that mails whatever address it is handed.
 
-    Unthrottled it is an email relay anyone can aim at anyone, and an unlimited supply of fresh
-    six-digit codes to guess against -- the attempt cap bounds guesses per code, and without these
-    two refusals a caller just asks for another code.
+    Three layers, each answering what the others cannot: a captcha, so a script is not a caller at
+    all; per-IP and global budgets, which bound a caller *across* addresses; and a per-address
+    resend cooldown, which bounds the mail one applicant can be sent.
     """
 
-    def _sent(self, market_slug, email):
+    def _sent(self, market_slug, email, **kwargs):
         sent = []
         with patch.object(
             ApplicantsApi, "send_otp_email",
             side_effect=lambda addr, otp: sent.append((addr, otp)) or True,
         ):
-            result, status = ApplicantsApi.request_applicant_key(market_slug, email)
+            result, status = ApplicantsApi.request_applicant_key(market_slug, email, **kwargs)
         return sent, result, status
 
-    def test_a_second_code_inside_the_cooldown_is_not_sent(self, published_market, apps_coll):
-        apps_coll.insert_one(_app_with_code("vendor@example.com", issued_seconds_ago=5).model_dump())
+    def test_a_second_code_inside_the_cooldown_is_not_sent(
+        self, published_market, apps_coll, login_codes,
+    ):
+        apps_coll.insert_one(Application(
+            market_id="market-123", applicant_email="vendor@example.com",
+            form_data={}, status=ApplicationStatus.OPEN,
+        ).model_dump())
+        _seed_challenge(login_codes, "vendor@example.com", issued_seconds_ago=5)
 
-        sent, result, status = self._sent("test-market", "vendor@example.com")
+        sent, _result, status = self._sent("test-market", "vendor@example.com")
 
         assert status == 200
         assert sent == []
-        doc = apps_coll.documents[0]
-        assert doc["otp"] == "123456"  # the live code stands; it is still the one that works
+        # The live code stands; it is still the one that works.
+        assert _stored_challenge(login_codes, "vendor@example.com")["code"] == "123456"
 
-    def test_the_throttled_answer_is_the_answer_a_send_gives(self, published_market, apps_coll):
+    def test_the_throttled_answer_is_the_answer_a_send_gives(
+        self, published_market, apps_coll, login_codes,
+    ):
         """A 429 here would say out loud what the generic message exists to hide: only an address
-        with an application can be throttled at all."""
-        apps_coll.insert_one(_app_with_code("vendor@example.com", issued_seconds_ago=5).model_dump())
+        with a live code can be cooled down at all."""
+        _seed_challenge(login_codes, "vendor@example.com", issued_seconds_ago=5)
 
         throttled = ApplicantsApi.request_applicant_key("test-market", "vendor@example.com")
         fresh = ApplicantsApi.request_applicant_key("test-market", "stranger@example.com")
 
         assert throttled == fresh == ({"message": ApplicantsApi.KEY_REQUEST_ACCEPTED_MESSAGE}, 200)
 
-    def test_a_code_is_resent_once_the_cooldown_has_passed(self, published_market, apps_coll):
-        apps_coll.insert_one(_app_with_code(
-            "vendor@example.com", issued_seconds_ago=COOLDOWN + 5,
+    def test_a_code_is_resent_once_the_cooldown_has_passed(
+        self, published_market, apps_coll, login_codes,
+    ):
+        apps_coll.insert_one(Application(
+            market_id="market-123", applicant_email="vendor@example.com",
+            form_data={}, status=ApplicationStatus.OPEN,
         ).model_dump())
+        _seed_challenge(login_codes, "vendor@example.com", issued_seconds_ago=COOLDOWN + 5)
 
         sent, _result, status = self._sent("test-market", "vendor@example.com")
 
         assert status == 200
         assert len(sent) == 1
-        assert apps_coll.documents[0]["otp"] == sent[0][1] != "123456"
+        assert _stored_challenge(login_codes, "vendor@example.com")["code"] == sent[0][1] != "123456"
 
-    def test_the_attempt_budget_survives_a_resend(self, published_market, apps_coll):
-        """Emptying the counter on every send makes the cap a bound per *code*, which is no bound:
-        a caller loops request-key + five guesses and walks the six-digit space."""
-        apps_coll.insert_one(_app_with_code(
-            "vendor@example.com", attempts=3, issued_seconds_ago=COOLDOWN + 5,
+    def test_a_fresh_code_carries_a_fresh_attempt_budget(
+        self, published_market, apps_coll, login_codes,
+    ):
+        """The attempt budget belongs to a single issued code, not to the address.
+
+        Carrying a spent budget forward onto the next code hands anyone who knows an applicant's
+        address a lockout: burn the five attempts the moment the code is mailed, and every code the
+        applicant asks for afterwards is born dead. Resetting is safe -- the new code goes to the
+        applicant's inbox, not to the attacker's.
+        """
+        apps_coll.insert_one(Application(
+            market_id="market-123", applicant_email="vendor@example.com",
+            form_data={}, status=ApplicationStatus.OPEN,
         ).model_dump())
-
-        _sent, _result, status = self._sent("test-market", "vendor@example.com")
-
-        assert status == 200
-        assert apps_coll.documents[0]["otp_attempts"] == 3
-
-    def test_a_spent_code_is_not_replaced_until_it_expires(self, published_market, apps_coll):
-        """The refusal that holds the guess rate: a budget burned against a live code is refilled
-        only by that code expiring, not by asking for another one."""
-        apps_coll.insert_one(_app_with_code(
-            "vendor@example.com", attempts=MAX_ATTEMPTS, issued_seconds_ago=COOLDOWN + 5,
-        ).model_dump())
+        _seed_challenge(
+            login_codes, "vendor@example.com",
+            attempts=MAX_ATTEMPTS, issued_seconds_ago=COOLDOWN + 5,
+        )
 
         sent, _result, status = self._sent("test-market", "vendor@example.com")
 
         assert status == 200
-        assert sent == []
-        doc = apps_coll.documents[0]
-        assert doc["otp"] == "123456"
-        assert doc["otp_attempts"] == MAX_ATTEMPTS
+        assert len(sent) == 1, "a code whose budget an attacker spent must still be replaceable"
+        challenge = _stored_challenge(login_codes, "vendor@example.com")
+        assert challenge["attempts"] == 0
+        assert challenge["code"] == sent[0][1]
 
-    def test_a_first_code_is_never_throttled(self, published_market, apps_coll):
-        """An application with no live code is the applicant who just arrived."""
+    def test_an_attacker_cannot_lock_an_applicant_out_of_their_own_application(
+        self, published_market, apps_coll, login_codes,
+    ):
+        """The full sequence: the attacker requests a code for the victim and burns every attempt,
+        and then the victim -- past the cooldown -- asks for one and can use it."""
+        apps_coll.insert_one(Application(
+            market_id="market-123", applicant_email="victim@example.com",
+            form_data={}, status=ApplicationStatus.OPEN,
+        ).model_dump())
+
+        attacker_sent, _r, _s = self._sent("test-market", "victim@example.com")
+        for _ in range(MAX_ATTEMPTS):
+            ApplicantsApi.verify_applicant_key("test-market", "victim@example.com", "000000")
+        _exhausted, status = ApplicantsApi.verify_applicant_key(
+            "test-market", "victim@example.com", attacker_sent[0][1],
+        )
+        assert status == 429
+
+        # The victim waits out the cooldown and asks for a code of their own.
+        challenge = _stored_challenge(login_codes, "victim@example.com")
+        login_codes.update_one(
+            {"market_id": "market-123", "email": "victim@example.com"},
+            {"$set": {"issued_at": challenge["issued_at"] - timedelta(seconds=COOLDOWN + 5)}},
+        )
+        victim_sent, _r, _s = self._sent("test-market", "victim@example.com")
+
+        assert len(victim_sent) == 1, "the applicant must never silently receive no mail"
+        result, status = ApplicantsApi.verify_applicant_key(
+            "test-market", "victim@example.com", victim_sent[0][1],
+        )
+        assert status == 200, result
+
+    def test_a_first_code_is_never_throttled(self, published_market, apps_coll, login_codes):
         sent, _result, status = self._sent("test-market", "new@example.com")
 
         assert status == 200
         assert len(sent) == 1
-        assert apps_coll.documents[0]["otp"] == sent[0][1]
+        assert _stored_challenge(login_codes, "new@example.com")["code"] == sent[0][1]
+
+    def test_one_caller_cannot_mail_an_unbounded_number_of_addresses(
+        self, published_market, apps_coll, no_email,
+    ):
+        """The cooldown is keyed on the address, so it bounds nothing about a caller that names a
+        thousand of them: a thousand pieces of mail from the product's domain, and a thousand empty
+        applications on the organizer's list -- which also trips the D9 form lock."""
+        limit = ApplicantsApi.REQUEST_KEY_IP_LIMIT
+        for i in range(limit):
+            _result, status = ApplicantsApi.request_applicant_key(
+                "test-market", f"target{i}@example.com", client_ip="203.0.113.9",
+            )
+            assert status == 200, f"request {i} should be within the budget"
+
+        result, status = ApplicantsApi.request_applicant_key(
+            "test-market", f"target{limit}@example.com", client_ip="203.0.113.9",
+        )
+
+        assert status == 429
+        assert result["error"] == ApplicantsApi.RATE_LIMITED_ERROR
+        assert len(apps_coll.documents) == limit
+
+    def test_the_per_ip_budget_is_per_ip(self, published_market, apps_coll, no_email):
+        for i in range(ApplicantsApi.REQUEST_KEY_IP_LIMIT):
+            ApplicantsApi.request_applicant_key(
+                "test-market", f"target{i}@example.com", client_ip="203.0.113.9",
+            )
+
+        _result, status = ApplicantsApi.request_applicant_key(
+            "test-market", "someone@example.com", client_ip="198.51.100.4",
+        )
+
+        assert status == 200
+
+    def test_a_global_ceiling_bounds_how_much_mail_the_product_will_send(
+        self, published_market, apps_coll, no_email, monkeypatch,
+    ):
+        """Domain reputation is one shared resource, so it needs a bound that no number of source
+        IPs can walk around."""
+        monkeypatch.setattr(ApplicantsApi, "REQUEST_KEY_GLOBAL_LIMIT", 3)
+
+        for i in range(3):
+            _r, status = ApplicantsApi.request_applicant_key(
+                "test-market", f"target{i}@example.com", client_ip=f"203.0.113.{i}",
+            )
+            assert status == 200
+
+        result, status = ApplicantsApi.request_applicant_key(
+            "test-market", "one-too-many@example.com", client_ip="198.51.100.4",
+        )
+
+        assert status == 429
+        assert result["error"] == ApplicantsApi.RATE_LIMITED_ERROR
+
+    def test_a_failed_captcha_sends_no_mail_and_creates_no_application(
+        self, published_market, apps_coll, monkeypatch,
+    ):
+        """The same reCAPTCHA gate ``register_user_with_captcha`` puts on the organizer-side signup,
+        because this is the same kind of surface: public, unauthenticated, and it writes."""
+        monkeypatch.setattr(ApplicantsApi, "verify_recaptcha", lambda *_a, **_kw: (False, 0.0))
+        sent = []
+
+        with patch.object(
+            ApplicantsApi, "send_otp_email",
+            side_effect=lambda addr, otp: sent.append(addr) or True,
+        ):
+            result, status = ApplicantsApi.request_applicant_key(
+                "test-market", "bot@example.com", "bad-token", "203.0.113.9",
+            )
+
+        assert status == 400
+        assert result["error"] == ApplicantsApi.CAPTCHA_REQUIRED_ERROR
+        assert sent == []
+        assert apps_coll.documents == []
+
+    def test_the_captcha_is_scored_against_the_caller_ip(self, published_market, apps_coll, no_email):
+        seen = []
+
+        with patch.object(
+            ApplicantsApi, "verify_recaptcha",
+            side_effect=lambda token, ip: seen.append((token, ip)) or (True, 1.0),
+        ):
+            ApplicantsApi.request_applicant_key(
+                "test-market", "vendor@example.com", "tok-123", "203.0.113.9",
+            )
+
+        assert seen == [("tok-123", "203.0.113.9")]
 
 
 class TestVerifyKey:
     """Tests for verify_applicant_key (Stage 2 of the login flow)."""
 
-    def _seeded_app(self, apps_coll, **overrides):
+    def _signed_up(self, apps_coll, login_codes, *, email="vendor@example.com", attempts=0):
+        """An application with a live code, exactly as stage 1 would have left it."""
         otp = generate_otp()
-        kwargs = {
-            "market_id": "market-123",
-            "applicant_email": "vendor@example.com",
-            "form_data": {},
-            "status": ApplicationStatus.OPEN,
-            "otp": otp,
-            "otp_expires": get_otp_expiry(minutes=5),
-            "otp_attempts": 0,
-        }
-        kwargs.update(overrides)
-        app = Application(**kwargs)
+        app = Application(
+            market_id="market-123",
+            applicant_email=email,
+            form_data={},
+            status=ApplicationStatus.OPEN,
+        )
         apps_coll.insert_one(app.model_dump())
+        _seed_challenge(login_codes, email, code=otp, attempts=attempts)
         return app, otp
 
-    def test_returns_token_on_success(self, published_market, apps_coll):
-        app, otp = self._seeded_app(apps_coll)
+    def test_returns_token_on_success(self, published_market, apps_coll, login_codes):
+        _app, otp = self._signed_up(apps_coll, login_codes)
 
         result, status = ApplicantsApi.verify_applicant_key(
             "test-market", "vendor@example.com", otp
@@ -416,8 +594,8 @@ class TestVerifyKey:
         assert "token" in result
         assert result["application"]["applicantEmail"] == "vendor@example.com"
 
-    def test_returns_application_data_in_camel_case(self, published_market, apps_coll):
-        app, otp = self._seeded_app(apps_coll)
+    def test_returns_application_data_in_camel_case(self, published_market, apps_coll, login_codes):
+        _app, otp = self._signed_up(apps_coll, login_codes)
 
         result, status = ApplicantsApi.verify_applicant_key(
             "test-market", "vendor@example.com", otp
@@ -430,8 +608,8 @@ class TestVerifyKey:
         assert "formData" in app_data
         assert "status" in app_data
 
-    def test_rejects_wrong_key(self, published_market, apps_coll):
-        app, otp = self._seeded_app(apps_coll)
+    def test_rejects_wrong_key(self, published_market, apps_coll, login_codes):
+        _app, otp = self._signed_up(apps_coll, login_codes)
         wrong_otp = "000000" if otp != "000000" else "111111"
 
         result, status = ApplicantsApi.verify_applicant_key(
@@ -442,37 +620,42 @@ class TestVerifyKey:
         assert "Incorrect code" in result["error"]
         assert "attempt" in result["error"]
 
-    def test_tracks_failed_attempts(self, published_market, apps_coll):
-        app, otp = self._seeded_app(apps_coll)
+    def test_tracks_failed_attempts(self, published_market, apps_coll, login_codes):
+        _app, otp = self._signed_up(apps_coll, login_codes)
         wrong_otp = "000000" if otp != "000000" else "111111"
 
         ApplicantsApi.verify_applicant_key("test-market", "vendor@example.com", wrong_otp)
-        doc = apps_coll.documents[0]
-        assert doc["otp_attempts"] == 1
 
-    def test_locks_after_max_attempts(self, published_market, apps_coll):
-        app, otp = self._seeded_app(apps_coll, otp_attempts=5)
-        wrong_otp = "000000" if otp != "000000" else "111111"
+        assert _stored_challenge(login_codes, "vendor@example.com")["attempts"] == 1
+
+    def test_locks_after_max_attempts(self, published_market, apps_coll, login_codes):
+        _app, _otp = self._signed_up(apps_coll, login_codes, attempts=MAX_ATTEMPTS)
 
         result, status = ApplicantsApi.verify_applicant_key(
-            "test-market", "vendor@example.com", wrong_otp
+            "test-market", "vendor@example.com", "000000"
         )
 
         assert status == 429
         assert "Too many incorrect attempts" in result["error"]
 
-    def test_rejects_expired_otp(self, published_market, apps_coll):
-        from datetime import datetime, timedelta, timezone
-        otp = generate_otp()
-        app = Application(
-            market_id="market-123",
-            applicant_email="vendor@example.com",
-            form_data={},
-            status=ApplicationStatus.OPEN,
-            otp=otp,
-            otp_expires=(datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(),
+    def test_a_spent_budget_does_not_admit_the_right_code(
+        self, published_market, apps_coll, login_codes,
+    ):
+        _app, otp = self._signed_up(apps_coll, login_codes, attempts=MAX_ATTEMPTS)
+
+        _result, status = ApplicantsApi.verify_applicant_key(
+            "test-market", "vendor@example.com", otp
         )
-        apps_coll.insert_one(app.model_dump())
+
+        assert status == 429
+
+    def test_rejects_expired_otp(self, published_market, apps_coll, login_codes):
+        otp = generate_otp()
+        apps_coll.insert_one(Application(
+            market_id="market-123", applicant_email="vendor@example.com",
+            form_data={}, status=ApplicationStatus.OPEN,
+        ).model_dump())
+        _seed_challenge(login_codes, "vendor@example.com", code=otp, issued_seconds_ago=EXPIRED)
 
         result, status = ApplicantsApi.verify_applicant_key(
             "test-market", "vendor@example.com", otp
@@ -481,69 +664,147 @@ class TestVerifyKey:
         assert status == 401
         assert "expired" in result["error"].lower()
 
-    def test_clears_otp_on_success(self, published_market, apps_coll):
-        app, otp = self._seeded_app(apps_coll)
+    def test_clears_the_challenge_on_success(self, published_market, apps_coll, login_codes):
+        _app, otp = self._signed_up(apps_coll, login_codes)
 
         ApplicantsApi.verify_applicant_key("test-market", "vendor@example.com", otp)
-        doc = apps_coll.documents[0]
-        assert doc["otp"] is None
-        assert doc.get("otp_expires") is None
-        assert doc["otp_attempts"] == 0
+
+        assert _stored_challenge(login_codes, "vendor@example.com") is None
+
+    def test_a_spent_code_cannot_be_replayed(self, published_market, apps_coll, login_codes):
+        _app, otp = self._signed_up(apps_coll, login_codes)
+
+        _first, first_status = ApplicantsApi.verify_applicant_key(
+            "test-market", "vendor@example.com", otp
+        )
+        second, second_status = ApplicantsApi.verify_applicant_key(
+            "test-market", "vendor@example.com", otp
+        )
+
+        assert first_status == 200
+        assert second_status == 401
+        assert second["error"] == ApplicantsApi.NO_PENDING_CODE_ERROR
 
     def test_an_address_that_never_applied_is_answered_as_a_spent_code(
-        self, published_market, apps_coll,
+        self, published_market, apps_coll, login_codes,
     ):
         """The refusal cannot say "no application found for this email": that confirms, to an
-        unauthenticated caller, which addresses are on the market's applicant list - the same leak
-        the request endpoint's generic message exists to prevent, through the other door."""
-        stranger, stranger_status = ApplicantsApi.verify_applicant_key(
+        unauthenticated caller, which addresses are on the market's applicant list."""
+        stranger = ApplicantsApi.verify_applicant_key(
             "test-market", "never-applied@example.com", "123456"
         )
 
-        # An application that exists but has no live code -- the only other way to get here.
-        self._seeded_app(apps_coll, otp=None, otp_expires=None)
-        spent, spent_status = ApplicantsApi.verify_applicant_key(
+        # An application whose code has been used or has expired -- the only other way to get here.
+        apps_coll.insert_one(Application(
+            market_id="market-123", applicant_email="vendor@example.com",
+            form_data={}, status=ApplicationStatus.OPEN,
+        ).model_dump())
+        spent = ApplicantsApi.verify_applicant_key(
             "test-market", "vendor@example.com", "123456"
         )
 
-        assert stranger_status == spent_status == 401
-        assert stranger == spent
+        assert stranger == spent == ({"error": ApplicantsApi.NO_PENDING_CODE_ERROR}, 401)
 
-    def test_separate_market_otps_dont_cross_markets(self, apps_coll, no_email, monkeypatch):
+    def test_a_wrong_code_answers_a_stranger_and_an_applicant_identically(
+        self, apps_coll, login_codes, no_email, monkeypatch,
+    ):
+        """The whole public sequence, in a phase where request-key does *not* create applications --
+        which is where the wrong-code refusal used to be an oracle: "incorrect code, 4 attempts
+        remaining" for an address on the organizer's applicant list, "there is no pending code" for
+        one that is not, straight off a pair of unauthenticated calls."""
+        monkeypatch.setattr(ApplicantsApi, "markets_collection", FakeSlugMarketsCollection([
+            stored_market(phase=MarketPhase.REVIEW, name="Closed Market", id="closed-1")
+        ]))
+        apps_coll.insert_one(Application(
+            market_id="closed-1", applicant_email="applied@example.com",
+            form_data={"business_name": "Acme"}, status=ApplicationStatus.OPEN,
+        ).model_dump())
+
+        def probe(email):
+            ApplicantsApi.request_applicant_key("closed-market", email)
+            return [
+                ApplicantsApi.verify_applicant_key("closed-market", email, "000000")
+                for _ in range(MAX_ATTEMPTS + 1)
+            ]
+
+        assert probe("applied@example.com") == probe("stranger@example.com")
+
+    def test_every_phase_answers_a_stranger_and_an_applicant_identically(
+        self, apps_coll, login_codes, no_email, monkeypatch,
+    ):
+        for phase in (
+            MarketPhase.APPLICATIONS_OPEN,
+            MarketPhase.APPLICATIONS_CLOSED,
+            MarketPhase.REVIEW,
+            MarketPhase.OFFERS,
+            MarketPhase.ARCHIVED,
+        ):
+            apps_coll.documents.clear()
+            login_codes.documents.clear()
+            monkeypatch.setattr(ApplicantsApi, "markets_collection", FakeSlugMarketsCollection([
+                stored_market(phase=phase, name="Some Market", id="m-1")
+            ]))
+            apps_coll.insert_one(Application(
+                market_id="m-1", applicant_email="applied@example.com",
+                form_data={}, status=ApplicationStatus.OPEN,
+            ).model_dump())
+
+            applied_request = ApplicantsApi.request_applicant_key("some-market", "applied@example.com")
+            applied_verify = ApplicantsApi.verify_applicant_key(
+                "some-market", "applied@example.com", "000000",
+            )
+            stranger_request = ApplicantsApi.request_applicant_key("some-market", "stranger@example.com")
+            stranger_verify = ApplicantsApi.verify_applicant_key(
+                "some-market", "stranger@example.com", "000000",
+            )
+
+            assert applied_request == stranger_request, phase
+            assert applied_verify == stranger_verify, phase
+
+    def test_guessing_is_bounded_per_caller(self, published_market, apps_coll, login_codes):
+        """The attempt cap is per code and the cooldown is per address, so neither of them bounds a
+        caller that cycles request + guess against one address for as long as it likes."""
+        self._signed_up(apps_coll, login_codes)
+
+        for _ in range(ApplicantsApi.VERIFY_KEY_IP_LIMIT):
+            ApplicantsApi.verify_applicant_key(
+                "test-market", "vendor@example.com", "000000", "203.0.113.9",
+            )
+
+        result, status = ApplicantsApi.verify_applicant_key(
+            "test-market", "vendor@example.com", "000000", "203.0.113.9",
+        )
+
+        assert status == 429
+        assert result["error"] == ApplicantsApi.RATE_LIMITED_ERROR
+
+    def test_separate_market_otps_dont_cross_markets(self, apps_coll, login_codes, no_email, monkeypatch):
         fake1 = FakeSlugMarketsCollection([
             stored_market(phase=MarketPhase.APPLICATIONS_OPEN, name="Market One", id="mkt-1")
         ])
-        # Set up: market doc in applicants module comes from markets_collection.
-        # We'll just verify cross-market isolation via the find_one filter.
         app1_otp = generate_otp()
-        app1 = Application(
-            market_id="mkt-1",
-            applicant_email="vendor@example.com",
-            form_data={},
-            status=ApplicationStatus.OPEN,
-            otp=app1_otp,
-            otp_expires=get_otp_expiry(),
-        )
         app2_otp = generate_otp()
-        app2 = Application(
-            market_id="mkt-2",
-            applicant_email="vendor@example.com",
-            form_data={},
-            status=ApplicationStatus.OPEN,
-            otp=app2_otp,
-            otp_expires=get_otp_expiry(),
-        )
-        apps_coll.insert_one(app1.model_dump())
-        apps_coll.insert_one(app2.model_dump())
+        for market_id in ("mkt-1", "mkt-2"):
+            apps_coll.insert_one(Application(
+                market_id=market_id,
+                applicant_email="vendor@example.com",
+                form_data={},
+                status=ApplicationStatus.OPEN,
+            ).model_dump())
+        _seed_challenge(login_codes, "vendor@example.com", code=app1_otp, market_id="mkt-1")
+        _seed_challenge(login_codes, "vendor@example.com", code=app2_otp, market_id="mkt-2")
 
-        # With a markets_collection that only has "Market One"
         with patch.object(ApplicantsApi, "markets_collection", fake1):
             result, status = ApplicantsApi.verify_applicant_key(
                 "market-one", "vendor@example.com", app1_otp
             )
+            crossed, crossed_status = ApplicantsApi.verify_applicant_key(
+                "market-one", "vendor@example.com", app2_otp
+            )
 
         assert status == 200
         assert result["application"]["marketId"] == "mkt-1"
+        assert crossed_status == 401
 
     def test_validates_missing_fields(self, apps_coll):
         result, status = ApplicantsApi.verify_applicant_key("", "test@example.com", "123456")
