@@ -73,7 +73,7 @@ def verify_market_key_migration() -> None:
 
 
 def verify_public_endpoint_defenses() -> None:
-    """Refuse to boot in production without the configuration the public endpoints are defended by.
+    """Refuse to boot without the configuration the public endpoints are defended by.
 
     The applicant login endpoints are unauthenticated, they write to the database, and they send
     mail from this domain. What keeps a script off them is a reCAPTCHA secret, and what keeps their
@@ -82,6 +82,13 @@ def verify_public_endpoint_defenses() -> None:
     limits lock out everybody - so, as with the market-key migration above, an unknown state is
     never taken for a safe one: it fails at boot, naming the variable, rather than in production,
     naming nothing.
+
+    This runs for *every* process, not only one that calls itself production. Conditioning it on
+    ``FLASK_ENV`` is what made the whole check dead code: the repo's own image sets
+    ``FLASK_ENV=development`` and nothing overrides it, so the deployments that most needed the
+    check were exactly the ones exempt from it. The escape hatch is opt-in and it is loud - see
+    ``utils.deployment`` - so a development machine can still boot unconfigured while a deployment
+    that forgets cannot.
     """
     try:
         assert_captcha_configured()

@@ -6,6 +6,8 @@ import os
 import logging
 import resend
 
+from utils.deployment import insecure_local_dev
+
 # Set up logging
 logger = logging.getLogger(__name__)
 
@@ -29,10 +31,14 @@ logger.info(f"Email configuration: FROM_EMAIL={FROM_EMAIL}, FRONTEND_URL={FRONTE
 def _email_disabled() -> bool:
     """Return True when email sending is explicitly disabled for testing.
 
-    Only honored in non-production environments. Activated by the
-    DISABLE_EMAIL env var.
+    Honored only by a process that has declared itself a local development one, and activated by the
+    DISABLE_EMAIL env var. It used to be scoped by ``FLASK_ENV != "production"``, which scoped it to
+    nothing: the Dockerfile sets ``FLASK_ENV=development`` and nothing overrides it, so a deployment
+    that inherited ``DISABLE_EMAIL=true`` from a copied env file would silently send no mail at all
+    -- including the applicant's login code, which is the one piece of mail a sign-in cannot happen
+    without. See ``utils.deployment``.
     """
-    if os.getenv("FLASK_ENV", "") == "production":
+    if not insecure_local_dev():
         return False
     return os.getenv("DISABLE_EMAIL", "").lower() in ("true", "1")
 

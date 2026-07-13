@@ -158,8 +158,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Public Applicant Endpoints (Conventioner sharp edge)
 
-- **The back end refuses to boot in production** without `RECAPTCHA_SECRET_KEY` and
-  `TRUSTED_PROXY_HOPS` (`verify_public_endpoint_defenses()` in `back-end/app.py`).
+- **The back end refuses to boot, anywhere, without `RECAPTCHA_SECRET_KEY` and `TRUSTED_PROXY_HOPS`**
+  (`verify_public_endpoint_defenses()` in `back-end/app.py`).
   Both defend `/public/applicant/*`, which is unauthenticated, writes to the database, and sends
   mail from the product's domain, and both silently degrade to nothing when unset: `verify_recaptcha`
   passes every caller with no secret, and a rate limit keyed on `remote_addr` behind a proxy is one
@@ -167,13 +167,42 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   Set `TRUSTED_PROXY_HOPS` to the number of proxies of our own a request passes through
   (0 = Flask exposed directly); ProxyFix then reads exactly that many `X-Forwarded-For` entries from
   the right, which is the part a client cannot forge.
+- **The escape hatch is `ALLOW_INSECURE_LOCAL_DEV`, and it is the only one** (`back-end/utils/deployment.py`).
+  It defaults to off, so the secure state is the one you get by forgetting.
+  Do NOT re-gate any of this on `FLASK_ENV`: that is where the check was, and it made the check dead
+  code, because `back-end/Dockerfile` sets `FLASK_ENV=development` and nothing overrides it - so
+  every deployment built from our own image was exempt from precisely the check that existed for it.
+  A security control must never key on a variable whose default is the insecure value.
+  `docker-compose.yml` sets the hatch (it *is* the dev stack) and logs every defense it turns off;
+  nothing else in the repo sets it.
 - **Nothing these endpoints do may differ between an address that has applied and one that has not**
-  - not the status, not the body, not the attempt counter, and not the time on the clock.
+  - not the status, not the body, not the attempt counter, and not, within the bound below, the time
+  on the clock.
   Who applied is the organizer's private data.
   That is why the login challenge is a collection of its own rather than a field on the application
-  (`_challenge_for` in `back-end/api/applicants.py`), and why the OTP mail is dispatched through
-  `utils/background.py` instead of awaited: a synchronous send happens only for a real applicant, so
-  waiting on it answers, on the clock, the question the response body refuses to answer.
+  (`_challenge_for` in `back-end/api/applicants.py`): a counter that lived on the application would
+  be present for an applicant and absent for a stranger, and every refusal that read it would say so.
+- **The OTP mail is sent synchronously, inside a fixed response-time floor**
+  (`KEY_REQUEST_FLOOR_SECONDS`), not handed to a background thread.
+  The send is a Resend round-trip that happens only for a real applicant, so awaiting it *nakedly*
+  leaks the applicant list on the clock - but deferring it to an in-process thread is worse, because
+  this product documents a serverless target (`SESSION_TYPE=null` "for Vercel serverless") where the
+  context is frozen the moment the response is written and the thread may never run at all.
+  Delivering the code matters more than the side-channel; the floor buys both.
+  Truthful bound: the floor equalizes the two paths as long as the send fits inside it. A send that
+  overran the floor would put its overrun back on the clock, and in `applications_open` a first-time
+  address still costs one extra Mongo insert. Both are small; neither is zero. Do not write "the
+  clock says nothing" without that caveat.
+- **The captcha is the control against scripts here; the rate limits are safety ceilings, not the
+  control.**
+  Applicants share addresses (a hall's wifi is one; carrier CGNAT pools thousands) and a market whose
+  applications open at an announced hour takes hundreds of legitimate sign-ins in minutes - so a
+  per-IP or per-market cap tight enough to bother a distributed attacker throttles exactly that crowd
+  at exactly that moment.
+  There is deliberately **no per-market cap** (the market is what an attacker would aim at, so
+  capping it hands them the outage), and nothing may spend *any* budget before passing the captcha.
+  Refused requests are refunded rather than counted (`back-end/utils/rate_limit.py`), so a shared
+  window cannot be held down by requests that were already turned away.
 
 ## Market Document Keys (Conventioner sharp edge)
 

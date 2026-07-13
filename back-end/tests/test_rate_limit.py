@@ -32,13 +32,28 @@ class TestRateLimit:
             "scope", "1.2.3.4", limit=3, window_seconds=60, now=AT,
         ) is True
 
-    def test_a_refused_request_still_counts(self, rate_limits):
-        """A caller that keeps hammering a spent window stays spent for the rest of it, rather than
-        being let back in by its own refusals not being counted."""
+    def test_a_refused_request_does_not_spend_the_budget_that_refused_it(self, rate_limits):
+        """The stored count is what was *admitted*, and nothing else.
+
+        Every budget on the applicant endpoints is one somebody else is also spending -- the global
+        ceiling by every market's applicants, a per-IP one by everybody behind a convention hall's
+        wifi. If refusals counted, a caller could hold a shared window down for its full length by
+        hammering it after it was already spent, which turns a rate limit into the outage it exists
+        to prevent.
+        """
         _spend(5, now=AT)
 
         doc = rate_limits.documents[0]
-        assert doc["count"] == 5
+        assert doc["count"] == 3
+
+    def test_a_spent_window_stays_spent_for_the_rest_of_its_length(self, rate_limits):
+        """Refunding the refusal must not let the caller back in: the count sits at the limit, and
+        everything that follows is still over it."""
+        _spend(5, now=AT)
+
+        assert RateLimit.rate_limit_exceeded(
+            "scope", "1.2.3.4", limit=3, window_seconds=60, now=AT + timedelta(seconds=30),
+        ) is True
 
     def test_the_budget_is_per_key(self, rate_limits):
         _spend(4, now=AT)

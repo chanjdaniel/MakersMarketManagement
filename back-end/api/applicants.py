@@ -17,11 +17,12 @@ application could only exist where an application does, so every refusal that re
 
 import re
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from pymongo import ReturnDocument
-from pymongo.errors import PyMongoError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from db_config import get_database
 from datatypes import (
@@ -47,7 +48,6 @@ login_codes_collection = db["applicant_login_codes"]
 from utils.tokens import generate_otp
 from utils.email import send_otp_email
 from utils.application_token import generate_application_token, verify_application_token
-from utils.background import run_later
 from utils.captcha import verify_recaptcha
 from utils.rate_limit import rate_limit_exceeded
 
@@ -61,38 +61,54 @@ OTP_EXPIRY_MINUTES = 5
 # email relay anyone can point at anyone.
 KEY_RESEND_COOLDOWN_SECONDS = 60
 
-# What bounds this surface *across* addresses, which the per-address cooldown cannot: it is keyed on
-# the address, so a caller that names a thousand of them is throttled by it a thousand times over,
-# which is to say not at all. Unbounded, that caller sends a thousand pieces of mail from the
-# product's domain and puts a thousand empty applications on the organizer's list -- which also
-# trips the D9 form lock, freezing a form the organizer is still writing. The captcha is what stops
-# a script from being one of those callers; these budgets are what bound the ones that get past it.
+# The captcha is the control against scripts on this surface. The budgets below are not: they are
+# safety ceilings, and they are sized so that reaching one is evidence of something a captcha-solving
+# attacker did, never of a busy afternoon.
 #
-# Each budget is chosen for what it costs when it is *spent*, not only for what it stops. The per-IP
-# one is the primary bound because it is the only one an attacker cannot spend on anyone else's
-# behalf: a caller that exhausts it locks out itself. The per-market one contains the blast radius
-# of a caller with many source addresses to the one market it is aimed at, so a flood against one
-# organizer's market cannot take applicant sign-in off the air for every other market. The global
-# one is a ceiling on how much mail the product will send in an hour, whoever asks for it, because
-# domain reputation is a single shared resource -- and because exhausting it is an outage for
-# everybody, it is set far above any legitimate hour and it is spent only by callers that have
-# already passed the captcha.
+# That distinction is the whole design, and getting it backwards is how a rate limit becomes the
+# outage it was meant to prevent. Applicants *share* addresses -- a convention hall's wifi is one, and
+# carrier CGNAT pools thousands of phones behind one -- and a market whose applications open at an
+# announced hour takes hundreds of legitimate sign-ins in the first minutes of it. A per-IP or
+# per-market budget tight enough to inconvenience a distributed attacker throttles precisely that
+# room full of vendors, at precisely the moment they are all trying to apply, while the attacker
+# simply uses another address. So a per-market budget is not kept at all (the market is the thing an
+# attacker would aim *at*, so capping it hands them the outage), the per-IP budget is set where no
+# shared NAT could plausibly reach it in an hour, and the global one is a ceiling on the mail this
+# product will send in an hour, whoever asks for it, because domain reputation is one shared
+# resource.
 #
-# The budgets are generous on purpose: applicants share IPs (a convention hall's wifi is one
-# address), so a limit tight enough to be interesting to an attacker who has already solved a
-# captcha would lock a room full of vendors out of their own applications.
-REQUEST_KEY_IP_LIMIT = 20
+# What a budget must never do is let a caller spend somebody else's. Two things enforce that: nothing
+# touches a budget until it has passed the captcha, and a refused request is refunded rather than
+# counted (``utils.rate_limit``), so refusals cannot be used to hold a shared window down.
+REQUEST_KEY_IP_LIMIT = 300
 REQUEST_KEY_IP_WINDOW_SECONDS = 3600
-REQUEST_KEY_MARKET_LIMIT = 200
-REQUEST_KEY_MARKET_WINDOW_SECONDS = 3600
-REQUEST_KEY_GLOBAL_LIMIT = 1000
+REQUEST_KEY_GLOBAL_LIMIT = 20000
 REQUEST_KEY_GLOBAL_WINDOW_SECONDS = 3600
 
 # Guessing is bounded per code by ``MAX_OTP_ATTEMPTS`` and per address by the resend cooldown, and
 # this is what bounds it per *caller*: without it a script cycles request + guess + request against
-# one address for as long as it likes.
-VERIFY_KEY_IP_LIMIT = 60
+# one address for as long as it likes. Sized the same way as the request budget above -- a shared
+# address is many applicants, each of whom may mistype a code.
+VERIFY_KEY_IP_LIMIT = 600
 VERIFY_KEY_IP_WINDOW_SECONDS = 3600
+
+# Every answer ``request_applicant_key`` gives takes at least this long, whatever it did to get
+# there. The OTP mail is a network round-trip to Resend that happens for an address on the
+# organizer's applicant list and does not happen for one that is not, so a response that returned as
+# soon as its work was done would answer, on the clock, exactly the question the response body
+# refuses to answer: whether this address has applied.
+#
+# The send is therefore made *inside* a fixed floor rather than handed to a background thread. A
+# thread does hide the send, but only where the process outlives the response, and this product
+# documents a serverless target (``SESSION_TYPE=null`` "for Vercel serverless"), where the execution
+# context is frozen the moment the response is written and the send may simply never happen. An
+# applicant who is told a code is on its way and never receives one is a worse failure than the
+# side-channel, and the floor closes the side-channel without trading the code away for it.
+#
+# It is set above a Resend round-trip, so the send fits inside it and the two paths are the same
+# length. A send that overran the floor would put its overrun back on the clock; that is the residual
+# and it is bounded by how far Resend can be from its usual few hundred milliseconds.
+KEY_REQUEST_FLOOR_SECONDS = 1.5
 
 RATE_LIMITED_ERROR = (
     "Too many requests from this location. Please wait a few minutes and try again."
@@ -324,22 +340,38 @@ def _issue_challenge(market_id: str, email: str, code: Optional[str]) -> None:
     written, and it still counts attempts, so that a caller cannot tell the two apart: no string a
     caller submits equals ``None``, so such a challenge simply refuses every guess, exactly as a
     real one refuses a wrong guess.
+
+    The upsert is retried once because it can lose a race with itself. Two concurrent requests for
+    the same address both find no document, both take the insert branch, and the unique index -
+    which is there precisely so that only one of them wins - refuses the loser with a
+    ``DuplicateKeyError``. Unhandled, that is a 500 on a public endpoint that a caller can produce
+    on purpose. The retry finds the document the winner wrote and takes the update branch, and if
+    even that loses, a live challenge for this address exists either way, which is all this function
+    promised.
     """
     _ensure_login_code_indexes()
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(minutes=OTP_EXPIRY_MINUTES)
-    login_codes_collection.update_one(
-        {"market_id": market_id, "email": email},
-        {"$set": {
-            "market_id": market_id,
-            "email": email,
-            "code": code,
-            "attempts": 0,
-            "issued_at": now,
-            "expires_at": expires_at,
-            "purge_at": expires_at,
-        }},
-        upsert=True,
+    for _attempt in range(2):
+        try:
+            login_codes_collection.update_one(
+                {"market_id": market_id, "email": email},
+                {"$set": {
+                    "market_id": market_id,
+                    "email": email,
+                    "code": code,
+                    "attempts": 0,
+                    "issued_at": now,
+                    "expires_at": expires_at,
+                    "purge_at": expires_at,
+                }},
+                upsert=True,
+            )
+            return
+        except DuplicateKeyError:
+            continue
+    logger.warning(
+        "A concurrent request issued the login challenge for this address first; leaving it alone.",
     )
 
 
@@ -615,31 +647,26 @@ def request_applicant_key(
     application page reads it from ``get_public_application_form`` and says so on screen); *which
     addresses are on its applicant list* is not, and only this endpoint knows that.
 
-    The bounds on the surface come in layers, and each one answers something the others cannot. The
-    captcha keeps a script from being a caller at all - it is the same reCAPTCHA gate
-    ``register_user_with_captcha`` puts on the organizer-side signup, because this is the same kind
-    of surface. The budgets bound what a caller that got past it can spend, across *all* addresses:
-    the resend cooldown below is keyed on one address, so it does nothing about a caller that names a
-    thousand of them, and a thousand of them is a thousand pieces of mail from the product's domain
-    and a thousand empty applications on the organizer's list. And the resend cooldown holds the mail
-    to one message per address per minute.
-
-    The order of those checks is itself a control. The per-IP budget is counted first because it is
-    the one a caller can only spend on *itself*; the per-market and global budgets are shared, and a
-    shared budget spent by a caller that never solved a captcha is an outage anyone can buy - so
-    nothing that has not passed the captcha may touch them. That is also why the captcha is verified
-    before the market is even looked up: no request that fails it reaches anything else.
+    What bounds the surface is the captcha - the same reCAPTCHA gate ``register_user_with_captcha``
+    puts on the organizer-side signup, because this is the same kind of surface. It is verified
+    before anything else happens, before the market is even looked up, and before any budget is
+    counted: a caller that has not passed it must not be able to spend a budget that other people
+    share, because a shared budget spent by a script is an outage anyone can buy. Behind the captcha
+    sit the resend cooldown, which holds the mail to one message per address per minute, and the
+    safety ceilings described above, which are sized so that no room full of vendors can reach them.
 
     The cooldown is the one refusal that answers with the accepted message rather than a 429,
     because it is the only one keyed on the *address*: only an address with a live code can be
     cooled down, so a distinguishable refusal there is the applicant-list oracle again, through a
-    side door. The captcha and rate-limit refusals are keyed on the caller or on the market, know
-    nothing about the address, and so can say plainly what is wrong.
+    side door. The captcha and rate-limit refusals are keyed on the caller, know nothing about the
+    address, and so can say plainly what is wrong.
 
-    The mail is sent off the request path for the same reason the refusals are worded alike: it is a
-    network round-trip that happens for an address on the applicant list and not for one that is
-    not, so waiting on it inline would answer, on the clock, precisely the question the body refuses
-    to answer. See ``utils.background``.
+    The mail is sent inside a fixed floor on the response time, for the same reason the refusals are
+    worded alike: it is a network round-trip that happens for an address on the applicant list and
+    not for one that is not, so a response that came back as soon as its work was done would answer,
+    on the clock, precisely the question the body refuses to answer. See
+    ``KEY_REQUEST_FLOOR_SECONDS`` - and note that the send is *awaited*, not deferred to a thread
+    that a serverless host would freeze before it ever ran.
 
     Args:
         market_slug: The URL-safe slug of the market.
@@ -652,6 +679,8 @@ def request_applicant_key(
 
     Anti-F6: refusal messages name the exact problem.
     """
+    started = time.monotonic()
+
     if not market_slug or not market_slug.strip():
         return {"error": "Market identifier is required."}, 400
 
@@ -659,29 +688,15 @@ def request_applicant_key(
     if refusal:
         return refusal
 
+    captcha_ok, _score = verify_recaptcha(captcha_token, client_ip)
+    if not captcha_ok:
+        return {"error": CAPTCHA_REQUIRED_ERROR}, 400
+
     if rate_limit_exceeded(
         "applicant_request_key_ip",
         client_ip or "unknown",
         limit=REQUEST_KEY_IP_LIMIT,
         window_seconds=REQUEST_KEY_IP_WINDOW_SECONDS,
-    ):
-        return {"error": RATE_LIMITED_ERROR}, 429
-
-    captcha_ok, _score = verify_recaptcha(captcha_token, client_ip)
-    if not captcha_ok:
-        return {"error": CAPTCHA_REQUIRED_ERROR}, 400
-
-    market_doc = _get_market_doc_by_slug(market_slug)
-    if not market_doc:
-        return {"error": "Market not found. Check the URL and try again."}, 404
-
-    market_id = market_doc.get("id", "")
-
-    if rate_limit_exceeded(
-        "applicant_request_key_market",
-        market_id,
-        limit=REQUEST_KEY_MARKET_LIMIT,
-        window_seconds=REQUEST_KEY_MARKET_WINDOW_SECONDS,
     ):
         return {"error": RATE_LIMITED_ERROR}, 429
 
@@ -693,6 +708,11 @@ def request_applicant_key(
     ):
         return {"error": RATE_LIMITED_ERROR}, 429
 
+    market_doc = _get_market_doc_by_slug(market_slug)
+    if not market_doc:
+        return {"error": "Market not found. Check the URL and try again."}, 404
+
+    market_id = market_doc.get("id", "")
     phase = _get_market_phase(market_doc)
 
     app = _find_application(market_id, email)
@@ -705,7 +725,7 @@ def request_applicant_key(
         if issued_at is not None and datetime.now(timezone.utc) - issued_at < timedelta(
             seconds=KEY_RESEND_COOLDOWN_SECONDS
         ):
-            return {"message": KEY_REQUEST_ACCEPTED_MESSAGE}, 200
+            return _accepted_after_floor(started)
 
     # A stranger's challenge holds no code, so no guess can ever match it, and no mail is sent for
     # it. It is still written, and it still counts attempts, because the challenge is the only thing
@@ -715,8 +735,38 @@ def request_applicant_key(
     _issue_challenge(market_id, email, otp)
 
     if otp:
-        run_later(send_otp_email, email, otp)
+        _send_otp(email, otp)
 
+    return _accepted_after_floor(started)
+
+
+def _send_otp(email: str, otp: str) -> None:
+    """Mail the code, and let nothing about how that went reach the caller.
+
+    A send that failed is worth an operator's attention and is none of the caller's business: it can
+    only fail for an address there was an application to mail a code to, so a response that reported
+    it would name that address as an applicant to anyone who cared to ask. The applicant is left to
+    ask for another code, which is what the accepted message already tells them to do if one does not
+    arrive.
+    """
+    try:
+        if not send_otp_email(email, otp):
+            logger.error("The applicant verification code could not be sent to %s", email)
+    except Exception:
+        logger.exception("The applicant verification code could not be sent to %s", email)
+
+
+def _accepted_after_floor(started: float) -> Tuple[Dict[str, Any], int]:
+    """The one answer request-key gives, held back until the floor has passed.
+
+    An address with an application costs a round-trip to Resend; one without costs nothing. Returned
+    the moment its work is done, the response tells those two apart on the clock, and the applicant
+    list is the thing this endpoint exists not to tell anybody. Waiting out the difference is what
+    makes the fast path cost what the slow one does. See ``KEY_REQUEST_FLOOR_SECONDS``.
+    """
+    remaining = KEY_REQUEST_FLOOR_SECONDS - (time.monotonic() - started)
+    if remaining > 0:
+        time.sleep(remaining)
     return {"message": KEY_REQUEST_ACCEPTED_MESSAGE}, 200
 
 

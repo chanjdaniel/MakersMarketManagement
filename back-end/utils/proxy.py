@@ -13,14 +13,22 @@ so it has to say: ``TRUSTED_PROXY_HOPS`` is the number of proxies of its own tha
 through, and ProxyFix reads exactly that many entries from the right-hand end of the header -- the
 end the trusted proxies appended, which is the part a client cannot forge.
 
-Unset in production is not "zero", it is "unknown", and an unknown value here silently produces one
-of the two failures above. So it fails closed, at boot, naming the variable: 0 is a legitimate value
-and an operator who means it can say so.
+Unset is not "zero", it is "unknown", and an unknown value here silently produces one of the two
+failures above. So it fails closed, at boot, naming the variable: 0 is a legitimate value and an
+operator who means it can say so. The only process exempt from saying so is one that has explicitly
+declared itself a local development one -- see ``utils.deployment`` for why that, and not
+``FLASK_ENV``, is the escape hatch.
 """
 
 import os
 
 from werkzeug.middleware.proxy_fix import ProxyFix
+
+from utils.deployment import (
+    INSECURE_LOCAL_DEV_VAR,
+    insecure_local_dev,
+    warn_insecure_local_dev,
+)
 
 TRUSTED_PROXY_HOPS_VAR = "TRUSTED_PROXY_HOPS"
 
@@ -29,28 +37,28 @@ class TrustedProxyConfigError(RuntimeError):
     """The deployment has not said how many proxies of its own a request passes through."""
 
 
-def _is_production() -> bool:
-    return os.getenv("FLASK_ENV", "") == "production"
-
-
 def trusted_proxy_hops() -> int:
     """How many proxies in front of this app are the deployment's own, and therefore trustworthy.
 
     Raises:
-        TrustedProxyConfigError: in production when the value is missing or is not a count.
+        TrustedProxyConfigError: when the value is missing on anything but an opted-in local
+            development process, or when it is set to something that is not a hop count.
     """
     raw = os.getenv(TRUSTED_PROXY_HOPS_VAR, "").strip()
 
     if not raw:
-        if _is_production():
+        if not insecure_local_dev():
             raise TrustedProxyConfigError(
                 f"{TRUSTED_PROXY_HOPS_VAR} is not set. It is the number of proxies of this "
                 f"deployment's own that a request passes through before it reaches Flask "
                 f"(a reverse proxy, load balancer, or serverless ingress each count as one). "
                 f"Without it the public applicant endpoints key their rate limits on the proxy's "
                 f"address rather than the caller's, which locks out every real applicant while "
-                f"bounding an attacker not at all. Set it to 0 only if Flask is exposed directly."
+                f"bounding an attacker not at all. Set it to 0 only if Flask is exposed directly, "
+                f"or set {INSECURE_LOCAL_DEV_VAR}=true if this really is a local development "
+                f"machine."
             )
+        warn_insecure_local_dev(f"the trusted-proxy hop count ({TRUSTED_PROXY_HOPS_VAR})")
         return 0
 
     try:

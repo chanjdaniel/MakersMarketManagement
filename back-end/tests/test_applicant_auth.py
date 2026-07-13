@@ -3,9 +3,12 @@
 The login endpoints are public, unauthenticated, and they send mail to whatever address they are
 handed, so most of what is pinned here is what they *refuse* and what they refuse to *say*.
 """
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from pymongo.errors import DuplicateKeyError
 from unittest.mock import patch
 
 from conftest import (
@@ -356,9 +359,11 @@ class TestRequestKey:
 class TestKeyRequestThrottle:
     """The bounds on a public, unauthenticated endpoint that mails whatever address it is handed.
 
-    Three layers, each answering what the others cannot: a captcha, so a script is not a caller at
-    all; per-IP and global budgets, which bound a caller *across* addresses; and a per-address
-    resend cooldown, which bounds the mail one applicant can be sent.
+    The captcha is the control: it is what keeps a script from being a caller at all. Behind it sit
+    a per-address resend cooldown, which bounds the mail one applicant can be sent, and safety
+    ceilings sized so that reaching one is evidence of abuse rather than of a busy afternoon --
+    because applicants share addresses, and a market that opens at an announced hour takes hundreds
+    of legitimate sign-ins in the first minutes of it.
     """
 
     def _sent(self, market_slug, email, **kwargs):
@@ -480,28 +485,30 @@ class TestKeyRequestThrottle:
         assert _stored_challenge(login_codes, "new@example.com")["code"] == sent[0][1]
 
     def test_one_caller_cannot_mail_an_unbounded_number_of_addresses(
-        self, published_market, apps_coll, no_email,
+        self, published_market, apps_coll, no_email, monkeypatch,
     ):
         """The cooldown is keyed on the address, so it bounds nothing about a caller that names a
         thousand of them: a thousand pieces of mail from the product's domain, and a thousand empty
         applications on the organizer's list -- which also trips the D9 form lock."""
-        limit = ApplicantsApi.REQUEST_KEY_IP_LIMIT
-        for i in range(limit):
+        monkeypatch.setattr(ApplicantsApi, "REQUEST_KEY_IP_LIMIT", 3)
+
+        for i in range(3):
             _result, status = ApplicantsApi.request_applicant_key(
                 "test-market", f"target{i}@example.com", client_ip="203.0.113.9",
             )
             assert status == 200, f"request {i} should be within the budget"
 
         result, status = ApplicantsApi.request_applicant_key(
-            "test-market", f"target{limit}@example.com", client_ip="203.0.113.9",
+            "test-market", "target3@example.com", client_ip="203.0.113.9",
         )
 
         assert status == 429
         assert result["error"] == ApplicantsApi.RATE_LIMITED_ERROR
-        assert len(apps_coll.documents) == limit
+        assert len(apps_coll.documents) == 3
 
-    def test_the_per_ip_budget_is_per_ip(self, published_market, apps_coll, no_email):
-        for i in range(ApplicantsApi.REQUEST_KEY_IP_LIMIT):
+    def test_the_per_ip_budget_is_per_ip(self, published_market, apps_coll, no_email, monkeypatch):
+        monkeypatch.setattr(ApplicantsApi, "REQUEST_KEY_IP_LIMIT", 3)
+        for i in range(3):
             ApplicantsApi.request_applicant_key(
                 "test-market", f"target{i}@example.com", client_ip="203.0.113.9",
             )
@@ -511,6 +518,26 @@ class TestKeyRequestThrottle:
         )
 
         assert status == 200
+
+    def test_a_convention_opening_does_not_rate_limit_its_own_applicants(
+        self, published_market, apps_coll, no_email,
+    ):
+        """The bound that is not kept, and why.
+
+        A market's applications open at an announced hour and hundreds of vendors sign in within
+        minutes of it -- from a hall's shared wifi, or from phones behind one carrier NAT, so the
+        crowd is a handful of addresses rather than hundreds. A per-market cap, or a per-IP cap set
+        anywhere near a plausible peak, throttles exactly that crowd at exactly that moment while an
+        attacker with a proxy list walks around it. Both budgets are therefore sized so a real
+        opening cannot reach them, and the captcha is what actually keeps scripts off the endpoint.
+        """
+        for i in range(250):
+            _r, status = ApplicantsApi.request_applicant_key(
+                "test-market", f"vendor{i}@example.com", client_ip="203.0.113.9",
+            )
+            assert status == 200, f"applicant {i} of a normal opening must not be refused"
+
+        assert len(apps_coll.documents) == 250
 
     def test_a_global_ceiling_bounds_how_much_mail_the_product_will_send(
         self, published_market, apps_coll, no_email, monkeypatch,
@@ -566,91 +593,201 @@ class TestKeyRequestThrottle:
 
         assert seen == [("tok-123", "203.0.113.9")]
 
-    def test_a_caller_that_fails_the_captcha_cannot_spend_the_shared_budget(
+    def test_a_caller_that_fails_the_captcha_cannot_spend_any_budget(
         self, published_market, apps_coll, no_email, monkeypatch,
     ):
-        """The global budget is shared, so spending it is an outage for every market's applicants.
+        """No budget may be spent by a caller that has not passed the captcha -- the per-IP one too.
 
-        Counted before the captcha, it is an outage anyone can buy: a garbage token is refused, but
-        it is refused *after* being counted, so a script that never solves a captcha keeps the
-        ceiling exhausted and every legitimate applicant gets a 429. Only a caller the captcha let
-        through may touch a budget it can spend on somebody else's behalf.
+        Every budget here is one somebody else is also spending: the global ceiling is shared by
+        every market's applicants, and a per-IP budget is shared by everyone behind a convention
+        hall's wifi or a carrier's NAT. Counted before the captcha, each of them is an outage anyone
+        can buy with a garbage token: the request is refused, but only *after* being counted, so a
+        script that never solves a captcha holds the window down and the real applicants behind that
+        address get a 429.
         """
         monkeypatch.setattr(ApplicantsApi, "REQUEST_KEY_GLOBAL_LIMIT", 3)
+        monkeypatch.setattr(ApplicantsApi, "REQUEST_KEY_IP_LIMIT", 3)
         monkeypatch.setattr(ApplicantsApi, "verify_recaptcha", lambda *_a, **_kw: (False, 0.0))
 
         for i in range(10):
             _result, status = ApplicantsApi.request_applicant_key(
-                "test-market", f"bot{i}@example.com", "bad-token", f"203.0.113.{i}",
+                "test-market", f"bot{i}@example.com", "bad-token", "203.0.113.9",
             )
             assert status == 400
 
         monkeypatch.setattr(ApplicantsApi, "verify_recaptcha", lambda *_a, **_kw: (True, 1.0))
-        _result, status = ApplicantsApi.request_applicant_key(
-            "test-market", "applicant@example.com", "good-token", "198.51.100.4",
+        _result, from_the_same_address = ApplicantsApi.request_applicant_key(
+            "test-market", "applicant@example.com", "good-token", "203.0.113.9",
+        )
+        _result, from_elsewhere = ApplicantsApi.request_applicant_key(
+            "test-market", "other@example.com", "good-token", "198.51.100.4",
         )
 
-        assert status == 200, "a refused request must not have spent the ceiling"
+        assert from_the_same_address == 200, "a refused request must not have spent the IP budget"
+        assert from_elsewhere == 200, "a refused request must not have spent the shared ceiling"
 
-    def test_a_flood_against_one_market_does_not_take_every_market_off_the_air(
-        self, apps_coll, no_email, monkeypatch,
+    def test_a_refused_request_does_not_spend_the_budget_that_refused_it(
+        self, published_market, apps_coll, no_email, monkeypatch,
     ):
-        """The per-market bound is what contains the blast radius of a caller with many addresses:
-        one organizer's market can be flooded without applicant sign-in stopping everywhere else."""
-        monkeypatch.setattr(ApplicantsApi, "REQUEST_KEY_MARKET_LIMIT", 3)
-        monkeypatch.setattr(ApplicantsApi, "markets_collection", FakeSlugMarketsCollection([
-            stored_market(phase=MarketPhase.APPLICATIONS_OPEN, name="Target Market", id="target-1"),
-            stored_market(phase=MarketPhase.APPLICATIONS_OPEN, name="Other Market", id="other-1"),
-        ]))
+        """A budget refusal must not itself deepen the hole: the window stays spent for its length,
+        but a caller cannot drive a shared count further down by hammering a spent one."""
+        monkeypatch.setattr(ApplicantsApi, "REQUEST_KEY_IP_LIMIT", 2)
 
-        for i in range(3):
-            _r, status = ApplicantsApi.request_applicant_key(
-                "target-market", f"target{i}@example.com", client_ip=f"203.0.113.{i}",
+        for i in range(2):
+            ApplicantsApi.request_applicant_key(
+                "test-market", f"vendor{i}@example.com", client_ip="203.0.113.9",
             )
-            assert status == 200
+        for i in range(10):
+            _r, status = ApplicantsApi.request_applicant_key(
+                "test-market", f"bot{i}@example.com", client_ip="203.0.113.9",
+            )
+            assert status == 429
 
-        result, flooded = ApplicantsApi.request_applicant_key(
-            "target-market", "one-too-many@example.com", client_ip="203.0.113.9",
+        monkeypatch.setattr(ApplicantsApi, "REQUEST_KEY_IP_LIMIT", 3)
+        _r, status = ApplicantsApi.request_applicant_key(
+            "test-market", "late@example.com", client_ip="203.0.113.9",
         )
-        _r, elsewhere = ApplicantsApi.request_applicant_key(
-            "other-market", "vendor@example.com", client_ip="203.0.113.9",
-        )
 
-        assert flooded == 429
-        assert result["error"] == ApplicantsApi.RATE_LIMITED_ERROR
-        assert elsewhere == 200, "another market's applicants must still be able to sign in"
+        assert status == 200, "the window held 2 admitted requests, not 12"
 
-    def test_the_mail_send_is_not_on_the_request_path(self, published_market, apps_coll, monkeypatch):
-        """The enumeration guard is closed in the body but it also has to hold on the clock.
 
-        ``send_otp_email`` is a network round-trip to Resend, and it happens only for an address an
-        application exists for. Awaited inline, the response for an address on the organizer's
-        applicant list takes hundreds of milliseconds longer than the response for one that is not,
-        which answers - to the same unauthenticated caller the identical wording exists to defeat -
-        exactly the question the body refuses to.
+class TestTheClockSaysNothingTheBodyDoesNot:
+    """The enumeration guard is closed in the body, and it also has to hold on the clock.
+
+    ``send_otp_email`` is a network round-trip to Resend, and it happens only for an address an
+    application exists for. Returned as soon as its work is done, the response for an address on the
+    organizer's applicant list takes hundreds of milliseconds longer than the response for one that
+    is not, which answers - to the same unauthenticated caller the identical wording exists to defeat
+    - exactly the question the body refuses to.
+
+    The send is *awaited*, inside a floor on the response time. Handing it to a background thread
+    also hides it, but only where the process outlives the response, and this product documents a
+    serverless target: there the context is frozen the moment the response is written and the mail
+    may never be sent at all. An applicant who is promised a code and never gets one is the worse
+    failure of the two, and the floor closes the side-channel without risking it.
+    """
+
+    FLOOR = 0.25
+
+    def _elapsed(self, market_slug, email):
+        started = time.monotonic()
+        _result, status = ApplicantsApi.request_applicant_key(market_slug, email)
+        return time.monotonic() - started, status
+
+    def test_the_mail_is_sent_on_the_request_thread_not_handed_to_one_that_may_never_run(
+        self, published_market, apps_coll,
+    ):
+        """The send has to have *happened* by the time the response is written.
+
+        Handing it to a background thread is what a serverless host breaks: the execution context is
+        frozen the moment the response goes out, so the thread may never be scheduled and the
+        applicant is promised a code that was never sent. Asserting only that the mail eventually
+        arrives would not catch that - an unjoined thread usually wins that race in a test - so what
+        is pinned is the thing a freeze cannot survive: the send runs on the thread that is answering
+        the request, before it answers.
         """
-        deferred = []
-        monkeypatch.setattr(
-            ApplicantsApi, "run_later",
-            lambda fn, *args, **kwargs: deferred.append((fn, args)),
-        )
         sent = []
 
         with patch.object(
             ApplicantsApi, "send_otp_email",
-            side_effect=lambda addr, otp: sent.append(addr) or True,
+            side_effect=lambda addr, otp: sent.append((addr, threading.get_ident())) or True,
         ):
             _result, status = ApplicantsApi.request_applicant_key(
                 "test-market", "vendor@example.com",
             )
 
         assert status == 200
-        assert sent == [], "the caller must not wait on the send"
-        assert len(deferred) == 1, "the send is handed off, not skipped"
-        deferred_fn, deferred_args = deferred[0]
-        assert deferred_args[0] == "vendor@example.com"
-        deferred_fn(*deferred_args)
-        assert sent == ["vendor@example.com"], "and the hand-off is what actually sends it"
+        assert sent == [("vendor@example.com", threading.get_ident())]
+
+    def test_a_send_that_fails_is_logged_and_never_named_to_the_caller(
+        self, published_market, apps_coll, caplog,
+    ):
+        """Resend being down is the operator's problem, and it must not become the caller's answer:
+        a send can only fail for an address there was an application to mail a code to, so a
+        response that reported it would name that address as an applicant to anyone who asked."""
+        with patch.object(
+            ApplicantsApi, "send_otp_email", side_effect=RuntimeError("resend is down"),
+        ):
+            result, status = ApplicantsApi.request_applicant_key(
+                "test-market", "vendor@example.com",
+            )
+
+        assert status == 200
+        assert result == {"message": ApplicantsApi.KEY_REQUEST_ACCEPTED_MESSAGE}
+        assert "vendor@example.com" in caplog.text, "the operator has to be able to see it"
+
+    def test_an_applicant_and_a_stranger_are_answered_at_the_same_speed(
+        self, apps_coll, no_email, login_codes, monkeypatch,
+    ):
+        """The market takes no new applications, so only the applicant's request sends mail. That
+        send is the signal, and the floor is what buries it."""
+        monkeypatch.setattr(ApplicantsApi, "KEY_REQUEST_FLOOR_SECONDS", self.FLOOR)
+        monkeypatch.setattr(ApplicantsApi, "markets_collection", FakeSlugMarketsCollection([
+            stored_market(phase=MarketPhase.APPLICATIONS_CLOSED, name="Closed Market", id="closed-1")
+        ]))
+        apps_coll.insert_one(Application(
+            market_id="closed-1", applicant_email="vendor@example.com",
+            form_data={}, status=ApplicationStatus.OPEN,
+        ).model_dump())
+        # A send is a network round-trip; the floor exists to be longer than one.
+        monkeypatch.setattr(
+            ApplicantsApi, "send_otp_email",
+            lambda _addr, _otp: time.sleep(self.FLOOR / 2) or True,
+        )
+
+        applicant, applicant_status = self._elapsed("closed-market", "vendor@example.com")
+        stranger, stranger_status = self._elapsed("closed-market", "stranger@example.com")
+
+        assert applicant_status == stranger_status == 200
+        assert applicant >= self.FLOOR
+        assert stranger >= self.FLOOR
+
+    def test_a_refusal_is_not_held_back(self, published_market, apps_coll, no_email, monkeypatch):
+        """The floor is for the answers that could betray the applicant list. A refusal keyed on the
+        caller -- a bad captcha -- knows nothing about the address, so it costs nobody the wait."""
+        monkeypatch.setattr(ApplicantsApi, "KEY_REQUEST_FLOOR_SECONDS", 5)
+        monkeypatch.setattr(ApplicantsApi, "verify_recaptcha", lambda *_a, **_kw: (False, 0.0))
+
+        started = time.monotonic()
+        _result, status = ApplicantsApi.request_applicant_key(
+            "test-market", "bot@example.com", "bad-token", "203.0.113.9",
+        )
+
+        assert status == 400
+        assert time.monotonic() - started < 1
+
+
+class TestIssuingAChallengeConcurrently:
+    """The unique index on (market, email) is what stops one address holding two live codes, and
+    two attempt budgets with it. Its failure mode is a ``DuplicateKeyError`` on the insert branch --
+    which two concurrent requests for the same address can both take -- and unhandled that is a 500
+    on a public endpoint, reachable on purpose by anyone willing to race it."""
+
+    class _RacedCollection(FakeKeyedCollection):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        def update_one(self, query, update, upsert=False):
+            self.attempts += 1
+            if self.attempts == 1:
+                # The concurrent request won the insert; the index refuses this one.
+                super().update_one(query, update, upsert=upsert)
+                raise DuplicateKeyError("market_email_unique")
+            return super().update_one(query, update, upsert=upsert)
+
+    def test_a_lost_insert_race_is_retried_not_returned_as_a_500(
+        self, published_market, apps_coll, no_email, monkeypatch,
+    ):
+        raced = self._RacedCollection()
+        monkeypatch.setattr(ApplicantsApi, "login_codes_collection", raced)
+
+        result, status = ApplicantsApi.request_applicant_key("test-market", "vendor@example.com")
+
+        assert status == 200
+        assert result == {"message": ApplicantsApi.KEY_REQUEST_ACCEPTED_MESSAGE}
+        assert raced.attempts == 2, "the retry is what takes the update branch"
+        assert _stored_challenge(raced, "vendor@example.com") is not None
 
 
 class TestVerifyKey:
@@ -890,12 +1027,15 @@ class TestVerifyKey:
 
         assert status == 429
 
-    def test_guessing_is_bounded_per_caller(self, published_market, apps_coll, login_codes):
+    def test_guessing_is_bounded_per_caller(
+        self, published_market, apps_coll, login_codes, monkeypatch,
+    ):
         """The attempt cap is per code and the cooldown is per address, so neither of them bounds a
         caller that cycles request + guess against one address for as long as it likes."""
+        monkeypatch.setattr(ApplicantsApi, "VERIFY_KEY_IP_LIMIT", 5)
         self._signed_up(apps_coll, login_codes)
 
-        for _ in range(ApplicantsApi.VERIFY_KEY_IP_LIMIT):
+        for _ in range(5):
             ApplicantsApi.verify_applicant_key(
                 "test-market", "vendor@example.com", "000000", "203.0.113.9",
             )

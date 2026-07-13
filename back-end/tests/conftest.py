@@ -41,6 +41,12 @@ UNREACHABLE_MONGODB_URI = "mongodb://127.0.0.1:1/?serverSelectionTimeoutMS=100"
 if not any(os.getenv(key) for key in MONGO_ENV_KEYS):
     os.environ["MONGODB_URI"] = UNREACHABLE_MONGODB_URI
 
+# app.py refuses to boot without a reCAPTCHA secret and a trusted-proxy hop count, because the
+# public applicant endpoints silently lose both of their defenses when those are unset. The suite has
+# neither and needs neither, so it says what it is -- which is the same thing a developer's machine
+# has to say, and the only thing that lets either of them boot without them.
+os.environ.setdefault("ALLOW_INSECURE_LOCAL_DEV", "true")
+
 
 def _needs_stub(module_name: str) -> bool:
     """True when module_name is neither already imported nor installed."""
@@ -105,6 +111,9 @@ if _needs_stub("pymongo"):
     class _FakePyMongoError(Exception):
         pass
 
+    class _FakeDuplicateKeyError(_FakePyMongoError):
+        pass
+
     fake_pymongo.MongoClient = _FakeMongoClient
     fake_pymongo.results = fake_pymongo_results
     fake_pymongo.errors = fake_pymongo_errors
@@ -112,6 +121,7 @@ if _needs_stub("pymongo"):
     # these, so the stub has to as well or the suite cannot even be collected without pymongo.
     fake_pymongo.ReturnDocument = SimpleNamespace(BEFORE=False, AFTER=True)
     fake_pymongo_errors.PyMongoError = _FakePyMongoError
+    fake_pymongo_errors.DuplicateKeyError = _FakeDuplicateKeyError
     fake_pymongo_results.InsertOneResult = object
     fake_pymongo_results.UpdateResult = object
     fake_pymongo_results.DeleteResult = object
@@ -379,20 +389,18 @@ def login_codes(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def inline_background(monkeypatch):
-    """Run deferred work inline, so a test can assert on what a request handed off.
+def no_request_key_floor(monkeypatch):
+    """Take the constant-time floor off request-key, so the suite does not sleep through it.
 
-    In production the OTP mail is sent off the request path, because waiting on it inline tells a
-    caller with a stopwatch whether the address is on the organizer's applicant list. Here it runs
-    where the call site is, so the assertion is against the request that caused it rather than
-    against a thread that may not have got to it yet. The tests that pin the hand-off *itself* --
-    that the send is deferred rather than awaited -- patch ``run_later`` themselves.
+    In production every answer request-key gives is held back to a fixed floor, so that the OTP send
+    -- which happens for an address on the organizer's applicant list and not for one that is not --
+    cannot be read off the clock. Waiting it out here would cost the suite the floor times every test
+    that requests a key, and prove nothing that the one test that *does* pin the floor
+    (``TestTheClockSaysNothingTheBodyDoesNot``) does not prove by setting its own.
     """
     import api.applicants as ApplicantsApi
 
-    monkeypatch.setattr(
-        ApplicantsApi, "run_later", lambda fn, *args, **kwargs: fn(*args, **kwargs),
-    )
+    monkeypatch.setattr(ApplicantsApi, "KEY_REQUEST_FLOOR_SECONDS", 0)
 
 
 @pytest.fixture(autouse=True)

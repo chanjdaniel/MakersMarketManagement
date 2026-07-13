@@ -54,9 +54,12 @@ def rate_limit_exceeded(
 ) -> bool:
     """Count one request against ``(scope, key)`` and report whether it is over the limit.
 
-    The count is incremented even when the answer is "over", so a caller that keeps hammering a
-    spent window stays spent for the rest of it rather than being let back in by the refusals not
-    counting.
+    A refused request does not spend the budget it was refused by: the increment that took the count
+    past the limit is given back, so the stored count is the number of requests that were *admitted*
+    and nothing else. The window still stays spent for the rest of its length - a count sitting at
+    the limit refuses everything that follows - but a budget the caller shares with other people
+    (the global ceiling, and a per-IP budget behind a NAT that a whole convention hall is on) cannot
+    be driven further into the ground by requests that were already turned away.
 
     A database error is not a licence to skip the limit quietly, but it is also not a reason to
     refuse a request the limiter cannot prove is abusive -- Mongo being unreachable fails every
@@ -75,11 +78,12 @@ def rate_limit_exceeded(
     """
     moment = now or datetime.now(timezone.utc)
     window_start = int(moment.timestamp()) // window_seconds * window_seconds
+    window_id = f"{scope}:{key}:{window_start}"
     _ensure_ttl_index()
 
     try:
         doc: Any = rate_limits_collection.find_one_and_update(
-            {"_id": f"{scope}:{key}:{window_start}"},
+            {"_id": window_id},
             {
                 "$inc": {"count": 1},
                 "$setOnInsert": {
@@ -94,4 +98,11 @@ def rate_limit_exceeded(
         logger.warning("Rate limit for %s could not be counted: %s", scope, exc)
         return False
 
-    return (doc or {}).get("count", 0) > limit
+    if (doc or {}).get("count", 0) <= limit:
+        return False
+
+    try:
+        rate_limits_collection.update_one({"_id": window_id}, {"$inc": {"count": -1}})
+    except PyMongoError as exc:  # pragma: no cover - the refusal stands either way
+        logger.warning("Rate limit for %s could not be refunded: %s", scope, exc)
+    return True

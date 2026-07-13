@@ -14,6 +14,7 @@ skip_without_real_dependencies()
 
 from flask import Flask, request
 
+from utils.deployment import INSECURE_LOCAL_DEV_VAR
 from utils.proxy import (
     TRUSTED_PROXY_HOPS_VAR,
     TrustedProxyConfigError,
@@ -37,41 +38,61 @@ def _app_reporting_the_caller():
     return app
 
 
+@pytest.fixture
+def local_dev(monkeypatch):
+    """A process that has said, explicitly, that it is a local development one."""
+    monkeypatch.setenv(INSECURE_LOCAL_DEV_VAR, "true")
+
+
+@pytest.fixture
+def deployed(monkeypatch):
+    """Anything that has not said so -- which is every deployment, and the default."""
+    monkeypatch.delenv(INSECURE_LOCAL_DEV_VAR, raising=False)
+
+
 class TestTrustedProxyHops:
-    def test_development_defaults_to_trusting_nothing(self, monkeypatch):
+    def test_an_opted_in_local_dev_machine_defaults_to_trusting_nothing(
+        self, monkeypatch, local_dev,
+    ):
         monkeypatch.delenv(TRUSTED_PROXY_HOPS_VAR, raising=False)
-        monkeypatch.setenv("FLASK_ENV", "development")
 
         assert trusted_proxy_hops() == 0
 
-    def test_production_refuses_to_guess(self, monkeypatch):
+    def test_a_deployment_refuses_to_guess(self, monkeypatch, deployed):
         """Unset is not zero, it is unknown, and both readings of an unknown value break: guess
         zero behind a proxy and every applicant shares one budget; guess one with nothing in front
         and the budget is keyed on a header the caller writes."""
         monkeypatch.delenv(TRUSTED_PROXY_HOPS_VAR, raising=False)
-        monkeypatch.setenv("FLASK_ENV", "production")
 
         with pytest.raises(TrustedProxyConfigError) as exc:
             trusted_proxy_hops()
 
         assert TRUSTED_PROXY_HOPS_VAR in str(exc.value)
+        assert INSECURE_LOCAL_DEV_VAR in str(exc.value)
 
-    def test_production_takes_an_explicit_zero(self, monkeypatch):
+    @pytest.mark.parametrize("flask_env", ["development", "production", ""])
+    def test_the_refusal_does_not_depend_on_flask_env(self, monkeypatch, deployed, flask_env):
+        """The image ships FLASK_ENV=development and nothing overrides it, so a check keyed on that
+        variable exempted every deployment built from it -- which was all of them."""
+        monkeypatch.setenv("FLASK_ENV", flask_env)
+        monkeypatch.delenv(TRUSTED_PROXY_HOPS_VAR, raising=False)
+
+        with pytest.raises(TrustedProxyConfigError):
+            trusted_proxy_hops()
+
+    def test_a_deployment_takes_an_explicit_zero(self, monkeypatch, deployed):
         """An operator who means "Flask is exposed directly" can say so; they just have to say it."""
-        monkeypatch.setenv("FLASK_ENV", "production")
         monkeypatch.setenv(TRUSTED_PROXY_HOPS_VAR, "0")
 
         assert trusted_proxy_hops() == 0
 
-    def test_a_count_is_read(self, monkeypatch):
-        monkeypatch.setenv("FLASK_ENV", "production")
+    def test_a_count_is_read(self, monkeypatch, deployed):
         monkeypatch.setenv(TRUSTED_PROXY_HOPS_VAR, "2")
 
         assert trusted_proxy_hops() == 2
 
     @pytest.mark.parametrize("value", ["yes", "1.5", "-1"])
-    def test_a_value_that_is_not_a_hop_count_is_refused(self, monkeypatch, value):
-        monkeypatch.setenv("FLASK_ENV", "development")
+    def test_a_value_that_is_not_a_hop_count_is_refused(self, monkeypatch, local_dev, value):
         monkeypatch.setenv(TRUSTED_PROXY_HOPS_VAR, value)
 
         with pytest.raises(TrustedProxyConfigError):
@@ -79,10 +100,9 @@ class TestTrustedProxyHops:
 
 
 class TestApplyTrustedProxyFix:
-    def test_no_hops_reads_no_forwarded_header(self, monkeypatch):
+    def test_no_hops_reads_no_forwarded_header(self, monkeypatch, local_dev):
         """With nothing in front of Flask, the peer *is* the caller, and a forwarded header is a
         thing the caller made up. Leaving ProxyFix off the path is what keeps it unread."""
-        monkeypatch.setenv("FLASK_ENV", "development")
         monkeypatch.delenv(TRUSTED_PROXY_HOPS_VAR, raising=False)
         app = _FakeApp()
         original = app.wsgi_app
@@ -92,8 +112,7 @@ class TestApplyTrustedProxyFix:
         assert hops == 0
         assert app.wsgi_app is original
 
-    def test_the_declared_hops_are_the_ones_trusted(self, monkeypatch):
-        monkeypatch.setenv("FLASK_ENV", "production")
+    def test_the_declared_hops_are_the_ones_trusted(self, monkeypatch, deployed):
         monkeypatch.setenv(TRUSTED_PROXY_HOPS_VAR, "1")
         app = _FakeApp()
         original = app.wsgi_app
@@ -104,8 +123,7 @@ class TestApplyTrustedProxyFix:
         assert app.wsgi_app is not original
         assert app.wsgi_app.x_for == 1
 
-    def test_a_misconfigured_deployment_does_not_boot(self, monkeypatch):
-        monkeypatch.setenv("FLASK_ENV", "production")
+    def test_a_misconfigured_deployment_does_not_boot(self, monkeypatch, deployed):
         monkeypatch.delenv(TRUSTED_PROXY_HOPS_VAR, raising=False)
 
         with pytest.raises(TrustedProxyConfigError):
@@ -116,7 +134,7 @@ class TestTheAddressARequestIsCreditedTo:
     """What the rate limits actually key on, driven through the WSGI stack that decides it."""
 
     def _remote_addr(self, hops, monkeypatch, **headers):
-        monkeypatch.setenv("FLASK_ENV", "development")
+        monkeypatch.setenv(INSECURE_LOCAL_DEV_VAR, "true")
         monkeypatch.setenv(TRUSTED_PROXY_HOPS_VAR, str(hops))
         app = _app_reporting_the_caller()
         apply_trusted_proxy_fix(app)
