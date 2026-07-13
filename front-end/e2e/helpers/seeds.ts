@@ -186,7 +186,10 @@ export async function seedMarketWithVendors(
  *
  * Unlike seedMarketWithVendors(), this also configures the market's
  * setup_object (column mapping, dates, sections, tiers, locations) and
- * sets isDraft = false so the check-in API and vendor/table views work.
+ * publishes the market via the transition endpoint (draft -> archived, the same
+ * edge the product's Done button takes) so the check-in API and vendor/table
+ * views work. Publishing has to move the phase: isDraft is derived from it, and
+ * the public slug lookup serves markets past draft only.
  *
  * The CSV includes a proper date column so the assignment algorithm
  * produces meaningful per-date assignments.
