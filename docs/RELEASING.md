@@ -62,16 +62,38 @@ The manifest is seeded at `0.0.0`, and the first release is pinned to `v0.1.0` v
 `release-as` is a forced version: it overrides the conventional-commit calculation on **every** run until it is removed, so it must be cleared after the first release ships.
 Once `v0.1.0` is tagged, remove the `release-as` field from `release-please-config.json`; from then on release-please derives each version from the accumulated commits (`feat:` → minor, `fix:` → patch, breaking change → major).
 
+## Pre-Deploy: Required Production Environment
+
+The back end **refuses to start** unless all three of these are set, and it fails at import, so a deployment that is missing one serves nothing at all - not the applicant endpoints, not the organizer app.
+Set them in the hosting environment **before** promoting `dev` → `main`.
+The startup log names every variable that is missing, all of them at once.
+
+| Variable | What it is | What an unset value would do |
+|----------|------------|------------------------------|
+| `SECRET_KEY` | A long random string. Signs the Flask session cookie and the application-scoped applicant token. Generate with `python -c 'import secrets; print(secrets.token_urlsafe(48))'`. | Anyone could forge an applicant token and read or overwrite any application, past the one-time code, the captcha, and every rate limit - and forge an organizer session with it. |
+| `RECAPTCHA_SECRET_KEY` | The reCAPTCHA v3 secret ([admin console](https://www.google.com/recaptcha/admin)). Gates the public applicant login and the organizer signup. | The captcha would pass every caller, leaving an unauthenticated endpoint that writes to the database and sends mail from our domain with nothing in front of it. |
+| `TRUSTED_PROXY_HOPS` | How many proxies **of ours** a request passes through before it reaches Flask (a reverse proxy, load balancer, or serverless ingress is one each). `0` means Flask is exposed directly. On Vercel it is `1`. | The applicant rate limits would key on the proxy's address, which is the same address for every caller in the world: one shared budget that the first burst spends on everyone's behalf. |
+
+There is deliberately **no default** for any of them.
+A default that quietly becomes the production value is the failure each of these checks exists to prevent - the signing key was such a default, and it was a literal committed to this repository.
+
+The one exemption is `ALLOW_INSECURE_LOCAL_DEV=true`, which `docker-compose.yml` sets and which logs every defense it turns off.
+It must never be set on a deployed environment.
+
 ## Pre-Deploy: Database Migrations
 
 Migrations are never run automatically - rewriting stored documents is a deliberate operator action.
 Before a promotion reaches production, run the pending migrations in `back-end/migrations/` against the production database (each is idempotent, and `--dry-run` previews the changes):
 
 ```bash
-python migrations/migrate_phase.py                 # backfills `phase` on existing markets
-python migrations/migrate_market_keys.py           # rewrites markets under the canonical camelCase keys
-python migrations/migrate_is_draft_consistency.py  # makes `isDraft` agree with `phase` on markets that have one
+python migrations/migrate_phase.py                    # backfills `phase` on existing markets
+python migrations/migrate_market_keys.py              # rewrites markets under the canonical camelCase keys
+python migrations/migrate_is_draft_consistency.py     # makes `isDraft` agree with `phase` on markets that have one
+python migrations/create_applications_collection.py   # creates the applications collection and its indexes
 ```
+
+`create_applications_collection.py` builds the unique index on (`market_id`, `applicant_email`, `application_type`), which is what stops one address from holding two applications: the public request-key endpoint reads the applicant list before it writes to it, so without the index two concurrent requests for one address each insert an application, and the one nothing can reach afterwards double-counts that applicant through review, assignment, and the D9 form lock.
+A database that already holds such a duplicate cannot take the index; the migration names the documents and stops, because which of the two is the applicant's is the organizer's call.
 
 `migrate_is_draft_consistency.py` **must** be run with the code that makes `phase` the single source of truth, and it is the migration whose omission is visible to vendors.
 A market the old build published carries `phase: "draft"` + `isDraft: false` (publishing was a `PUT` of `isDraft: false`; nothing advanced the phase), and every read now derives the market's state from `phase`.

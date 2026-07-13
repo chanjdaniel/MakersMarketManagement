@@ -92,11 +92,11 @@ REQUEST_KEY_GLOBAL_WINDOW_SECONDS = 3600
 VERIFY_KEY_IP_LIMIT = 600
 VERIFY_KEY_IP_WINDOW_SECONDS = 3600
 
-# Every answer ``request_applicant_key`` gives takes at least this long, whatever it did to get
-# there. The OTP mail is a network round-trip to Resend that happens for an address on the
-# organizer's applicant list and does not happen for one that is not, so a response that returned as
-# soon as its work was done would answer, on the clock, exactly the question the response body
-# refuses to answer: whether this address has applied.
+# In the phases where request-key branches on the applicant list, every answer it gives takes at
+# least this long, whatever it did to get there. The OTP mail is a network round-trip to Resend that
+# happens for an address on the organizer's applicant list and does not happen for one that is not,
+# so a response that returned as soon as its work was done would answer, on the clock, exactly the
+# question the response body refuses to answer: whether this address has applied.
 #
 # The send is therefore made *inside* a fixed floor rather than handed to a background thread. A
 # thread does hide the send, but only where the process outlives the response, and this product
@@ -116,6 +116,8 @@ VERIFY_KEY_IP_WINDOW_SECONDS = 3600
 # slow - still well inside its timeout - would leave nothing of the budget by the time the send
 # began, and the send would go straight back onto the response clock. The floor covers the
 # branch-dependent work, which is the only work worth covering.
+#
+# And it is charged only where there is branch-dependent work to cover: see ``_key_request_floor``.
 KEY_REQUEST_FLOOR_SECONDS = 1.5
 
 RATE_LIMITED_ERROR = (
@@ -267,11 +269,9 @@ def _normalized_email(value: Any) -> Tuple[Optional[Tuple[Dict[str, Any], int]],
 
 def _find_application(market_id: str, email: str) -> Optional[Application]:
     """The existing main application for this market + email, if there is one."""
-    existing = ApplicationsApi.applications_collection.find_one({
-        ApplicationsApi.MARKET_ID_FIELD: market_id,
-        "applicant_email": email,
-        "application_type": ApplicationType.MAIN.value,
-    })
+    existing = ApplicationsApi.applications_collection.find_one(
+        ApplicationsApi.applicant_filter(market_id, email, ApplicationType.MAIN.value),
+    )
     return Application(**existing) if existing else None
 
 
@@ -413,16 +413,22 @@ def _clear_challenge(market_id: str, email: str) -> None:
 
 
 def _create_application(market_id: str, email: str) -> Application:
-    """Start a new main application for this market + email."""
-    app = Application(
+    """Start a new main application for this market + email, or take the one already being started.
+
+    ``request_applicant_key`` reads before it writes, and this endpoint is public, so two requests
+    for the same new address can be between the read and the write at once -- deliberately, or
+    through nothing worse than a double-tapped button. The write is therefore a conditional upsert
+    against a unique index rather than an insert, and the loser of the race is handed the winner's
+    application instead of adding a second one to the organizer's list. See
+    ``ApplicationsApi.find_or_create_application``.
+    """
+    return ApplicationsApi.find_or_create_application(Application(
         market_id=market_id,
         applicant_email=email,
         form_data={},
         status=ApplicationStatus.OPEN,
         application_type=ApplicationType.MAIN,
-    )
-    ApplicationsApi.applications_collection.insert_one(app.model_dump())
-    return app
+    ))
 
 
 def _is_answered(value: Any, field_type: str) -> bool:
@@ -674,7 +680,10 @@ def request_applicant_key(
     not for one that is not, so a response that came back as soon as its work was done would answer,
     on the clock, precisely the question the body refuses to answer. See
     ``KEY_REQUEST_FLOOR_SECONDS`` - and note that the send is *awaited*, not deferred to a thread
-    that a serverless host would freeze before it ever ran.
+    that a serverless host would freeze before it ever ran. It is charged only in the phases where
+    that branch is there to hide: in ``applications_open`` every caller pays for a send, so there is
+    nothing to bury, and a floor held over the hour a market's applications open would only be this
+    back end sleeping through its own busiest minutes. See ``_key_request_floor``.
 
     Args:
         market_slug: The URL-safe slug of the market.
@@ -728,6 +737,7 @@ def request_applicant_key(
 
     market_id = market_doc.get("id", "")
     phase = _get_market_phase(market_doc)
+    floor = _key_request_floor(phase)
 
     app = _find_application(market_id, email)
     if not app and phase == MarketPhase.APPLICATIONS_OPEN:
@@ -739,7 +749,7 @@ def request_applicant_key(
         if issued_at is not None and datetime.now(timezone.utc) - issued_at < timedelta(
             seconds=KEY_RESEND_COOLDOWN_SECONDS
         ):
-            return _accepted_after_floor(started)
+            return _accepted_after_floor(started, floor)
 
     # A stranger's challenge holds no code, so no guess can ever match it, and no mail is sent for
     # it. It is still written, and it still counts attempts, because the challenge is the only thing
@@ -751,7 +761,7 @@ def request_applicant_key(
     if otp:
         _send_otp(email, otp)
 
-    return _accepted_after_floor(started)
+    return _accepted_after_floor(started, floor)
 
 
 def _send_otp(email: str, otp: str) -> None:
@@ -770,15 +780,44 @@ def _send_otp(email: str, otp: str) -> None:
         logger.exception("The applicant verification code could not be sent to %s", email)
 
 
-def _accepted_after_floor(started: float) -> Tuple[Dict[str, Any], int]:
+def _key_request_floor(phase: MarketPhase) -> float:
+    """How long request-key holds its answer back for a market in this phase.
+
+    The floor exists to hide one thing: that the OTP send happens for an address on the organizer's
+    applicant list and not for one that is not. In ``applications_open`` that difference does not
+    exist -- an address with no application gets one, so *every* caller pays for a send -- and a
+    floor charged there would be a pure ``time.sleep`` held over the one moment this product is
+    busiest. A market whose applications open at an announced hour takes hundreds of legitimate
+    sign-ins in the first minutes of it, and each one holding a worker for the floor is the back end
+    saturating itself, organizer endpoints included, at exactly the peak the rate limits above are
+    written to let through.
+
+    In every later phase the market takes no new applications, the send happens only for an address
+    that already has one, and that is the branch the floor is for. Those phases are also the quiet
+    ones: nobody is signing in in bulk after applications close.
+
+    The residual, stated plainly rather than left for someone to find: with no floor in
+    ``applications_open``, a request for an address whose code was issued in the last
+    ``KEY_RESEND_COOLDOWN_SECONDS`` returns without a send and so returns faster. What that timing
+    tells a caller is that *somebody asked for a code for this address in the last minute*, which is
+    not the applicant list -- the caller can put any address on it themselves, since in this phase
+    asking is what creates the application -- and it is gone a minute after it appears.
+    """
+    if phase == MarketPhase.APPLICATIONS_OPEN:
+        return 0.0
+    return KEY_REQUEST_FLOOR_SECONDS
+
+
+def _accepted_after_floor(started: float, floor: float) -> Tuple[Dict[str, Any], int]:
     """The one answer request-key gives, held back until the floor has passed.
 
     An address with an application costs a round-trip to Resend; one without costs nothing. Returned
     the moment its work is done, the response tells those two apart on the clock, and the applicant
     list is the thing this endpoint exists not to tell anybody. Waiting out the difference is what
-    makes the fast path cost what the slow one does. See ``KEY_REQUEST_FLOOR_SECONDS``.
+    makes the fast path cost what the slow one does. See ``KEY_REQUEST_FLOOR_SECONDS`` for the wait
+    and ``_key_request_floor`` for where it is charged.
     """
-    remaining = KEY_REQUEST_FLOOR_SECONDS - (time.monotonic() - started)
+    remaining = floor - (time.monotonic() - started)
     if remaining > 0:
         time.sleep(remaining)
     return {"message": KEY_REQUEST_ACCEPTED_MESSAGE}, 200

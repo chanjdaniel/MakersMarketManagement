@@ -73,6 +73,10 @@ def verify_market_key_migration() -> None:
         probe.client.close()
 
 
+class PublicEndpointDefenseError(RuntimeError):
+    """The public applicant endpoints are not configured to defend themselves."""
+
+
 def verify_public_endpoint_defenses() -> str:
     """Refuse to boot without the configuration the public endpoints are defended by.
 
@@ -83,7 +87,13 @@ def verify_public_endpoint_defenses() -> str:
     silently degrade to nothing when unset - the captcha passes everybody, the limits lock out
     everybody, and a token signed with a key the repository publishes is a token anyone can write -
     so, as with the market-key migration above, an unknown state is never taken for a safe one: it
-    fails at boot, naming the variable, rather than in production, naming nothing.
+    fails at boot, naming the variables, rather than in production, naming nothing.
+
+    Every check runs, and the refusal carries *all* of them. Stopping at the first would hand an
+    operator one variable at a time and a redeploy between each, which turns one loud failure into a
+    sequence of them and invites the third to be met by giving up. What is required is written down
+    where the promotion is - ``docs/RELEASING.md`` - because this is a boot-time contract, and a
+    deployment that has not met it does not serve the organizer app either.
 
     This runs for *every* process, not only one that calls itself production. Conditioning it on
     ``FLASK_ENV`` is what made the whole check dead code: the repo's own image sets
@@ -95,15 +105,35 @@ def verify_public_endpoint_defenses() -> str:
     Returns:
         The signing secret, so that the one place that needs it does not fetch it a second time.
     """
+    problems = []
+    secret = ""
+    trusted_proxy_hops = 0
+
     try:
         assert_captcha_configured()
+    except CaptchaNotConfiguredError as e:
+        problems.append(str(e))
+
+    try:
         secret = signing_secret()
+    except SecretKeyNotConfiguredError as e:
+        problems.append(str(e))
+
+    try:
         trusted_proxy_hops = apply_trusted_proxy_fix(app)
-    except (
-        CaptchaNotConfiguredError, SecretKeyNotConfiguredError, TrustedProxyConfigError,
-    ) as e:
-        logger.critical("%s", e)
-        raise
+    except TrustedProxyConfigError as e:
+        problems.append(str(e))
+
+    if problems:
+        message = "\n\n".join([
+            f"Refusing to start: {len(problems)} of the defenses the public applicant endpoints "
+            f"rest on are not configured. All of them are named below. See the required production "
+            f"environment in docs/RELEASING.md before promoting.",
+            *problems,
+        ])
+        logger.critical("%s", message)
+        raise PublicEndpointDefenseError(message)
+
     logger.info("Trusting %d proxy hop(s) for the client address", trusted_proxy_hops)
     return secret
 

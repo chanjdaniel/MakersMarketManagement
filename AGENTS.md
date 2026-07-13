@@ -166,8 +166,13 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   behind a proxy is one shared budget that locks out every real applicant instead of bounding an
   attacker.
   Set `TRUSTED_PROXY_HOPS` to the number of proxies of our own a request passes through
-  (0 = Flask exposed directly); ProxyFix then reads exactly that many `X-Forwarded-For` entries from
-  the right, which is the part a client cannot forge.
+  (0 = Flask exposed directly, 1 on Vercel); ProxyFix then reads exactly that many `X-Forwarded-For`
+  entries from the right, which is the part a client cannot forge.
+  The check runs all three and the refusal names *every* variable that is missing, in one message:
+  stopping at the first would cost the operator a redeploy per variable.
+  This is a boot-time deploy contract - a deployment missing one serves nothing, organizer app
+  included - so it is written down where the promotion is: `docs/RELEASING.md`, "Required Production
+  Environment". Keep that table in step with the check.
 - **There is no fallback signing secret, and there must never be one again**
   (`back-end/utils/secret_key.py` is the only reader of `SECRET_KEY`).
   It signs both the Flask session cookie and the application-scoped applicant JWT
@@ -208,10 +213,32 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   nothing, but they are not free, and a floor measured from before them is a floor a slow captcha
   round-trip can spend - which puts the send straight back on the response clock and reopens the
   oracle under exactly the tail latency an attacker can afford to wait for.
-  Truthful bound: the floor equalizes the two paths as long as the send fits inside it. A send that
-  overran the floor would put its overrun back on the clock, and in `applications_open` a first-time
-  address still costs one extra Mongo insert. Both are small; neither is zero. Do not write "the
-  clock says nothing" without that caveat.
+- **The floor is charged only where the send actually branches** (`_key_request_floor`), which means
+  never in `applications_open`.
+  In that phase an address with no application gets one, so *every* caller pays for a send and there
+  is no difference to bury - and a floor charged there would be a blocking `time.sleep` held over the
+  busiest hour this product has, with hundreds of vendors signing in the minute applications open,
+  each one holding a worker (or a billed serverless invocation) for the length of it.
+  The later phases take no new applications, so the send happens only for an address already on the
+  list: that is the branch, and those phases are the quiet ones.
+  Truthful bounds, none of which may be dropped from this note:
+  the floor equalizes the two paths only as long as the send fits inside it (an overrun goes back on
+  the clock);
+  in `applications_open` a first-time address still costs one extra Mongo insert, and a request for an
+  address whose code was issued within `KEY_RESEND_COOLDOWN_SECONDS` returns without a send and so
+  returns faster - which says a code was asked for recently, not that the address has applied (in that
+  phase, asking is what creates the application).
+  Do not write "the clock says nothing" without those caveats.
+- **One applicant is one application, and the unique index is what holds that**
+  ((`market_id`, `applicant_email`, `application_type`), built by
+  `ApplicationsApi.ensure_application_indexes()` and by
+  `migrations/create_applications_collection.py`).
+  `request_applicant_key` reads the applicant list before it writes to it, so without the index two
+  concurrent requests for one new address each insert an application - deliberately raced, or a
+  double-tapped button. Only one is ever reachable again; the other sits on the organizer's list,
+  double-counting that applicant through review, assignment, and the D9 lock.
+  Creation therefore goes through `find_or_create_application()`, a conditional upsert that hands the
+  loser of the race the winner's document. Never insert an application document directly.
 - **The captcha is the control against scripts here; the rate limits are safety ceilings, not the
   control.**
   Applicants share addresses (a hall's wifi is one; carrier CGNAT pools thousands) and a market whose

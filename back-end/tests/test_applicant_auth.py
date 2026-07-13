@@ -809,6 +809,53 @@ class TestTheClockSaysNothingTheBodyDoesNot:
         assert status == 400
         assert time.monotonic() - started < 1
 
+    def test_an_open_market_pays_no_floor_at_all(
+        self, published_market, apps_coll, no_email, monkeypatch,
+    ):
+        """The floor buries a difference, and in ``applications_open`` there is none to bury: an
+        address with no application gets one, so every caller pays for a send.
+
+        Charging it anyway would be a ``time.sleep`` held over the busiest hour this product has --
+        a market whose applications open at an announced time takes hundreds of sign-ins in the first
+        minutes of it, and each one holding a worker for the floor is the back end saturating itself,
+        organizer endpoints included, at exactly the peak the rate limits are written to let through.
+        """
+        monkeypatch.setattr(ApplicantsApi, "KEY_REQUEST_FLOOR_SECONDS", 5)
+
+        elapsed, status = self._elapsed("test-market", "vendor@example.com")
+
+        assert status == 200
+        assert elapsed < 1, "an open market's applicants must not queue behind the floor"
+
+    def test_the_open_market_that_pays_no_floor_still_sends_to_every_caller(
+        self, published_market, apps_coll,
+    ):
+        """The premise the line above rests on, pinned: it is only safe to drop the floor here
+        because a stranger's request costs exactly what an applicant's does -- an application, and
+        the send that follows it. If a phase ever stopped mailing a first-time address, the send
+        would be a branch again, and the floor would have to come back with it."""
+        sent = []
+
+        with patch.object(
+            ApplicantsApi, "send_otp_email",
+            side_effect=lambda addr, _otp: sent.append(addr) or True,
+        ):
+            ApplicantsApi.request_applicant_key("test-market", "stranger@example.com")
+
+        assert sent == ["stranger@example.com"]
+        assert ApplicantsApi._key_request_floor(MarketPhase.APPLICATIONS_OPEN) == 0
+
+    @pytest.mark.parametrize("phase", [
+        MarketPhase.APPLICATIONS_CLOSED,
+        MarketPhase.REVIEW,
+        MarketPhase.OFFERS,
+    ])
+    def test_every_phase_that_takes_no_new_applications_keeps_the_floor(self, phase):
+        """Those are the phases where the send happens for an applicant and not for a stranger, so
+        they are the phases the floor is for. They are also the quiet ones: nobody signs in in bulk
+        after applications close."""
+        assert ApplicantsApi._key_request_floor(phase) == ApplicantsApi.KEY_REQUEST_FLOOR_SECONDS
+
 
 class TestIssuingAChallengeConcurrently:
     """The unique index on (market, email) is what stops one address holding two live codes, and
@@ -841,6 +888,99 @@ class TestIssuingAChallengeConcurrently:
         assert result == {"message": ApplicantsApi.KEY_REQUEST_ACCEPTED_MESSAGE}
         assert raced.attempts == 2, "the retry is what takes the update branch"
         assert _stored_challenge(raced, "vendor@example.com") is not None
+
+
+class TestCreatingAnApplicationConcurrently:
+    """One applicant is one application, and only the database can hold that.
+
+    ``request_applicant_key`` reads the applicant list before it writes to it, so two requests for
+    the same new address can sit between the read and the write at once -- raced on purpose, or by
+    nothing worse than a double-tapped button or a retried request. Two inserts then leave two main
+    applications for one person: every read of an applicant's application finds one of them and takes
+    it, so the other is unreachable forever, and it sits on the organizer's list double-counting them
+    through review, through assignment, and through the D9 form lock.
+    """
+
+    class _RacedCollection(FakeApplicationsCollection):
+        def __init__(self):
+            super().__init__()
+            self.upserts = 0
+
+        def find_one_and_update(self, query, update, upsert=False, return_document=None):
+            self.upserts += 1
+            if self.upserts == 1:
+                # The concurrent request's insert landed first; the unique index refuses this one.
+                super().find_one_and_update(
+                    query, update, upsert=upsert, return_document=return_document,
+                )
+                raise DuplicateKeyError(ApplicationsApi.APPLICANT_IDENTITY_INDEX)
+            return super().find_one_and_update(
+                query, update, upsert=upsert, return_document=return_document,
+            )
+
+    def test_a_lost_insert_race_yields_the_winners_application_not_a_second_one(
+        self, published_market, no_email, monkeypatch,
+    ):
+        raced = self._RacedCollection()
+        monkeypatch.setattr(ApplicationsApi, "applications_collection", raced)
+
+        result, status = ApplicantsApi.request_applicant_key("test-market", "vendor@example.com")
+
+        assert status == 200, "the duplicate must not surface as a 500 on a public endpoint"
+        assert result == {"message": ApplicantsApi.KEY_REQUEST_ACCEPTED_MESSAGE}
+        assert len(raced.documents) == 1, "the loser must not leave a second application behind"
+
+    def test_creating_an_application_twice_returns_the_one_that_exists(self, apps_coll):
+        """The upsert itself, without a race: the second creation is a read of the first."""
+        def _new():
+            return Application(
+                market_id="market-123", applicant_email="vendor@example.com",
+                form_data={}, status=ApplicationStatus.OPEN,
+                application_type=ApplicationType.MAIN,
+            )
+
+        first = ApplicationsApi.find_or_create_application(_new())
+        second = ApplicationsApi.find_or_create_application(_new())
+
+        assert second.id == first.id, "a fresh id would be a second application"
+        assert len(apps_coll.documents) == 1
+
+    def test_a_waitlist_application_is_not_the_main_one(self, apps_coll):
+        """The identity is (market, email, *type*): an applicant may hold one of each, and the index
+        that stops the duplicate must not stop the waitlist entry beside it."""
+        main = ApplicationsApi.find_or_create_application(Application(
+            market_id="market-123", applicant_email="vendor@example.com",
+            form_data={}, status=ApplicationStatus.OPEN,
+            application_type=ApplicationType.MAIN,
+        ))
+        waitlist = ApplicationsApi.find_or_create_application(Application(
+            market_id="market-123", applicant_email="vendor@example.com",
+            form_data={}, status=ApplicationStatus.OPEN,
+            application_type=ApplicationType.WAITLIST,
+        ))
+
+        assert waitlist.id != main.id
+        assert len(apps_coll.documents) == 2
+
+    def test_the_stored_document_is_the_one_the_model_describes(self, apps_coll):
+        """The upsert builds the document from the filter plus ``$setOnInsert``, so what it stores
+        has to be checked, not assumed: every field of the model, under the snake_case keys the
+        collection's contract names."""
+        app = ApplicationsApi.find_or_create_application(Application(
+            market_id="market-123", applicant_email="vendor@example.com",
+            form_data={}, status=ApplicationStatus.OPEN,
+            application_type=ApplicationType.MAIN,
+        ))
+
+        stored = apps_coll.find_one({"id": app.id})
+        assert stored is not None
+        assert stored[ApplicationsApi.MARKET_ID_FIELD] == "market-123"
+        assert stored[ApplicationsApi.APPLICANT_EMAIL_FIELD] == "vendor@example.com"
+        assert stored[ApplicationsApi.APPLICATION_TYPE_FIELD] == ApplicationType.MAIN.value
+        assert set(stored) == set(Application(
+            market_id="market-123", applicant_email="vendor@example.com",
+            form_data={}, status=ApplicationStatus.OPEN,
+        ).model_dump())
 
 
 class TestVerifyKey:

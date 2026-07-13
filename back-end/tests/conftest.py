@@ -219,46 +219,66 @@ class FakeApplicationsCollection:
     ``count_documents`` matches inserted documents against the filter the way Mongo does,
     so a test can pin the persisted key contract by inserting a real ``Application`` dump.
     Tests that only care that *some* applications exist can set ``count`` instead.
+
+    ``find_one_and_update`` is the upsert an application is created by, and it is modelled the way
+    Mongo builds one: the document an unmatched filter creates is the filter's equality terms plus
+    ``$setOnInsert``. The unique index that makes that upsert safe under concurrency is the
+    database's, so it has no analogue here -- what a test can do is raise ``DuplicateKeyError`` the
+    way the index does (see ``TestCreatingAnApplicationConcurrently``).
     """
 
     def __init__(self, count: int = 0):
         self.count = count
         self.documents: list = []
 
-    def find_one(self, query):
+    def create_index(self, *_args, **_kwargs):
+        return "fake-index"
+
+    def _matches(self, doc, query):
+        return all(doc.get(key) == value for key, value in (query or {}).items())
+
+    def _find(self, query):
         for doc in self.documents:
-            match = True
-            for k, v in (query or {}).items():
-                if doc.get(k) != v:
-                    match = False
-                    break
-            if match:
-                return dict(doc)
+            if self._matches(doc, query):
+                return doc
         return None
+
+    def find_one(self, query):
+        doc = self._find(query)
+        return dict(doc) if doc else None
 
     def insert_one(self, document):
         self.documents.append(document)
         return SimpleNamespace(inserted_id=str(len(self.documents)))
 
+    def _apply(self, doc, update):
+        for key, value in (update.get("$set") or {}).items():
+            doc[key] = value
+        return doc
+
     def update_one(self, query, update):
-        for i, doc in enumerate(self.documents):
-            match = True
-            for k, v in (query or {}).items():
-                if doc.get(k) != v:
-                    match = False
-                    break
-            if match:
-                if "$set" in update:
-                    for k, v in update["$set"].items():
-                        doc[k] = v
-                return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
-        return SimpleNamespace(matched_count=0, modified_count=0, upserted_id=None)
+        doc = self._find(query)
+        if doc is None:
+            return SimpleNamespace(matched_count=0, modified_count=0, upserted_id=None)
+        self._apply(doc, update)
+        return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
+
+    def find_one_and_update(self, query, update, upsert=False, return_document=None):
+        doc = self._find(query)
+        if doc is None:
+            if not upsert:
+                return None
+            doc = dict(query or {})
+            doc.update(update.get("$setOnInsert") or {})
+            self.documents.append(doc)
+        before = dict(doc)
+        self._apply(doc, update)
+        if return_document is ReturnDocument.AFTER:
+            return dict(doc)
+        return before
 
     def count_documents(self, query):
-        matched = sum(
-            1 for doc in self.documents
-            if all(doc.get(key) == value for key, value in (query or {}).items())
-        )
+        matched = sum(1 for doc in self.documents if self._matches(doc, query))
         return self.count + matched
 
 
