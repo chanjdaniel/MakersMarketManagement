@@ -371,7 +371,7 @@ const handleDone = async () => {
         }
     } catch (err: unknown) {
         const response = err && typeof err === 'object' && 'response' in err
-            ? (err as { response?: { data?: { error?: string; blockers?: Array<{ message: string }> } } }).response
+            ? (err as { response?: { status?: number; data?: { error?: string; blockers?: Array<{ message: string }> } } }).response
             : undefined;
         if (response?.status === 409 && response.data?.blockers) {
             doneError.value = response.data.blockers.map((b: { message: string }) => b.message).join(' ');

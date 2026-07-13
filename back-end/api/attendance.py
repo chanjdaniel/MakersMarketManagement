@@ -3,8 +3,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from assignment.assignment import assign_market
 from assignment.utils import convert_keys_to_camel_case, convert_keys_to_snake_case
+from datatypes import MarketPhase, phase_from_market_document
 from db_config import get_database
-from market_documents import market_doc_filter, market_from_document
+from market_documents import market_from_document
 import api.source_data as SourceDataApi
 
 db = get_database()
@@ -31,11 +32,20 @@ def _slugify(name: str) -> str:
 
 
 def get_published_market_by_slug(market_slug: str) -> Optional[Dict[str, Any]]:
-    """Find a published (phase != draft) market whose slugified name equals slug."""
+    """Find a published (phase != draft) market whose slugified name equals slug.
+
+    A Mongo condition cannot decide this: ``{"phase": {"$ne": "draft"}}`` also matches a
+    document that carries no ``phase`` at all, which is exactly what a draft written before the
+    field existed looks like - it would put an unpublished market on a public check-in URL.
+    ``phase_from_market_document`` is the one place that knows a document's effective phase, so
+    the draft test goes through it on the documents this already scans in Python.
+    """
     if not market_slug:
         return None
     target = market_slug.strip().lower()
-    for doc in markets_collection.find(market_doc_filter("phase", {"$ne": "draft"})):
+    for doc in markets_collection.find({}):
+        if phase_from_market_document(doc) == MarketPhase.DRAFT:
+            continue
         if _slugify(doc.get("name", "")) == target:
             return doc
     return None

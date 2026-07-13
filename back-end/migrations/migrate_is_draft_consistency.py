@@ -11,6 +11,11 @@ Some documents may disagree -- a market published before this change carries
 ``phase: "draft"`` and ``isDraft: false``, or a market whose phase was advanced by
 the transition endpoint before ``isDraft`` was added to the atomic update.
 
+Only documents that actually store a ``phase`` are touched. A document without one has no
+lifecycle state to agree with: ``phase_from_market_document`` derives its phase *from*
+``isDraft``, so it is already consistent, and rewriting ``isDraft`` would be rewriting the
+phase. ``migrations/migrate_phase.py`` is what backfills those, with the same mapping.
+
 Server-side update operators only (no scan-then-replace). The old app keeps serving
 writes while this runs; a whole-document replace would silently revert concurrent edits,
 so every fix is a targeted ``$set``.
@@ -32,8 +37,18 @@ from db_config import get_database
 def migrate(db, dry_run=False):
     collection = db.markets
 
-    # Markets with phase != draft and isDraft still true: fix to false.
-    draft_pending = list(collection.find({"phase": {"$ne": "draft"}, "isDraft": True}))
+    # Every query below is scoped to documents that carry a `phase`. `$ne` alone would also
+    # match a document with no `phase` field -- a market written before the field existed --
+    # and flipping its `isDraft` would rewrite the only lifecycle state it has:
+    # `phase_from_market_document` reads a phase-less document as draft when isDraft is true and
+    # archived when it is false, so setting isDraft=false here would silently archive every
+    # legacy draft, with no transition out of `archived` to undo it. Those documents are already
+    # self-consistent under that mapping and are backfilled by `migrations/migrate_phase.py`.
+
+    # Markets with a phase other than draft and isDraft still true: fix to false.
+    draft_pending = list(
+        collection.find({"phase": {"$exists": True, "$ne": "draft"}, "isDraft": True})
+    )
     # Markets with phase == draft and isDraft still false: fix to true.
     published_pending = list(collection.find({"phase": "draft", "isDraft": False}))
     # Markets with phase set but no isDraft at all: add it.

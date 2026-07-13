@@ -236,10 +236,13 @@ def _preserve_server_owned_fields(
     and stops a stale client copy of the market from silently reverting a saved form on the next
     PUT. Both are always taken from the stored market, whatever the payload carries.
 
-    `isDraft` is derived strictly from `phase` and updated here so the stored document never
-    carries a value that disagrees with its `phase` -- even though ``Market.is_draft`` is a
-    computed field that ignores the stored value at parse time, direct Mongo queries
-    (``get_published_market_by_slug``) still filter on it.
+    `isDraft` is derived strictly from `phase` and rewritten here from the stored phase, never
+    from the payload. No read consults the stored value while the document's `phase` is one this
+    build knows -- ``Market.is_draft`` is computed, and no query filters on it. It is kept in
+    agreement anyway because it is the fallback ``phase_from_market_document`` drops to when
+    `phase` is missing or unrecognized (an older build reading a phase a newer one wrote, say),
+    and a fallback that disagrees with the phase is worse than no fallback: it answers
+    confidently and wrongly.
 
     The remaining Conventioner fields are carried over whenever the payload omits them, so a client
     that round-trips a market it fetched cannot null them out; an explicit null still clears them.
@@ -556,7 +559,7 @@ def create_market(market: Market, owner_email: str) -> tuple:
     market_dict = market.model_dump()
     _strip_persisted_assignment_statistics(market_dict)
     market_dict["phase"] = MarketPhase.DRAFT.value
-    market_dict["is_draft"] = True  # phase is always DRAFT at creation; kept in sync for direct Mongo queries
+    market_dict["is_draft"] = True  # phase is always DRAFT at creation; kept in sync as the phase fallback
     market_dict["application_form"] = (
         _normalized_application_form(market.application_form).model_dump()
         if market.application_form
