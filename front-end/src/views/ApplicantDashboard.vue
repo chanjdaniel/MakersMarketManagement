@@ -76,16 +76,26 @@ onMounted(loadAll);
 // line reading "Not yet submitted".
 const isSubmitted = computed(() => Boolean(store.application?.submittedAt));
 
+// A decision is the organizer's to deliver, so the applicant is not told it the moment a reviewer
+// records it. `reviewer_approved`, `reviewer_rejected`, `unassigned` and `assigned` are working
+// states of a review the organizer has not finished - reading them off the document would show an
+// applicant a rejection nobody had decided to send. They stay under review here until the organizer
+// acts outward, which as of this build is `assignment_sent`; the explicit publish gate lands with
+// the organizer review flow.
+const UNDER_REVIEW_STATUSES = [
+  'under_review',
+  'reviewer_approved',
+  'reviewer_rejected',
+  'unassigned',
+  'assigned',
+];
+
 const statusLabel = computed(() => {
   const s = store.application?.status;
   if (s === 'open' && !isSubmitted.value) return 'Not Submitted';
+  if (s && UNDER_REVIEW_STATUSES.includes(s)) return 'Under Review';
   const labels: Record<string, string> = {
     open: 'Submitted',
-    under_review: 'Under Review',
-    reviewer_approved: 'Approved',
-    reviewer_rejected: 'Not Accepted',
-    unassigned: 'Not Assigned',
-    assigned: 'Assigned',
     assignment_sent: 'Offer Sent',
     vendor_accepted: 'Confirmed',
     vendor_refused: 'Declined',

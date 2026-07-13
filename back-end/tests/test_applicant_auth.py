@@ -103,15 +103,74 @@ class TestRequestKey:
         result, status = ApplicantsApi.request_applicant_key("draft-market", "test@example.com")
         assert status == 404
 
-    def test_returns_403_when_market_is_closed(self, apps_coll, no_email, monkeypatch):
+    def test_a_closed_market_takes_no_new_application(self, apps_coll, no_email, monkeypatch):
+        """The phase gates *starting* an application, so a stranger with an empty form cannot land
+        on the organizer's applicant list after review has begun."""
         fake = FakeSlugMarketsCollection([
-            stored_market(phase=MarketPhase.APPLICATIONS_CLOSED, name="Closed Market")
+            stored_market(phase=MarketPhase.APPLICATIONS_CLOSED, name="Closed Market",
+                          id="closed-1")
         ])
         monkeypatch.setattr(ApplicantsApi, "markets_collection", fake)
 
         result, status = ApplicantsApi.request_applicant_key("closed-market", "test@example.com")
+
         assert status == 403
         assert "Applications Closed" in result["error"]
+        assert apps_coll.documents == []
+
+    def test_an_existing_applicant_can_sign_in_after_applications_close(
+        self, apps_coll, no_email, monkeypatch,
+    ):
+        """Signing in is not applying. The dashboard exists to show the applicant the states their
+        application reaches *after* the window closes, so the login cannot close with it."""
+        fake = FakeSlugMarketsCollection([
+            stored_market(phase=MarketPhase.APPLICATIONS_CLOSED, name="Closed Market",
+                          id="closed-1")
+        ])
+        monkeypatch.setattr(ApplicantsApi, "markets_collection", fake)
+        apps_coll.insert_one(Application(
+            market_id="closed-1",
+            applicant_email="applied@example.com",
+            form_data={"business_name": "Acme"},
+            status=ApplicationStatus.OPEN,
+        ).model_dump())
+
+        result, status = ApplicantsApi.request_applicant_key(
+            "closed-market", "applied@example.com",
+        )
+
+        assert status == 200, result
+        assert len(apps_coll.documents) == 1
+        assert apps_coll.documents[0]["otp"] is not None
+
+    def test_an_existing_applicant_can_sign_in_after_the_market_is_archived(
+        self, apps_coll, no_email, monkeypatch,
+    ):
+        fake = FakeSlugMarketsCollection([
+            stored_market(phase=MarketPhase.ARCHIVED, name="Archived Market", id="arch-1")
+        ])
+        monkeypatch.setattr(ApplicantsApi, "markets_collection", fake)
+        apps_coll.insert_one(Application(
+            market_id="arch-1",
+            applicant_email="applied@example.com",
+            form_data={"business_name": "Acme"},
+            status=ApplicationStatus.OPEN,
+        ).model_dump())
+
+        _result, status = ApplicantsApi.request_applicant_key(
+            "archived-market", "applied@example.com",
+        )
+
+        assert status == 200
+
+    def test_refuses_a_malformed_email(self, published_market, apps_coll, no_email):
+        """A typo told "a code has been sent" is an applicant waiting forever, and a junk document
+        on the organizer's applicant list."""
+        result, status = ApplicantsApi.request_applicant_key("test-market", "vendor@gmail")
+
+        assert status == 400
+        assert "valid email" in result["error"].lower()
+        assert apps_coll.documents == []
 
     def test_creates_application_on_first_request(self, published_market, apps_coll, no_email):
         result, status = ApplicantsApi.request_applicant_key("test-market", "new@example.com")
@@ -181,6 +240,14 @@ class TestRequestKey:
         result, status = ApplicantsApi.request_applicant_key("test-market", "")
         assert status == 400
         assert "required" in result["error"].lower()
+
+    def test_a_non_string_email_is_refused_not_crashed_on(self, published_market, apps_coll, no_email):
+        """The route hands the body value through verbatim, so the address is not a string until
+        this says it is."""
+        result, status = ApplicantsApi.request_applicant_key("test-market", {"not": "an email"})
+
+        assert status == 400
+        assert apps_coll.documents == []
 
 
 class TestVerifyKey:
@@ -341,6 +408,15 @@ class TestVerifyKey:
 
         result, status = ApplicantsApi.verify_applicant_key("test-market", "test@example.com", "")
         assert status == 400
+
+    def test_refuses_a_malformed_email(self, published_market, apps_coll):
+        """The address is the application's key on both stages of the flow, so it is one rule."""
+        result, status = ApplicantsApi.verify_applicant_key(
+            "test-market", "vendor@gmail", "123456",
+        )
+
+        assert status == 400
+        assert "valid email" in result["error"].lower()
 
 
 class TestAuthenticateRequest:

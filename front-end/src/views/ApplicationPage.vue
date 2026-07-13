@@ -45,9 +45,12 @@ onMounted(async () => {
   }
 });
 
-// Prefill from store if the user just verified
+// Prefill from the store if the applicant just verified. The application in the store belongs to
+// the market its session was issued for, so it is only this page's to prefill from when that is
+// this market: an application read under any other condition is another market's answers, copied
+// into this form wherever the two forms share a field key.
 watch(
-  () => store.application,
+  () => (signedIn.value ? store.application : null),
   (app) => {
     if (app?.formData && Object.keys(app.formData).length > 0) {
       formData.value = { ...app.formData };
@@ -122,10 +125,6 @@ function goToLogin() {
           Applications are not currently open for this market.
           The market is in the <strong>{{ phaseLabel }}</strong> phase.
         </p>
-        <p v-if="signedIn">
-          You can still
-          <a href="#" @click.prevent="goToLogin">view your existing application</a>.
-        </p>
       </div>
 
       <template v-else>
@@ -167,12 +166,15 @@ function goToLogin() {
             </button>
           </div>
         </form>
-
-        <div class="apply-returning">
-          Already applied?
-          <a href="#" @click.prevent="goToLogin">Sign in to view your application</a>
-        </div>
       </template>
+
+      <!-- An applicant's own application outlives the window to change it, and the states the
+           dashboard exists to show them are reachable only after that window closes. So the way
+           back to it is not part of the open-applications branch. -->
+      <div class="apply-returning" data-testid="apply-returning">
+        Already applied?
+        <a href="#" @click.prevent="goToLogin">Sign in to view your application</a>
+      </div>
     </template>
   </div>
 </template>

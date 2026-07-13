@@ -50,6 +50,11 @@ MAX_TEXT_LENGTH = 5000
 
 TEXT_FIELD_TYPES = ("text", "email", "date")
 
+# The login email is the application's primary key, so it is held to the same shape as a declared
+# ``email`` answer: one rule, one place, so the address an applicant signs in with cannot be one the
+# form itself would refuse.
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 # ── slug helpers ───────────────────────────────────────────────────────────
 
 
@@ -105,18 +110,43 @@ def _market_for_applicant(
 # ── application helpers ─────────────────────────────────────────────────────
 
 
-def _find_or_create_application(
-    market_id: str, email: str,
-) -> Application:
-    """Return the existing main application for this market + email, or create a draft one."""
+def _normalized_email(value: Any) -> Tuple[Optional[Tuple[Dict[str, Any], int]], str]:
+    """The address an applicant is identified by, refused unless it is one.
+
+    The login email is the application's primary key, and it is the one email this module used not
+    to check: an address the form itself would refuse as an answer was accepted as the identity the
+    answers are filed under. A typo then persists an application nobody can sign in to, tells the
+    applicant a code is on the way, and leaves a document with an unreachable address on the
+    organizer's applicant list.
+
+    Returns ``(refusal, "")`` or ``(None, email)``.
+
+    Anti-F6: the refusal quotes the address back and says it is the address that is wrong.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return ({"error": "Email address is required."}, 400), ""
+
+    email = value.strip().lower()
+    if not EMAIL_PATTERN.match(email):
+        return ({
+            "error": f'"{email}" is not a valid email address. Check it and try again.',
+        }, 400), ""
+
+    return None, email
+
+
+def _find_application(market_id: str, email: str) -> Optional[Application]:
+    """The existing main application for this market + email, if there is one."""
     existing = ApplicationsApi.applications_collection.find_one({
         ApplicationsApi.MARKET_ID_FIELD: market_id,
         "applicant_email": email,
         "application_type": ApplicationType.MAIN.value,
     })
-    if existing:
-        return Application(**existing)
+    return Application(**existing) if existing else None
 
+
+def _create_application(market_id: str, email: str) -> Application:
+    """Start a new main application for this market + email."""
     app = Application(
         market_id=market_id,
         applicant_email=email,
@@ -207,13 +237,19 @@ def _checked_value(field: Dict[str, Any], value: Any) -> Tuple[Optional[str], An
                 f'"{label}" is too long. It must be at most {MAX_TEXT_LENGTH} characters.',
                 None,
             )
-        if ft == "email" and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value.strip()):
+        if ft == "email" and not EMAIL_PATTERN.match(value.strip()):
             return f'"{label}" must be a valid email address.', None
         if ft == "date":
+            # The check is the format the refusal promises, not merely one ``fromisoformat`` can
+            # parse: that accepts "20240101" and a full datetime too, so the value stored under a
+            # key the form declares as a date would be neither, and a compare across the mixed
+            # forms it lets through is lexicographic and wrong. The canonical date is stored so
+            # every later reader gets the one shape.
             try:
-                datetime.fromisoformat(value.strip())
-            except (ValueError, TypeError):
+                parsed = datetime.strptime(value.strip(), "%Y-%m-%d")
+            except ValueError:
                 return f'"{label}" must be a valid date (YYYY-MM-DD).', None
+            return None, parsed.date().isoformat()
     elif ft == "number":
         try:
             return None, _as_number(value)
@@ -297,8 +333,19 @@ def _validated_form_data(
 def request_applicant_key(market_slug: str, email: str) -> Tuple[Dict[str, Any], int]:
     """Stage 1 of the applicant login flow: send a one-time key to the applicant's email.
 
-    Returns a generic success message regardless of whether an application was found
-    or created, to prevent email enumeration.
+    Signing in is not applying, so the phase does not gate it. An applicant can reach their own
+    application in every phase the market ever moves to: the states the dashboard exists to show
+    them - under review, and later the organizer's decision - are reachable only *after*
+    applications close, so a login gated on ``applications_open`` would lock every applicant out of
+    the dashboard exactly when it has something to say. The token is 30 minutes and in-memory, so
+    "already signed in" is not a way back in either.
+
+    What the phase does gate is *starting* an application: a market that is not open takes no new
+    ones, and creating a document for an address that never applied would put a stranger with an
+    empty form on the organizer's applicant list after review has begun.
+
+    Returns a generic success message whether or not an application was found, to prevent email
+    enumeration.
 
     Args:
         market_slug: The URL-safe slug of the market.
@@ -311,9 +358,10 @@ def request_applicant_key(market_slug: str, email: str) -> Tuple[Dict[str, Any],
     """
     if not market_slug or not market_slug.strip():
         return {"error": "Market identifier is required."}, 400
-    if not email or not email.strip():
-        return {"error": "Email address is required."}, 400
-    email = email.strip().lower()
+
+    refusal, email = _normalized_email(email)
+    if refusal:
+        return refusal
 
     market_doc = _get_market_doc_by_slug(market_slug)
     if not market_doc:
@@ -322,15 +370,15 @@ def request_applicant_key(market_slug: str, email: str) -> Tuple[Dict[str, Any],
     market_id = market_doc.get("id", "")
     phase = _get_market_phase(market_doc)
 
-    # The form and API are visible only when applications are open
-    if phase != MarketPhase.APPLICATIONS_OPEN:
-        phase_label = phase.value.replace("_", " ").title()
-        return {
-            "error": f"Applications are not currently open for this market. "
-                     f"The market is in the {phase_label} phase.",
-        }, 403
-
-    app = _find_or_create_application(market_id, email)
+    app = _find_application(market_id, email)
+    if not app:
+        if phase != MarketPhase.APPLICATIONS_OPEN:
+            phase_label = phase.value.replace("_", " ").title()
+            return {
+                "error": f"Applications are not currently open for this market, so a new one "
+                         f"cannot be started. The market is in the {phase_label} phase.",
+            }, 403
+        app = _create_application(market_id, email)
 
     # Generate and store OTP
     otp = generate_otp()
@@ -375,12 +423,14 @@ def verify_applicant_key(
     """
     if not market_slug or not market_slug.strip():
         return {"error": "Market identifier is required."}, 400
-    if not email or not email.strip():
-        return {"error": "Email address is required."}, 400
+
+    refusal, email = _normalized_email(email)
+    if refusal:
+        return refusal
+
     if not key or not key.strip():
         return {"error": "Verification code is required."}, 400
 
-    email = email.strip().lower()
     key = key.strip()
 
     market_doc = _get_market_doc_by_slug(market_slug)

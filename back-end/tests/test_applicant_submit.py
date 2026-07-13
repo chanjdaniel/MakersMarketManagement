@@ -611,6 +611,65 @@ class TestNumberAnswersAreStoredAsNumbers:
         assert "number" in result["error"].lower()
 
 
+class TestDateAnswersAreStoredAsDates:
+    """A field the form declares as a date is stored as the date the refusal message promises."""
+
+    TOKEN = lambda self: {
+        "application_id": "app-xyz",
+        "market_id": "market-123",
+        "email": "vendor@example.com",
+    }
+
+    def _save(self, start_date):
+        return ApplicantsApi.save_applicant_application(
+            MARKET_SLUG, self.TOKEN(),
+            {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small",
+             "agree": True, "start_date": start_date},
+        )
+
+    def test_iso_date_is_stored(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = self._save("2026-01-31")
+
+        assert status == 200
+        assert result["application"]["formData"]["start_date"] == "2026-01-31"
+
+    def test_surrounding_whitespace_is_stripped(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = self._save("  2026-01-31  ")
+
+        assert status == 200
+        assert result["application"]["formData"]["start_date"] == "2026-01-31"
+
+    def test_basic_format_is_refused(self, open_market, apps_coll):
+        """`fromisoformat` parses "20260131"; the message promises YYYY-MM-DD, so the check does."""
+        _seeded_app(apps_coll)
+
+        result, status = self._save("20260131")
+
+        assert status == 422
+        assert "YYYY-MM-DD" in result["error"]
+        assert apps_coll.find_one({"id": "app-xyz"})["form_data"] == {}
+
+    def test_datetime_is_refused(self, open_market, apps_coll):
+        """A datetime under a date key is a stored type that contradicts the form."""
+        _seeded_app(apps_coll)
+
+        result, status = self._save("2026-01-31T10:00:00+00:00")
+
+        assert status == 422
+        assert "YYYY-MM-DD" in result["error"]
+
+    def test_impossible_date_is_refused(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = self._save("2026-02-30")
+
+        assert status == 422
+
+
 class TestFormDataIsProjectedOntoTheForm:
     """Only the answers the market's form declares reach the applications collection."""
 
