@@ -91,8 +91,10 @@ class FakeSlugMarketsCollection:
                 return dict(doc)
         return None
 
-    def find(self, query):
+    def find(self, query, projection=None):
         matched = [dict(d) for d in self.docs]
+        if projection:
+            matched = [{k: v for k, v in d.items() if k in projection} for d in matched]
         return iter(matched)
 
     def update_one(self, _filter, update):

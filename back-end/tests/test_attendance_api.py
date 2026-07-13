@@ -222,16 +222,31 @@ def _mongo_matches(doc, query):
 
 
 class FakeSlugMarketsCollection:
-    """Stand-in for the markets collection, scanned by the slug lookup."""
+    """Stand-in for the markets collection, scanned by the slug lookup.
+
+    `find` applies the projection the way the server does -- it returns only the fields that
+    were asked for -- so a lookup that reads a field it did not project fails here rather than
+    passing on a document Mongo would never have handed it.
+    """
 
     def __init__(self, docs):
         self.docs = docs
         self.scanned = []
+        self.projections = []
 
-    def find(self, query):
+    def find(self, query, projection=None):
         matched = [dict(d) for d in self.docs if _mongo_matches(d, query)]
         self.scanned = [d["id"] for d in matched]
+        self.projections.append(projection)
+        if projection:
+            matched = [{k: v for k, v in d.items() if k in projection} for d in matched]
         return iter(matched)
+
+    def find_one(self, query):
+        for doc in self.docs:
+            if _mongo_matches(doc, query):
+                return dict(doc)
+        return None
 
 
 def _slug_market(name, **overrides):
@@ -323,3 +338,53 @@ class TestSlugLookupPrunesInMongo:
         found = AttendanceApi.get_published_market_by_slug("live-market")
 
         assert found is not None and found["name"] == "Live Market"
+
+
+class TestSlugLookupProjectsTheMatchPass:
+    """What survives the prune is still every published market, and the pass over it reads one
+    slug -- so it must not pull the setupObject and assignmentObject of each one to do it.
+    """
+
+    def _fake(self, monkeypatch, *docs):
+        fake = FakeSlugMarketsCollection(list(docs))
+        monkeypatch.setattr(AttendanceApi, "markets_collection", fake)
+        return fake
+
+    def test_the_scan_reads_only_the_fields_the_decision_needs(self, monkeypatch):
+        fake = self._fake(
+            monkeypatch,
+            _slug_market("Other Market", phase="archived", isDraft=False, setupObject={"big": 1}),
+            _slug_market("Live Market", phase="archived", isDraft=False, setupObject={"big": 1}),
+        )
+
+        AttendanceApi.get_published_market_by_slug("live-market")
+
+        assert fake.projections == [{"id": 1, "name": 1, "phase": 1, "isDraft": 1, "is_draft": 1}]
+
+    def test_the_match_is_returned_whole(self, monkeypatch):
+        """The scan is projected; the market a caller gets back is not."""
+        self._fake(
+            monkeypatch,
+            _slug_market(
+                "Live Market",
+                phase="archived",
+                isDraft=False,
+                setupObject={"colNames": ["Saturday"]},
+                assignmentObject={"vendorAssignments": []},
+            ),
+        )
+
+        found = AttendanceApi.get_published_market_by_slug("live-market")
+
+        assert found["setupObject"] == {"colNames": ["Saturday"]}
+        assert found["assignmentObject"] == {"vendorAssignments": []}
+
+    def test_a_market_unpublished_between_the_scan_and_the_refetch_is_not_served(self, monkeypatch):
+        """The document that is returned is the one the draft test has to have been run on."""
+        fake = self._fake(
+            monkeypatch, _slug_market("Live Market", phase="archived", isDraft=False)
+        )
+        unpublished = dict(fake.docs[0], phase="draft", isDraft=True)
+        fake.find_one = lambda query: dict(unpublished)
+
+        assert AttendanceApi.get_published_market_by_slug("live-market") is None

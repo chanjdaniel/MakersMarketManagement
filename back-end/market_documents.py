@@ -183,6 +183,26 @@ def non_draft_market_prefilter() -> Dict[str, Any]:
     }
 
 
+def slug_match_projection() -> Dict[str, Any]:
+    """The only fields the slug match pass has to read off a candidate market.
+
+    ``market_name_slug`` reads ``name`` and ``phase_from_market_document`` reads ``phase`` and
+    ``isDraft`` (with the legacy snake_case spelling as its own fallback, so both are projected
+    rather than letting a projection change what the phase mapping decides); ``id`` is what the
+    winner is re-fetched by. Everything else on a market document -- ``setupObject``,
+    ``assignmentObject``, the floorplan -- is the largest data this database stores and none of
+    it is part of the decision, so the pass that runs over every published market on an
+    unauthenticated request does not pull it over the wire.
+    """
+    return {
+        "id": 1,
+        "name": 1,
+        market_doc_key("phase"): 1,
+        market_doc_key("is_draft"): 1,
+        "is_draft": 1,
+    }
+
+
 def market_name_slug(name: str) -> str:
     """The URL path segment a market name is reachable under.
 
@@ -215,14 +235,24 @@ def published_market_by_slug(collection: Any, market_slug: str) -> Optional[Dict
 
     The collection is a parameter because the public surfaces that need this each hold their own
     handle; the rule they share is the slug and the draft test, and those live here.
+
+    The match pass reads only ``slug_match_projection()``, so the scan costs one small document
+    per published market rather than a full market decode each; the winner is then re-fetched
+    whole, because every caller wants the market itself. The re-fetched document is put through
+    the same draft test again: it is the document being returned, and a market unpublished
+    between the two reads must not be served on a public URL by a decision made about the
+    version before it.
     """
     if not market_slug:
         return None
     target = market_slug.strip().lower()
-    for doc in collection.find(non_draft_market_prefilter()):
-        if market_name_slug(doc.get("name", "")) != target:
+    for candidate in collection.find(non_draft_market_prefilter(), slug_match_projection()):
+        if market_name_slug(candidate.get("name", "")) != target:
             continue
-        if phase_from_market_document(doc) == MarketPhase.DRAFT:
+        if phase_from_market_document(candidate) == MarketPhase.DRAFT:
+            continue
+        doc = collection.find_one({"id": candidate.get("id")})
+        if doc is None or phase_from_market_document(doc) == MarketPhase.DRAFT:
             continue
         return doc
     return None
