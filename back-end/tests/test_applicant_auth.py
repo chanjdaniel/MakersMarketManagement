@@ -125,6 +125,19 @@ def no_email(monkeypatch):
     monkeypatch.setattr(ApplicantsApi, "send_otp_email", lambda *_a, **_kw: True)
 
 
+@pytest.fixture(autouse=True)
+def fast_key_request_floor(monkeypatch):
+    """Every request-key call in this module waits out the floor, and only two of them are about it.
+
+    The floor is a real ``time.sleep`` on the way out of the endpoint, so at its production length
+    the ~40 calls here spend about a minute of the test job asleep, buying no coverage. It is shrunk
+    for the module and restored, explicitly, by the tests in ``TestTheClockSaysNothingTheBodyDoesNot``
+    that assert against a value of their own - so the behavior stays under test and the wait does
+    not.
+    """
+    monkeypatch.setattr(ApplicantsApi, "KEY_REQUEST_FLOOR_SECONDS", 0.01)
+
+
 class TestRequestKey:
     """Tests for request_applicant_key (Stage 1 of the login flow)."""
 
@@ -742,6 +755,46 @@ class TestTheClockSaysNothingTheBodyDoesNot:
         assert applicant >= self.FLOOR
         assert stranger >= self.FLOOR
 
+    def test_a_slow_captcha_does_not_eat_the_floor_the_send_hides_behind(
+        self, apps_coll, login_codes, monkeypatch,
+    ):
+        """The floor has to cover the work that *branches*, so its clock starts where the branch
+        does - not at the top of the request.
+
+        Timed from the top, the shared prelude spends the budget: the captcha is an outbound call to
+        Google with a five-second timeout, and one slow-but-successful verify is enough to leave
+        nothing of the floor by the time the send begins. The send then lands back on the response
+        clock in full, and the applicant answers slower than the stranger again - the enumeration
+        oracle, restored by the tail latency an attacker only has to be patient enough to wait for.
+        """
+        monkeypatch.setattr(ApplicantsApi, "KEY_REQUEST_FLOOR_SECONDS", self.FLOOR)
+        monkeypatch.setattr(ApplicantsApi, "markets_collection", FakeSlugMarketsCollection([
+            stored_market(phase=MarketPhase.APPLICATIONS_CLOSED, name="Closed Market", id="closed-1")
+        ]))
+        apps_coll.insert_one(Application(
+            market_id="closed-1", applicant_email="vendor@example.com",
+            form_data={}, status=ApplicationStatus.OPEN,
+        ).model_dump())
+        # Google having a slow day. It runs for every caller and tells nobody's address apart.
+        monkeypatch.setattr(
+            ApplicantsApi, "verify_recaptcha",
+            lambda *_a, **_kw: time.sleep(self.FLOOR) or (True, 0.9),
+        )
+        monkeypatch.setattr(
+            ApplicantsApi, "send_otp_email",
+            lambda _addr, _otp: time.sleep(self.FLOOR / 2) or True,
+        )
+
+        applicant, applicant_status = self._elapsed("closed-market", "vendor@example.com")
+        stranger, stranger_status = self._elapsed("closed-market", "stranger@example.com")
+
+        assert applicant_status == stranger_status == 200
+        # The send is half a floor long and must still be buried by it: what separates the two is
+        # scheduling noise, not a round-trip to Resend.
+        assert abs(applicant - stranger) < self.FLOOR / 2, (
+            "the send is back on the response clock: the floor was spent before the branch ran"
+        )
+
     def test_a_refusal_is_not_held_back(self, published_market, apps_coll, no_email, monkeypatch):
         """The floor is for the answers that could betray the applicant list. A refusal keyed on the
         caller -- a bad captcha -- knows nothing about the address, so it costs nobody the wait."""
@@ -1113,13 +1166,31 @@ class TestAuthenticateRequest:
         assert payload["application_id"] == "app-1"
 
     def test_returns_none_for_expired_token(self):
-        import time, jwt, os
+        import time, jwt
+        from utils.secret_key import signing_secret
         expired = jwt.encode(
             {"application_id": "a", "market_id": "m", "email": "e", "exp": int(time.time()) - 1},
-            os.getenv("SECRET_KEY", "TEMP_KEY_CHANGE_IN_PRODUCTION"),
+            signing_secret(),
             algorithm="HS256",
         )
         assert ApplicantsApi.authenticate_request(f"Bearer {expired}") is None
+
+    def test_a_token_signed_with_the_secret_this_repository_used_to_publish_is_refused(self):
+        """The signing key was once a literal committed to this repo, which made every applicant
+        token forgeable by anyone who could read it. There is no fallback secret now, so the string
+        that used to be one authenticates nobody."""
+        import time, jwt
+        forged = jwt.encode(
+            {
+                "application_id": "someone-elses-app",
+                "market_id": "m",
+                "email": "victim@example.com",
+                "exp": int(time.time()) + 600,
+            },
+            "TEMP_KEY_CHANGE_IN_PRODUCTION",
+            algorithm="HS256",
+        )
+        assert ApplicantsApi.authenticate_request(f"Bearer {forged}") is None
 
 
 class TestGetApplication:

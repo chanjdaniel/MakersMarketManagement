@@ -31,6 +31,7 @@ from market_documents import (
 )
 from utils.captcha import CaptchaNotConfiguredError, assert_captcha_configured
 from utils.proxy import TrustedProxyConfigError, apply_trusted_proxy_fix
+from utils.secret_key import SecretKeyNotConfiguredError, signing_secret
 import db_config
 from dataclasses import asdict
 import json
@@ -72,16 +73,17 @@ def verify_market_key_migration() -> None:
         probe.client.close()
 
 
-def verify_public_endpoint_defenses() -> None:
+def verify_public_endpoint_defenses() -> str:
     """Refuse to boot without the configuration the public endpoints are defended by.
 
     The applicant login endpoints are unauthenticated, they write to the database, and they send
-    mail from this domain. What keeps a script off them is a reCAPTCHA secret, and what keeps their
-    rate limits keyed on the caller rather than on a shared proxy address is a trusted-hop count.
-    Both of those silently degrade to nothing when unset - the captcha passes everybody, and the
-    limits lock out everybody - so, as with the market-key migration above, an unknown state is
-    never taken for a safe one: it fails at boot, naming the variable, rather than in production,
-    naming nothing.
+    mail from this domain. What keeps a script off them is a reCAPTCHA secret; what keeps their rate
+    limits keyed on the caller rather than on a shared proxy address is a trusted-hop count; and
+    what makes the token they authenticate with mean anything is a signing secret. All three
+    silently degrade to nothing when unset - the captcha passes everybody, the limits lock out
+    everybody, and a token signed with a key the repository publishes is a token anyone can write -
+    so, as with the market-key migration above, an unknown state is never taken for a safe one: it
+    fails at boot, naming the variable, rather than in production, naming nothing.
 
     This runs for *every* process, not only one that calls itself production. Conditioning it on
     ``FLASK_ENV`` is what made the whole check dead code: the repo's own image sets
@@ -89,21 +91,28 @@ def verify_public_endpoint_defenses() -> None:
     check were exactly the ones exempt from it. The escape hatch is opt-in and it is loud - see
     ``utils.deployment`` - so a development machine can still boot unconfigured while a deployment
     that forgets cannot.
+
+    Returns:
+        The signing secret, so that the one place that needs it does not fetch it a second time.
     """
     try:
         assert_captcha_configured()
+        secret = signing_secret()
         trusted_proxy_hops = apply_trusted_proxy_fix(app)
-    except (CaptchaNotConfiguredError, TrustedProxyConfigError) as e:
+    except (
+        CaptchaNotConfiguredError, SecretKeyNotConfiguredError, TrustedProxyConfigError,
+    ) as e:
         logger.critical("%s", e)
         raise
     logger.info("Trusting %d proxy hop(s) for the client address", trusted_proxy_hops)
+    return secret
 
 
 verify_market_key_migration()
 
 app = Flask(__name__)
 
-verify_public_endpoint_defenses()
+secret_key = verify_public_endpoint_defenses()
 
 # Session configuration: Use 'null' for Vercel serverless (stores in cookies only)
 # For production with persistent sessions, consider MongoDB-backed sessions
@@ -118,7 +127,7 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 # Only require secure cookies in production or when using HTTPS
 app.config["SESSION_COOKIE_SECURE"] = os.getenv("FLASK_ENV") == "production" or os.getenv("USE_HTTPS", "true").lower() == "true"
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'TEMP_KEY_CHANGE_IN_PRODUCTION')
+app.config['SECRET_KEY'] = secret_key
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB upload limit
 
 # Only create session folder for filesystem sessions

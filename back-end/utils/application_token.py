@@ -1,8 +1,13 @@
 """Application-scoped JWT utility for the applicant email-key login flow.
 
 Generates short-lived (30 min) tokens that carry the application id, market id,
-and applicant email. The token is signed with the application's ``SECRET_KEY``
-and verified on every applicant endpoint request. No Flask session is created.
+and applicant email. The token is verified on every applicant endpoint request.
+No Flask session is created.
+
+This token is the *only* thing standing between a caller and any applicant's application, so the
+secret it is signed with is fetched from ``utils.secret_key`` -- which has no fallback, and no
+default. It is read per call rather than captured at import so that a process which never had a
+secret cannot have signed anything before the boot check got the chance to refuse.
 
 Token payload::
 
@@ -13,13 +18,12 @@ Token payload::
         "exp": int (unix timestamp)
     }
 """
-import os
 import time
 from typing import Optional, Dict, Any
 
 import jwt
 
-SECRET_KEY = os.getenv("SECRET_KEY", "TEMP_KEY_CHANGE_IN_PRODUCTION")
+from utils.secret_key import signing_secret
 
 APPLICATION_TOKEN_EXPIRY_SECONDS = 30 * 60  # 30 minutes
 
@@ -45,7 +49,7 @@ def generate_application_token(
         "iat": now,
         "exp": now + APPLICATION_TOKEN_EXPIRY_SECONDS,
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    return jwt.encode(payload, signing_secret(), algorithm="HS256")
 
 
 def verify_application_token(token: str) -> Optional[Dict[str, Any]]:
@@ -59,7 +63,7 @@ def verify_application_token(token: str) -> Optional[Dict[str, Any]]:
         expired, malformed, or otherwise invalid.
     """
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        payload = jwt.decode(token, signing_secret(), algorithms=["HS256"])
         # exp is checked by jwt.decode, but double-check
         if "application_id" not in payload or "email" not in payload:
             return None

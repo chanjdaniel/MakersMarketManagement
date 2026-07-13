@@ -108,6 +108,14 @@ VERIFY_KEY_IP_WINDOW_SECONDS = 3600
 # It is set above a Resend round-trip, so the send fits inside it and the two paths are the same
 # length. A send that overran the floor would put its overrun back on the clock; that is the residual
 # and it is bounded by how far Resend can be from its usual few hundred milliseconds.
+#
+# The clock starts where the paths diverge, not at the top of the request. The captcha (an outbound
+# call to Google, with a five-second timeout of its own), the rate-limit round-trips, and the market
+# lookup all run identically for every caller and leak nothing, but they are not free, and a floor
+# measured from before them is a floor they can spend. Timed from the top, a captcha verify that ran
+# slow - still well inside its timeout - would leave nothing of the budget by the time the send
+# began, and the send would go straight back onto the response clock. The floor covers the
+# branch-dependent work, which is the only work worth covering.
 KEY_REQUEST_FLOOR_SECONDS = 1.5
 
 RATE_LIMITED_ERROR = (
@@ -679,8 +687,6 @@ def request_applicant_key(
 
     Anti-F6: refusal messages name the exact problem.
     """
-    started = time.monotonic()
-
     if not market_slug or not market_slug.strip():
         return {"error": "Market identifier is required."}, 400
 
@@ -711,6 +717,14 @@ def request_applicant_key(
     market_doc = _get_market_doc_by_slug(market_slug)
     if not market_doc:
         return {"error": "Market not found. Check the URL and try again."}, 404
+
+    # Everything above ran the same way for every caller, whoever they are: the captcha, the two
+    # budgets, and the market lookup neither know the address nor branch on it. The floor is the
+    # cover for the work that *does* branch, so its clock starts where the branch does. Started any
+    # earlier, a slow captcha round-trip would spend the budget before the send it exists to hide,
+    # and the send would land back on the response clock in full - the enumeration oracle again,
+    # under exactly the tail latency an attacker only has to be patient enough to wait for.
+    started = time.monotonic()
 
     market_id = market_doc.get("id", "")
     phase = _get_market_phase(market_doc)

@@ -158,15 +158,29 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Public Applicant Endpoints (Conventioner sharp edge)
 
-- **The back end refuses to boot, anywhere, without `RECAPTCHA_SECRET_KEY` and `TRUSTED_PROXY_HOPS`**
-  (`verify_public_endpoint_defenses()` in `back-end/app.py`).
-  Both defend `/public/applicant/*`, which is unauthenticated, writes to the database, and sends
-  mail from the product's domain, and both silently degrade to nothing when unset: `verify_recaptcha`
-  passes every caller with no secret, and a rate limit keyed on `remote_addr` behind a proxy is one
-  shared budget that locks out every real applicant instead of bounding an attacker.
+- **The back end refuses to boot, anywhere, without `SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, and
+  `TRUSTED_PROXY_HOPS`** (`verify_public_endpoint_defenses()` in `back-end/app.py`).
+  All three defend `/public/applicant/*`, which is unauthenticated, writes to the database, and sends
+  mail from the product's domain, and all three silently degrade to nothing when unset:
+  `verify_recaptcha` passes every caller with no secret, and a rate limit keyed on `remote_addr`
+  behind a proxy is one shared budget that locks out every real applicant instead of bounding an
+  attacker.
   Set `TRUSTED_PROXY_HOPS` to the number of proxies of our own a request passes through
   (0 = Flask exposed directly); ProxyFix then reads exactly that many `X-Forwarded-For` entries from
   the right, which is the part a client cannot forge.
+- **There is no fallback signing secret, and there must never be one again**
+  (`back-end/utils/secret_key.py` is the only reader of `SECRET_KEY`).
+  It signs both the Flask session cookie and the application-scoped applicant JWT
+  (`utils/application_token.py`), so it is what makes an applicant token mean anything - and a token
+  reads and overwrites any applicant's application, past the one-time code, the captcha, and every
+  rate limit.
+  It used to default to a literal committed to this repository, which is to say a published key that
+  anyone reading the source could sign with.
+  A secret with a default is not a secret: do not add one back "for dev".
+  Under `ALLOW_INSECURE_LOCAL_DEV` an unconfigured process signs with a *random per-process* key
+  instead, which cannot be forged against and cannot quietly become the key a deployment ships with;
+  the cost is that a restart invalidates that process's sessions and tokens, which is the right price
+  for declining to configure a key.
 - **The escape hatch is `ALLOW_INSECURE_LOCAL_DEV`, and it is the only one** (`back-end/utils/deployment.py`).
   It defaults to off, so the secure state is the one you get by forgetting.
   Do NOT re-gate any of this on `FLASK_ENV`: that is where the check was, and it made the check dead
@@ -189,6 +203,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   this product documents a serverless target (`SESSION_TYPE=null` "for Vercel serverless") where the
   context is frozen the moment the response is written and the thread may never run at all.
   Delivering the code matters more than the side-channel; the floor buys both.
+  Its clock starts where the two paths *diverge* (after the captcha, the rate limits, and the market
+  lookup), not at the top of the request: those steps run identically for every caller and leak
+  nothing, but they are not free, and a floor measured from before them is a floor a slow captcha
+  round-trip can spend - which puts the send straight back on the response clock and reopens the
+  oracle under exactly the tail latency an attacker can afford to wait for.
   Truthful bound: the floor equalizes the two paths as long as the send fits inside it. A send that
   overran the floor would put its overrun back on the clock, and in `applications_open` a first-time
   address still costs one extra Mongo insert. Both are small; neither is zero. Do not write "the
