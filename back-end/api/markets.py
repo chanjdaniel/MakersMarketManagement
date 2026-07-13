@@ -1,6 +1,6 @@
 import re
 import uuid
-from typing import NamedTuple, Optional, Dict, Any, List
+from typing import NamedTuple, Optional, Dict, Any, List, Tuple
 from pymongo.results import InsertOneResult, UpdateResult, DeleteResult
 from pydantic import BaseModel
 from bson import ObjectId
@@ -55,20 +55,32 @@ class ApplicationFormLockedError(Exception):
     """
 
 
-def _load_organization(organization_id: Optional[str]):
-    """Resolve a market's organization, or None when absent or unparseable."""
+def _load_organization_context(
+    organization_id: Optional[str],
+) -> Tuple[Optional[Organization], Optional[Dict[str, Any]]]:
+    """Resolve a market's organization to its model and its raw document.
+
+    Either half is None when the organization is absent, and the model alone is None when the
+    stored document fails validation - a market whose organization no longer parses is still
+    servable, it just grants no organization-derived permission.
+    """
     if not organization_id:
-        return None
+        return None, None
     org_dict = OrgsApi.get_organization(organization_id)
     if not org_dict:
-        return None
+        return None, None
     org_dict.pop('_id', None)
-    from datatypes import Organization
     try:
-        return Organization(**org_dict)
+        return Organization(**org_dict), org_dict
     except Exception as e:
         logger.warning(f"Failed to parse organization {organization_id}: {e}")
-        return None
+        return None, org_dict
+
+
+def _load_organization(organization_id: Optional[str]) -> Optional[Organization]:
+    """Resolve a market's organization, or None when absent or unparseable."""
+    organization, _ = _load_organization_context(organization_id)
+    return organization
 
 
 def _load_market_for(market_id: str, requesting_user: str, role: MarketRole, action: str) -> Market:
@@ -77,12 +89,10 @@ def _load_market_for(market_id: str, requesting_user: str, role: MarketRole, act
     if not market_dict:
         raise MarketNotFoundError("Market not found")
 
-    market_dict_snake = convert_keys_to_snake_case(market_dict.copy())
     try:
-        market = Market(**market_dict_snake)
+        market = market_from_document(market_dict)
     except Exception as e:
         raise ValueError(f"Invalid market data: {e}")
-    market.phase = phase_from_market_document(market_dict)
 
     organization = _load_organization(market.organization_id)
     if not PermissionsApi.user_has_permission(requesting_user, market, role, organization):
@@ -384,20 +394,7 @@ def load_market_context(market_id: str) -> Optional[MarketContext]:
         logger.warning("Stored market %s failed validation: %s", market_id, e)
         return MarketContext(market_dict, None, None, None)
 
-    organization = None
-    org_dict = None
-    if market.organization_id:
-        org_dict = OrgsApi.get_organization(market.organization_id)
-        if org_dict:
-            org_dict.pop('_id', None)
-            try:
-                organization = Organization(**org_dict)
-            except Exception as e:
-                logger.warning(
-                    "Organization %s owning market %s failed validation: %s",
-                    market.organization_id, market_id, e,
-                )
-                organization = None
+    organization, org_dict = _load_organization_context(market.organization_id)
 
     return MarketContext(market_dict, market, organization, org_dict)
 
