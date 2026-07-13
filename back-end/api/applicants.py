@@ -55,6 +55,38 @@ TEXT_FIELD_TYPES = ("text", "email", "date")
 # form itself would refuse.
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+# The states of a review the organizer has not finished delivering. A reviewer recording a verdict
+# is not the organizer sending it, and until the organizer acts outward - which as of this build is
+# ``assignment_sent`` - the applicant is told only that the application is under review.
+#
+# This has to be enforced here, on the way out of the process, because anything the applicant's
+# browser receives, the applicant can read: a client-side label mapped over a payload that carries
+# ``reviewer_rejected`` still ships the rejection in the response body and into the page markup.
+# There is no applicant-facing payload that does not pass through ``_application_response``, so this
+# is the one place that decides, and nothing downstream of it may reintroduce the raw value.
+REVIEW_IN_PROGRESS_STATUSES = frozenset({
+    ApplicationStatus.UNDER_REVIEW,
+    ApplicationStatus.REVIEWER_APPROVED,
+    ApplicationStatus.REVIEWER_REJECTED,
+    ApplicationStatus.UNASSIGNED,
+    ApplicationStatus.ASSIGNED,
+})
+
+# One response for "there is no pending code", whatever the reason. Whether an application exists
+# for an address is the organizer's private data, so a public endpoint cannot answer it - and a
+# refusal that names a missing application answers it to anyone who asks. A missing application and
+# an application whose code has expired or was already spent are indistinguishable from here on out.
+NO_PENDING_CODE_ERROR = (
+    "There is no pending verification code for this email address. It may have expired, or the "
+    "address may not be the one you requested a code for. Please request a new code."
+)
+
+# The one answer ``request_applicant_key`` gives once the market resolves: a code was sent if there
+# was an application to send it for, and the caller cannot tell which happened.
+KEY_REQUEST_ACCEPTED_MESSAGE = (
+    "If an application exists for this email, a verification code has been sent."
+)
+
 # ── slug helpers ───────────────────────────────────────────────────────────
 
 
@@ -342,10 +374,15 @@ def request_applicant_key(market_slug: str, email: str) -> Tuple[Dict[str, Any],
 
     What the phase does gate is *starting* an application: a market that is not open takes no new
     ones, and creating a document for an address that never applied would put a stranger with an
-    empty form on the organizer's applicant list after review has begun.
+    empty form on the organizer's applicant list after review has begun. That refusal is silent,
+    though - see below.
 
-    Returns a generic success message whether or not an application was found, to prevent email
-    enumeration.
+    Returns the same generic message in every phase, whether or not an application was found. Who
+    applied to a market is the organizer's private data, so this endpoint cannot answer it: naming
+    the phase gate only when no application exists turns the refusal into an oracle, answering 200
+    for an address that applied and 403 for one that did not. The market's phase is public (the
+    application page reads it from ``get_public_application_form`` and says so on screen); *which
+    addresses are on its applicant list* is not, and only this endpoint knows that.
 
     Args:
         market_slug: The URL-safe slug of the market.
@@ -373,11 +410,7 @@ def request_applicant_key(market_slug: str, email: str) -> Tuple[Dict[str, Any],
     app = _find_application(market_id, email)
     if not app:
         if phase != MarketPhase.APPLICATIONS_OPEN:
-            phase_label = phase.value.replace("_", " ").title()
-            return {
-                "error": f"Applications are not currently open for this market, so a new one "
-                         f"cannot be started. The market is in the {phase_label} phase.",
-            }, 403
+            return {"message": KEY_REQUEST_ACCEPTED_MESSAGE}, 200
         app = _create_application(market_id, email)
 
     # Generate and store OTP
@@ -398,9 +431,7 @@ def request_applicant_key(market_slug: str, email: str) -> Tuple[Dict[str, Any],
     # Send email (fire-and-forget -- the message is generic either way)
     send_otp_email(email, otp)
 
-    return {
-        "message": "If an application exists for this email, a verification code has been sent.",
-    }, 200
+    return {"message": KEY_REQUEST_ACCEPTED_MESSAGE}, 200
 
 
 def verify_applicant_key(
@@ -409,7 +440,9 @@ def verify_applicant_key(
     """Stage 2 of the applicant login flow: verify the one-time key.
 
     On success returns a short-lived application-scoped JWT + application data.
-    On failure returns a specific error message describing exactly what went wrong.
+    On failure returns a specific error message describing exactly what went wrong -- with the one
+    exception that no refusal may reveal whether an application exists for the address, so an
+    address that never applied is answered identically to one whose code has expired or was spent.
 
     Args:
         market_slug: The URL-safe slug of the market.
@@ -445,19 +478,18 @@ def verify_applicant_key(
         "application_type": ApplicationType.MAIN.value,
     })
 
+    # An address with no application is answered exactly as an application with no live code: the
+    # same status, the same message. Naming the missing application here would confirm, to anyone
+    # who asks, which addresses are on this market's applicant list - the same leak the request
+    # endpoint's generic message exists to prevent, through the other door.
     if not app_doc:
-        return {
-            "error": "No application found for this email. "
-                     "Please visit the application page to apply first.",
-        }, 404
+        return {"error": NO_PENDING_CODE_ERROR}, 401
 
     app = Application(**app_doc)
 
     # Check expiry
     if not app.otp_expires or not verify_token_expiry(app.otp_expires):
-        return {
-            "error": "This verification code has expired. Please request a new one.",
-        }, 401
+        return {"error": NO_PENDING_CODE_ERROR}, 401
 
     # Check attempt limit
     if app.otp_attempts >= MAX_OTP_ATTEMPTS:
@@ -642,6 +674,18 @@ def get_public_application_form(market_slug: str) -> Tuple[Dict[str, Any], int]:
 # ── internal helpers ────────────────────────────────────────────────────────
 
 
+def applicant_visible_status(status: ApplicationStatus) -> ApplicationStatus:
+    """The status of an application as its applicant is allowed to know it.
+
+    Collapses every working state of an unfinished review to ``under_review``, so that nothing the
+    applicant receives distinguishes an approval from a rejection. See
+    ``REVIEW_IN_PROGRESS_STATUSES``.
+    """
+    if status in REVIEW_IN_PROGRESS_STATUSES:
+        return ApplicationStatus.UNDER_REVIEW
+    return status
+
+
 def _application_response(app: Application) -> Dict[str, Any]:
     """Return a camelCase dictionary for the front-end."""
     return {
@@ -649,7 +693,7 @@ def _application_response(app: Application) -> Dict[str, Any]:
         "marketId": app.market_id,
         "applicantEmail": app.applicant_email,
         "formData": app.form_data,
-        "status": app.status.value,
+        "status": applicant_visible_status(app.status).value,
         "applicationType": app.application_type.value,
         "mainApplicationId": app.main_application_id,
         "submittedAt": app.submitted_at,

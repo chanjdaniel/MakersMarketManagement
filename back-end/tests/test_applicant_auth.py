@@ -94,7 +94,8 @@ class TestRequestKey:
         assert status == 404
         assert "not found" in result["error"].lower()
 
-    def test_returns_403_when_market_is_draft(self, apps_coll, no_email, monkeypatch):
+    def test_returns_404_when_market_is_draft(self, apps_coll, no_email, monkeypatch):
+        """A draft market is invisible to the public slug lookup, so it is not found at all."""
         fake = FakeSlugMarketsCollection([
             stored_market(phase=MarketPhase.DRAFT, name="Draft Market")
         ])
@@ -105,7 +106,8 @@ class TestRequestKey:
 
     def test_a_closed_market_takes_no_new_application(self, apps_coll, no_email, monkeypatch):
         """The phase gates *starting* an application, so a stranger with an empty form cannot land
-        on the organizer's applicant list after review has begun."""
+        on the organizer's applicant list after review has begun -- but the refusal is silent, so
+        that it does not become an oracle for who applied (see the enumeration test below)."""
         fake = FakeSlugMarketsCollection([
             stored_market(phase=MarketPhase.APPLICATIONS_CLOSED, name="Closed Market",
                           id="closed-1")
@@ -114,8 +116,8 @@ class TestRequestKey:
 
         result, status = ApplicantsApi.request_applicant_key("closed-market", "test@example.com")
 
-        assert status == 403
-        assert "Applications Closed" in result["error"]
+        assert status == 200
+        assert result["message"] == ApplicantsApi.KEY_REQUEST_ACCEPTED_MESSAGE
         assert apps_coll.documents == []
 
     def test_an_existing_applicant_can_sign_in_after_applications_close(
@@ -202,6 +204,29 @@ class TestRequestKey:
         result, _ = ApplicantsApi.request_applicant_key("test-market", "unknown@example.com")
         # The key fact: the message says "If an application exists"
         assert "If an application exists" in result["message"]
+
+    def test_a_closed_market_answers_an_applicant_and_a_stranger_identically(
+        self, apps_coll, no_email, monkeypatch,
+    ):
+        """Who applied to a market is the organizer's private data, and this is the endpoint that
+        knows it. Naming the phase gate only when no application exists makes the refusal an oracle:
+        200 for an address on the applicant list, 403 for one that is not."""
+        fake = FakeSlugMarketsCollection([
+            stored_market(phase=MarketPhase.APPLICATIONS_CLOSED, name="Closed Market",
+                          id="closed-1")
+        ])
+        monkeypatch.setattr(ApplicantsApi, "markets_collection", fake)
+        apps_coll.insert_one(Application(
+            market_id="closed-1",
+            applicant_email="applied@example.com",
+            form_data={"business_name": "Acme"},
+            status=ApplicationStatus.OPEN,
+        ).model_dump())
+
+        applied = ApplicantsApi.request_applicant_key("closed-market", "applied@example.com")
+        stranger = ApplicantsApi.request_applicant_key("closed-market", "stranger@example.com")
+
+        assert applied == stranger
 
     def test_sends_email_to_applicant(self, published_market, apps_coll):
         sent_emails = []
@@ -354,14 +379,24 @@ class TestVerifyKey:
         assert doc.get("otp_expires") is None
         assert doc["otp_attempts"] == 0
 
-    def test_returns_404_when_no_application_exists(self, published_market, apps_coll):
-        result, status = ApplicantsApi.verify_applicant_key(
+    def test_an_address_that_never_applied_is_answered_as_a_spent_code(
+        self, published_market, apps_coll,
+    ):
+        """The refusal cannot say "no application found for this email": that confirms, to an
+        unauthenticated caller, which addresses are on the market's applicant list - the same leak
+        the request endpoint's generic message exists to prevent, through the other door."""
+        stranger, stranger_status = ApplicantsApi.verify_applicant_key(
             "test-market", "never-applied@example.com", "123456"
         )
 
-        assert status == 404
-        assert "no application" in result["error"].lower()
-        assert "apply" in result["error"].lower()
+        # An application that exists but has no live code -- the only other way to get here.
+        self._seeded_app(apps_coll, otp=None, otp_expires=None)
+        spent, spent_status = ApplicantsApi.verify_applicant_key(
+            "test-market", "vendor@example.com", "123456"
+        )
+
+        assert stranger_status == spent_status == 401
+        assert stranger == spent
 
     def test_separate_market_otps_dont_cross_markets(self, apps_coll, no_email, monkeypatch):
         fake1 = FakeSlugMarketsCollection([
@@ -475,6 +510,62 @@ class TestGetApplication:
         assert status == 200
         assert result["application"]["applicantEmail"] == "vendor@example.com"
         assert result["application"]["formData"]["business_name"] == "Acme"
+
+
+class TestReviewerVerdictIsNotSentToTheApplicant:
+    """The organizer delivers the decision; a reviewer recording one does not.
+
+    The applicant's browser can read everything the server sends it, so the verdict has to be gone
+    from the payload, not merely from the label rendered over it: a client-side mapping still ships
+    ``reviewer_rejected`` in the response body and into the page markup.
+    """
+
+    TOKEN = {
+        "application_id": "app-xyz",
+        "market_id": "market-123",
+        "email": "vendor@example.com",
+    }
+
+    def _application_with_status(self, apps_coll, status):
+        apps_coll.insert_one(Application(
+            id="app-xyz",
+            market_id="market-123",
+            applicant_email="vendor@example.com",
+            form_data={"business_name": "Acme"},
+            status=status,
+        ).model_dump())
+
+    @pytest.mark.parametrize("stored", sorted(ApplicantsApi.REVIEW_IN_PROGRESS_STATUSES))
+    def test_a_review_in_progress_reads_as_under_review(
+        self, published_market, apps_coll, stored,
+    ):
+        self._application_with_status(apps_coll, stored)
+
+        result, _ = ApplicantsApi.get_applicant_application("test-market", self.TOKEN)
+
+        assert result["application"]["status"] == ApplicationStatus.UNDER_REVIEW.value
+
+    def test_an_approval_and_a_rejection_are_indistinguishable(self, published_market, apps_coll):
+        approved = ApplicantsApi.applicant_visible_status(ApplicationStatus.REVIEWER_APPROVED)
+        rejected = ApplicantsApi.applicant_visible_status(ApplicationStatus.REVIEWER_REJECTED)
+
+        assert approved == rejected == ApplicationStatus.UNDER_REVIEW
+
+    @pytest.mark.parametrize("stored", [
+        ApplicationStatus.OPEN,
+        ApplicationStatus.ASSIGNMENT_SENT,
+        ApplicationStatus.VENDOR_ACCEPTED,
+        ApplicationStatus.VENDOR_REFUSED,
+        ApplicationStatus.CANCELLED,
+    ])
+    def test_a_state_the_organizer_has_acted_outward_on_is_sent_as_it_is(
+        self, published_market, apps_coll, stored,
+    ):
+        self._application_with_status(apps_coll, stored)
+
+        result, _ = ApplicantsApi.get_applicant_application("test-market", self.TOKEN)
+
+        assert result["application"]["status"] == stored.value
 
 
 class TestSlugLookup:
