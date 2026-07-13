@@ -20,6 +20,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 
+from pymongo import ReturnDocument
 from pymongo.errors import PyMongoError
 
 from db_config import get_database
@@ -46,6 +47,7 @@ login_codes_collection = db["applicant_login_codes"]
 from utils.tokens import generate_otp
 from utils.email import send_otp_email
 from utils.application_token import generate_application_token, verify_application_token
+from utils.background import run_later
 from utils.captcha import verify_recaptcha
 from utils.rate_limit import rate_limit_exceeded
 
@@ -64,15 +66,25 @@ KEY_RESEND_COOLDOWN_SECONDS = 60
 # which is to say not at all. Unbounded, that caller sends a thousand pieces of mail from the
 # product's domain and puts a thousand empty applications on the organizer's list -- which also
 # trips the D9 form lock, freezing a form the organizer is still writing. The captcha is what stops
-# a script from being one of those callers; the per-IP budget is what bounds the ones that get past
-# it; the global budget is the ceiling on how much mail the product will send in an hour, whoever
-# asks for it, because domain reputation is a single shared resource.
+# a script from being one of those callers; these budgets are what bound the ones that get past it.
+#
+# Each budget is chosen for what it costs when it is *spent*, not only for what it stops. The per-IP
+# one is the primary bound because it is the only one an attacker cannot spend on anyone else's
+# behalf: a caller that exhausts it locks out itself. The per-market one contains the blast radius
+# of a caller with many source addresses to the one market it is aimed at, so a flood against one
+# organizer's market cannot take applicant sign-in off the air for every other market. The global
+# one is a ceiling on how much mail the product will send in an hour, whoever asks for it, because
+# domain reputation is a single shared resource -- and because exhausting it is an outage for
+# everybody, it is set far above any legitimate hour and it is spent only by callers that have
+# already passed the captcha.
 #
 # The budgets are generous on purpose: applicants share IPs (a convention hall's wifi is one
 # address), so a limit tight enough to be interesting to an attacker who has already solved a
 # captcha would lock a room full of vendors out of their own applications.
 REQUEST_KEY_IP_LIMIT = 20
 REQUEST_KEY_IP_WINDOW_SECONDS = 3600
+REQUEST_KEY_MARKET_LIMIT = 200
+REQUEST_KEY_MARKET_WINDOW_SECONDS = 3600
 REQUEST_KEY_GLOBAL_LIMIT = 1000
 REQUEST_KEY_GLOBAL_WINDOW_SECONDS = 3600
 
@@ -331,10 +343,28 @@ def _issue_challenge(market_id: str, email: str, code: Optional[str]) -> None:
     )
 
 
-def _spend_challenge_attempt(market_id: str, email: str) -> None:
-    login_codes_collection.update_one(
-        {"market_id": market_id, "email": email},
+def _spend_challenge_attempt(market_id: str, email: str) -> Optional[Dict[str, Any]]:
+    """Spend one attempt against this address's live challenge, and return it as it now stands.
+
+    The budget check and the spend are one conditional update, because two of them are not a budget:
+    read the count, find it under the cap, then increment it, and N guesses issued at once all read
+    the same pre-increment value, all pass, and all get their guess compared against the live code.
+    The cap is then the number of workers a caller has rather than five, which is a brute-force
+    budget against a 5-minute code, and it is exactly the bound everything else here rests on.
+
+    Returns ``None`` when there was nothing to spend -- no challenge, an expired one, or one whose
+    budget is gone. Those are two different answers to the caller, and ``_challenge_for`` is what
+    tells them apart; what they have in common is that no guess is compared against a code.
+    """
+    return login_codes_collection.find_one_and_update(
+        {
+            "market_id": market_id,
+            "email": email,
+            "attempts": {"$lt": MAX_OTP_ATTEMPTS},
+            "expires_at": {"$gt": datetime.now(timezone.utc)},
+        },
         {"$inc": {"attempts": 1}},
+        return_document=ReturnDocument.AFTER,
     )
 
 
@@ -585,20 +615,31 @@ def request_applicant_key(
     application page reads it from ``get_public_application_form`` and says so on screen); *which
     addresses are on its applicant list* is not, and only this endpoint knows that.
 
-    The bounds on the surface come in three layers, and each one answers something the others
-    cannot. The captcha keeps a script from being a caller at all - it is the same reCAPTCHA gate
+    The bounds on the surface come in layers, and each one answers something the others cannot. The
+    captcha keeps a script from being a caller at all - it is the same reCAPTCHA gate
     ``register_user_with_captcha`` puts on the organizer-side signup, because this is the same kind
-    of surface. The per-IP and global budgets bound what a caller that got past it can spend, across
-    *all* addresses: the resend cooldown below is keyed on one address, so it does nothing about a
-    caller that names a thousand of them, and a thousand of them is a thousand pieces of mail from
-    the product's domain and a thousand empty applications on the organizer's list. And the resend
-    cooldown holds the mail to one message per address per minute.
+    of surface. The budgets bound what a caller that got past it can spend, across *all* addresses:
+    the resend cooldown below is keyed on one address, so it does nothing about a caller that names a
+    thousand of them, and a thousand of them is a thousand pieces of mail from the product's domain
+    and a thousand empty applications on the organizer's list. And the resend cooldown holds the mail
+    to one message per address per minute.
+
+    The order of those checks is itself a control. The per-IP budget is counted first because it is
+    the one a caller can only spend on *itself*; the per-market and global budgets are shared, and a
+    shared budget spent by a caller that never solved a captcha is an outage anyone can buy - so
+    nothing that has not passed the captcha may touch them. That is also why the captcha is verified
+    before the market is even looked up: no request that fails it reaches anything else.
 
     The cooldown is the one refusal that answers with the accepted message rather than a 429,
     because it is the only one keyed on the *address*: only an address with a live code can be
     cooled down, so a distinguishable refusal there is the applicant-list oracle again, through a
-    side door. The captcha and rate-limit refusals are keyed on the caller, know nothing about the
-    address, and so can say plainly what is wrong.
+    side door. The captcha and rate-limit refusals are keyed on the caller or on the market, know
+    nothing about the address, and so can say plainly what is wrong.
+
+    The mail is sent off the request path for the same reason the refusals are worded alike: it is a
+    network round-trip that happens for an address on the applicant list and not for one that is
+    not, so waiting on it inline would answer, on the clock, precisely the question the body refuses
+    to answer. See ``utils.background``.
 
     Args:
         market_slug: The URL-safe slug of the market.
@@ -626,14 +667,6 @@ def request_applicant_key(
     ):
         return {"error": RATE_LIMITED_ERROR}, 429
 
-    if rate_limit_exceeded(
-        "applicant_request_key_global",
-        "",
-        limit=REQUEST_KEY_GLOBAL_LIMIT,
-        window_seconds=REQUEST_KEY_GLOBAL_WINDOW_SECONDS,
-    ):
-        return {"error": RATE_LIMITED_ERROR}, 429
-
     captcha_ok, _score = verify_recaptcha(captcha_token, client_ip)
     if not captcha_ok:
         return {"error": CAPTCHA_REQUIRED_ERROR}, 400
@@ -643,6 +676,23 @@ def request_applicant_key(
         return {"error": "Market not found. Check the URL and try again."}, 404
 
     market_id = market_doc.get("id", "")
+
+    if rate_limit_exceeded(
+        "applicant_request_key_market",
+        market_id,
+        limit=REQUEST_KEY_MARKET_LIMIT,
+        window_seconds=REQUEST_KEY_MARKET_WINDOW_SECONDS,
+    ):
+        return {"error": RATE_LIMITED_ERROR}, 429
+
+    if rate_limit_exceeded(
+        "applicant_request_key_global",
+        "",
+        limit=REQUEST_KEY_GLOBAL_LIMIT,
+        window_seconds=REQUEST_KEY_GLOBAL_WINDOW_SECONDS,
+    ):
+        return {"error": RATE_LIMITED_ERROR}, 429
+
     phase = _get_market_phase(market_doc)
 
     app = _find_application(market_id, email)
@@ -665,7 +715,7 @@ def request_applicant_key(
     _issue_challenge(market_id, email, otp)
 
     if otp:
-        send_otp_email(email, otp)
+        run_later(send_otp_email, email, otp)
 
     return {"message": KEY_REQUEST_ACCEPTED_MESSAGE}, 200
 
@@ -725,20 +775,20 @@ def verify_applicant_key(
 
     market_id = market_doc.get("id", "")
 
-    challenge = _challenge_for(market_id, email)
+    # The attempt is spent before the guess is looked at, and the spending is what grants the look:
+    # a guess that could not be paid for is never compared against the code. Paying first is also
+    # what makes the cap hold under concurrency - see ``_spend_challenge_attempt``.
+    challenge = _spend_challenge_attempt(market_id, email)
     if challenge is None:
-        return {"error": NO_PENDING_CODE_ERROR}, 401
-
-    attempts = challenge.get("attempts", 0)
-    if attempts >= MAX_OTP_ATTEMPTS:
+        if _challenge_for(market_id, email) is None:
+            return {"error": NO_PENDING_CODE_ERROR}, 401
         return {"error": ATTEMPTS_EXHAUSTED_ERROR}, 429
 
     # A challenge with no code refuses every guess, which is exactly what a challenge with a code
     # does to a wrong one. The comparison is the same comparison; there is no branch here that a
     # stranger takes and an applicant does not.
     if challenge.get("code") != key:
-        _spend_challenge_attempt(market_id, email)
-        remaining = MAX_OTP_ATTEMPTS - (attempts + 1)
+        remaining = MAX_OTP_ATTEMPTS - challenge.get("attempts", MAX_OTP_ATTEMPTS)
         if remaining <= 0:
             return {"error": ATTEMPTS_EXHAUSTED_ERROR}, 429
         return {

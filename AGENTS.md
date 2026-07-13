@@ -156,6 +156,25 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (`front-end/e2e/helpers/seedApplication.ts`), which writes the document straight into Mongo
   via `mongosh`, because no applicant-facing submit endpoint exists yet.
 
+## Public Applicant Endpoints (Conventioner sharp edge)
+
+- **The back end refuses to boot in production** without `RECAPTCHA_SECRET_KEY` and
+  `TRUSTED_PROXY_HOPS` (`verify_public_endpoint_defenses()` in `back-end/app.py`).
+  Both defend `/public/applicant/*`, which is unauthenticated, writes to the database, and sends
+  mail from the product's domain, and both silently degrade to nothing when unset: `verify_recaptcha`
+  passes every caller with no secret, and a rate limit keyed on `remote_addr` behind a proxy is one
+  shared budget that locks out every real applicant instead of bounding an attacker.
+  Set `TRUSTED_PROXY_HOPS` to the number of proxies of our own a request passes through
+  (0 = Flask exposed directly); ProxyFix then reads exactly that many `X-Forwarded-For` entries from
+  the right, which is the part a client cannot forge.
+- **Nothing these endpoints do may differ between an address that has applied and one that has not**
+  - not the status, not the body, not the attempt counter, and not the time on the clock.
+  Who applied is the organizer's private data.
+  That is why the login challenge is a collection of its own rather than a field on the application
+  (`_challenge_for` in `back-end/api/applicants.py`), and why the OTP mail is dispatched through
+  `utils/background.py` instead of awaited: a synchronous send happens only for a real applicant, so
+  waiting on it answers, on the clock, the question the response body refuses to answer.
+
 ## Market Document Keys (Conventioner sharp edge)
 
 - **The back end refuses to boot** unless `migrations/migrate_market_keys.py` has recorded its

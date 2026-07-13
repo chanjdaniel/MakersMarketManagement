@@ -30,6 +30,9 @@ services:
       - FLASK_APP=app.py
       - FLASK_ENV=development
       - USE_HTTPS=true
+      # Compose publishes the dev server directly, so the peer address is the caller's already.
+      # A deployment that fronts Flask with a proxy must say how many hops of its own it has.
+      - TRUSTED_PROXY_HOPS=${TRUSTED_PROXY_HOPS:-0}
       - MONGODB_HOST=mongodb
       - MONGODB_PORT=27017
       - MONGODB_USER=admin

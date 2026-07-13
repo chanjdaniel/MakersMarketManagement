@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useApplicationStore } from '@/stores/application';
 import { fetchPublicApplicationForm } from '@/utils/publicApplicationForm';
@@ -12,15 +12,52 @@ const marketSlug = computed(() => (route.params.marketSlug as string) || '');
 const redirect = computed(() => (route.query.redirect as string) || 'dashboard');
 const marketName = ref('');
 
+/**
+ * The back end sends at most one code per address per minute, and a request inside that window is
+ * answered with the same accepted message a real send gets - it has to be, because only an address
+ * that already has a live code can be cooled down, so a distinguishable answer there would tell an
+ * unauthenticated caller which addresses are on the organizer's applicant list.
+ *
+ * That leaves this screen as the only place that can be honest about it, and it is this screen that
+ * knows: it made the request that started the cooldown. So it counts the window down rather than
+ * offering a button that would claim to send a code and send nothing. Every send this UI says
+ * happened is one the back end will actually perform.
+ */
+const RESEND_COOLDOWN_SECONDS = 60;
+
 // Step 1: enter email
 const email = ref('');
-const emailSent = ref(false);
 
 // Step 2: enter verification code
 const key = ref('');
 
 const step = ref<'email' | 'key'>('email');
 const submitting = ref(false);
+
+const requestedEmail = ref('');
+const cooldownRemaining = ref(0);
+let cooldownTimer: ReturnType<typeof setInterval> | undefined;
+
+/** Whether the address in the box is the one whose cooldown is still running. */
+const cooldownApplies = computed(
+  () =>
+    cooldownRemaining.value > 0 &&
+    requestedEmail.value === email.value.trim().toLowerCase(),
+);
+
+function startCooldown() {
+  cooldownRemaining.value = RESEND_COOLDOWN_SECONDS;
+  clearInterval(cooldownTimer);
+  cooldownTimer = setInterval(() => {
+    cooldownRemaining.value -= 1;
+    if (cooldownRemaining.value <= 0) {
+      clearInterval(cooldownTimer);
+      cooldownTimer = undefined;
+    }
+  }, 1000);
+}
+
+onUnmounted(() => clearInterval(cooldownTimer));
 
 onMounted(async () => {
   // Only a session for *this* market skips the sign-in; a token for another one signs in nobody here.
@@ -47,12 +84,17 @@ async function requestKey() {
     store.error = 'Email address is required.';
     return;
   }
+  if (cooldownApplies.value) {
+    return;
+  }
   store.error = null;
   submitting.value = true;
-  await store.requestKey(marketSlug.value, email.value.trim().toLowerCase());
+  const address = email.value.trim().toLowerCase();
+  await store.requestKey(marketSlug.value, address);
   submitting.value = false;
   if (!store.error) {
-    emailSent.value = true;
+    requestedEmail.value = address;
+    startCooldown();
     step.value = 'key';
   }
 }
@@ -115,11 +157,12 @@ function goBack() {
         />
         <button
           class="login-btn"
-          :disabled="submitting || !email.trim()"
+          :disabled="submitting || !email.trim() || cooldownApplies"
           @click="requestKey"
           data-testid="applicant-login-request-btn"
         >
-          {{ submitting ? 'Sending...' : 'Send Code' }}
+          <template v-if="cooldownApplies">Code already sent - retry in {{ cooldownRemaining }}s</template>
+          <template v-else>{{ submitting ? 'Sending...' : 'Send Code' }}</template>
         </button>
       </div>
     </template>
@@ -128,8 +171,8 @@ function goBack() {
     <template v-else>
       <div class="login-step" data-testid="applicant-login-key-step">
         <p class="login-instruction">
-          We sent a 6-digit code to <strong>{{ email }}</strong>.
-          Enter it below.
+          If an application exists for <strong>{{ requestedEmail }}</strong>, a 6-digit code is on
+          its way. Enter it below.
         </p>
         <input
           v-model="key"
@@ -154,8 +197,13 @@ function goBack() {
             Use a different email
           </button>
           <span class="login-sep">|</span>
-          <button class="login-link-btn" :disabled="submitting" @click="requestKey" data-testid="applicant-login-resend-btn">
-            Resend code
+          <button
+            class="login-link-btn"
+            :disabled="submitting || cooldownRemaining > 0"
+            @click="requestKey"
+            data-testid="applicant-login-resend-btn"
+          >
+            {{ cooldownRemaining > 0 ? `Resend code in ${cooldownRemaining}s` : 'Resend code' }}
           </button>
         </div>
       </div>

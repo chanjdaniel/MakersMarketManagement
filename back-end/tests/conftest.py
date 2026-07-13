@@ -100,13 +100,24 @@ if _needs_stub("pymongo"):
         def __getitem__(self, _name):
             return _FakeDatabase()
 
+    fake_pymongo_errors = types.ModuleType("pymongo.errors")
+
+    class _FakePyMongoError(Exception):
+        pass
+
     fake_pymongo.MongoClient = _FakeMongoClient
     fake_pymongo.results = fake_pymongo_results
+    fake_pymongo.errors = fake_pymongo_errors
+    # The conditional-update helpers the challenge store and the rate limiter are built on name
+    # these, so the stub has to as well or the suite cannot even be collected without pymongo.
+    fake_pymongo.ReturnDocument = SimpleNamespace(BEFORE=False, AFTER=True)
+    fake_pymongo_errors.PyMongoError = _FakePyMongoError
     fake_pymongo_results.InsertOneResult = object
     fake_pymongo_results.UpdateResult = object
     fake_pymongo_results.DeleteResult = object
     sys.modules["pymongo"] = fake_pymongo
     sys.modules["pymongo.results"] = fake_pymongo_results
+    sys.modules["pymongo.errors"] = fake_pymongo_errors
 
 if _needs_stub("bson"):
     fake_bson = types.ModuleType("bson")
@@ -135,6 +146,8 @@ if _needs_stub("resend"):
     sys.modules["resend"] = fake_resend
 
 
+
+from pymongo import ReturnDocument
 
 from datatypes import AssignmentObject, Market, MarketPhase, MarketRole
 
@@ -244,9 +257,21 @@ class FakeKeyedCollection:
 
     Supports the operations the applicant login-code store and the rate limiter actually use:
     ``find_one``/``update_one``/``delete_one`` with ``$set`` and ``$inc``, upserts, and the
-    ``find_one_and_update`` the limiter counts with. ``create_index`` is a no-op, as it is for a
-    collection that only lives for the length of a test.
+    ``find_one_and_update`` both the limiter and the login challenge count with -- including the
+    comparison operators in its filter, because those are load-bearing: the attempt cap is a
+    *conditional* update ("increment only while the count is under the cap, and only while the code
+    is live"), which is what makes the check and the spend one operation rather than a race. A fake
+    that quietly ignored the condition would pass a test the real collection fails.
+    ``create_index`` is a no-op, as it is for a collection that only lives for the length of a test.
     """
+
+    _OPERATORS = {
+        "$lt": lambda actual, want: actual is not None and actual < want,
+        "$lte": lambda actual, want: actual is not None and actual <= want,
+        "$gt": lambda actual, want: actual is not None and actual > want,
+        "$gte": lambda actual, want: actual is not None and actual >= want,
+        "$ne": lambda actual, want: actual != want,
+    }
 
     def __init__(self):
         self.documents: list = []
@@ -254,8 +279,18 @@ class FakeKeyedCollection:
     def create_index(self, *_args, **_kwargs):
         return "fake-index"
 
+    def _matches_one(self, actual, condition):
+        if isinstance(condition, dict) and condition and all(
+            k in self._OPERATORS for k in condition
+        ):
+            return all(self._OPERATORS[op](actual, want) for op, want in condition.items())
+        return actual == condition
+
     def _matches(self, doc, query):
-        return all(doc.get(k) == v for k, v in (query or {}).items())
+        return all(
+            self._matches_one(doc.get(key), condition)
+            for key, condition in (query or {}).items()
+        )
 
     def _find(self, query):
         for doc in self.documents:
@@ -278,23 +313,39 @@ class FakeKeyedCollection:
             doc[key] = doc.get(key, 0) + value
         return doc
 
+    def _inserted(self, query, update):
+        """The document an upsert of a filter that did not match creates, as Mongo builds it:
+        from the filter's equality terms only, since a comparison is not a value to store."""
+        doc = {
+            key: condition for key, condition in (query or {}).items()
+            if not (isinstance(condition, dict) and condition
+                    and all(k in self._OPERATORS for k in condition))
+        }
+        doc.update(update.get("$setOnInsert") or {})
+        self.documents.append(doc)
+        return doc
+
     def update_one(self, query, update, upsert=False):
         doc = self._find(query)
         if doc is None:
             if not upsert:
                 return SimpleNamespace(matched_count=0, modified_count=0, upserted_id=None)
-            doc = dict(query)
-            doc.update(update.get("$setOnInsert") or {})
-            self.documents.append(doc)
-            self._apply(doc, update)
+            self._apply(self._inserted(query, update), update)
             return SimpleNamespace(matched_count=0, modified_count=0, upserted_id="fake-id")
         self._apply(doc, update)
         return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
 
     def find_one_and_update(self, query, update, upsert=False, return_document=None):
-        self.update_one(query, update, upsert=upsert)
         doc = self._find(query)
-        return dict(doc) if doc else None
+        if doc is None:
+            if not upsert:
+                return None
+            doc = self._inserted(query, update)
+        before = dict(doc)
+        self._apply(doc, update)
+        if return_document is ReturnDocument.AFTER:
+            return dict(doc)
+        return before
 
     def delete_one(self, query):
         doc = self._find(query)
@@ -325,6 +376,23 @@ def login_codes(monkeypatch):
     fake = FakeKeyedCollection()
     monkeypatch.setattr(ApplicantsApi, "login_codes_collection", fake)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def inline_background(monkeypatch):
+    """Run deferred work inline, so a test can assert on what a request handed off.
+
+    In production the OTP mail is sent off the request path, because waiting on it inline tells a
+    caller with a stopwatch whether the address is on the organizer's applicant list. Here it runs
+    where the call site is, so the assertion is against the request that caused it rather than
+    against a thread that may not have got to it yet. The tests that pin the hand-off *itself* --
+    that the send is deferred rather than awaited -- patch ``run_later`` themselves.
+    """
+    import api.applicants as ApplicantsApi
+
+    monkeypatch.setattr(
+        ApplicantsApi, "run_later", lambda fn, *args, **kwargs: fn(*args, **kwargs),
+    )
 
 
 @pytest.fixture(autouse=True)

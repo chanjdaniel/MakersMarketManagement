@@ -29,6 +29,8 @@ from market_documents import (
     assert_market_key_migration_recorded,
     market_doc_key,
 )
+from utils.captcha import CaptchaNotConfiguredError, assert_captcha_configured
+from utils.proxy import TrustedProxyConfigError, apply_trusted_proxy_fix
 import db_config
 from dataclasses import asdict
 import json
@@ -70,9 +72,31 @@ def verify_market_key_migration() -> None:
         probe.client.close()
 
 
+def verify_public_endpoint_defenses() -> None:
+    """Refuse to boot in production without the configuration the public endpoints are defended by.
+
+    The applicant login endpoints are unauthenticated, they write to the database, and they send
+    mail from this domain. What keeps a script off them is a reCAPTCHA secret, and what keeps their
+    rate limits keyed on the caller rather than on a shared proxy address is a trusted-hop count.
+    Both of those silently degrade to nothing when unset - the captcha passes everybody, and the
+    limits lock out everybody - so, as with the market-key migration above, an unknown state is
+    never taken for a safe one: it fails at boot, naming the variable, rather than in production,
+    naming nothing.
+    """
+    try:
+        assert_captcha_configured()
+        trusted_proxy_hops = apply_trusted_proxy_fix(app)
+    except (CaptchaNotConfiguredError, TrustedProxyConfigError) as e:
+        logger.critical("%s", e)
+        raise
+    logger.info("Trusting %d proxy hop(s) for the client address", trusted_proxy_hops)
+
+
 verify_market_key_migration()
 
 app = Flask(__name__)
+
+verify_public_endpoint_defenses()
 
 # Session configuration: Use 'null' for Vercel serverless (stores in cookies only)
 # For production with persistent sessions, consider MongoDB-backed sessions

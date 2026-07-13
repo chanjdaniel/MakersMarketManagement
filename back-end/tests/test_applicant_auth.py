@@ -566,6 +566,92 @@ class TestKeyRequestThrottle:
 
         assert seen == [("tok-123", "203.0.113.9")]
 
+    def test_a_caller_that_fails_the_captcha_cannot_spend_the_shared_budget(
+        self, published_market, apps_coll, no_email, monkeypatch,
+    ):
+        """The global budget is shared, so spending it is an outage for every market's applicants.
+
+        Counted before the captcha, it is an outage anyone can buy: a garbage token is refused, but
+        it is refused *after* being counted, so a script that never solves a captcha keeps the
+        ceiling exhausted and every legitimate applicant gets a 429. Only a caller the captcha let
+        through may touch a budget it can spend on somebody else's behalf.
+        """
+        monkeypatch.setattr(ApplicantsApi, "REQUEST_KEY_GLOBAL_LIMIT", 3)
+        monkeypatch.setattr(ApplicantsApi, "verify_recaptcha", lambda *_a, **_kw: (False, 0.0))
+
+        for i in range(10):
+            _result, status = ApplicantsApi.request_applicant_key(
+                "test-market", f"bot{i}@example.com", "bad-token", f"203.0.113.{i}",
+            )
+            assert status == 400
+
+        monkeypatch.setattr(ApplicantsApi, "verify_recaptcha", lambda *_a, **_kw: (True, 1.0))
+        _result, status = ApplicantsApi.request_applicant_key(
+            "test-market", "applicant@example.com", "good-token", "198.51.100.4",
+        )
+
+        assert status == 200, "a refused request must not have spent the ceiling"
+
+    def test_a_flood_against_one_market_does_not_take_every_market_off_the_air(
+        self, apps_coll, no_email, monkeypatch,
+    ):
+        """The per-market bound is what contains the blast radius of a caller with many addresses:
+        one organizer's market can be flooded without applicant sign-in stopping everywhere else."""
+        monkeypatch.setattr(ApplicantsApi, "REQUEST_KEY_MARKET_LIMIT", 3)
+        monkeypatch.setattr(ApplicantsApi, "markets_collection", FakeSlugMarketsCollection([
+            stored_market(phase=MarketPhase.APPLICATIONS_OPEN, name="Target Market", id="target-1"),
+            stored_market(phase=MarketPhase.APPLICATIONS_OPEN, name="Other Market", id="other-1"),
+        ]))
+
+        for i in range(3):
+            _r, status = ApplicantsApi.request_applicant_key(
+                "target-market", f"target{i}@example.com", client_ip=f"203.0.113.{i}",
+            )
+            assert status == 200
+
+        result, flooded = ApplicantsApi.request_applicant_key(
+            "target-market", "one-too-many@example.com", client_ip="203.0.113.9",
+        )
+        _r, elsewhere = ApplicantsApi.request_applicant_key(
+            "other-market", "vendor@example.com", client_ip="203.0.113.9",
+        )
+
+        assert flooded == 429
+        assert result["error"] == ApplicantsApi.RATE_LIMITED_ERROR
+        assert elsewhere == 200, "another market's applicants must still be able to sign in"
+
+    def test_the_mail_send_is_not_on_the_request_path(self, published_market, apps_coll, monkeypatch):
+        """The enumeration guard is closed in the body but it also has to hold on the clock.
+
+        ``send_otp_email`` is a network round-trip to Resend, and it happens only for an address an
+        application exists for. Awaited inline, the response for an address on the organizer's
+        applicant list takes hundreds of milliseconds longer than the response for one that is not,
+        which answers - to the same unauthenticated caller the identical wording exists to defeat -
+        exactly the question the body refuses to.
+        """
+        deferred = []
+        monkeypatch.setattr(
+            ApplicantsApi, "run_later",
+            lambda fn, *args, **kwargs: deferred.append((fn, args)),
+        )
+        sent = []
+
+        with patch.object(
+            ApplicantsApi, "send_otp_email",
+            side_effect=lambda addr, otp: sent.append(addr) or True,
+        ):
+            _result, status = ApplicantsApi.request_applicant_key(
+                "test-market", "vendor@example.com",
+            )
+
+        assert status == 200
+        assert sent == [], "the caller must not wait on the send"
+        assert len(deferred) == 1, "the send is handed off, not skipped"
+        deferred_fn, deferred_args = deferred[0]
+        assert deferred_args[0] == "vendor@example.com"
+        deferred_fn(*deferred_args)
+        assert sent == ["vendor@example.com"], "and the hand-off is what actually sends it"
+
 
 class TestVerifyKey:
     """Tests for verify_applicant_key (Stage 2 of the login flow)."""
@@ -760,6 +846,49 @@ class TestVerifyKey:
 
             assert applied_request == stranger_request, phase
             assert applied_verify == stranger_verify, phase
+
+    def test_the_attempt_cap_does_not_depend_on_a_read(
+        self, published_market, apps_coll, login_codes, monkeypatch,
+    ):
+        """The cap has to be spent and checked in one operation, or it is not a cap.
+
+        Read the count, find it under the cap, then increment it, and guesses issued at once all
+        read the same pre-increment value, all pass the check, and all get compared against the live
+        code: the budget becomes the number of workers the caller has rather than five, which is a
+        brute-force budget against a 5-minute code. What that looks like from here is a read that
+        does not see the increments - which is what this pins, by answering every read with the
+        challenge as it stood before any attempt was spent.
+        """
+        _app, otp = self._signed_up(apps_coll, login_codes)
+        wrong = "000000" if otp != "000000" else "111111"
+        stale = _stored_challenge(login_codes, "vendor@example.com")
+        assert stale["attempts"] == 0
+        monkeypatch.setattr(login_codes, "find_one", lambda _query: dict(stale))
+
+        statuses = [
+            ApplicantsApi.verify_applicant_key("test-market", "vendor@example.com", wrong)[1]
+            for _ in range(MAX_ATTEMPTS + 3)
+        ]
+
+        assert statuses.count(401) == MAX_ATTEMPTS - 1, "only the budget's worth may be compared"
+        assert statuses[-1] == 429
+        # Read past the stale-read patch: the document itself, as the conditional update left it.
+        assert login_codes.documents[0]["attempts"] == MAX_ATTEMPTS
+
+    def test_the_right_code_is_refused_once_a_concurrent_burst_has_spent_the_budget(
+        self, published_market, apps_coll, login_codes, monkeypatch,
+    ):
+        _app, otp = self._signed_up(apps_coll, login_codes)
+        stale = _stored_challenge(login_codes, "vendor@example.com")
+        monkeypatch.setattr(login_codes, "find_one", lambda _query: dict(stale))
+        for _ in range(MAX_ATTEMPTS):
+            ApplicantsApi.verify_applicant_key("test-market", "vendor@example.com", "000000")
+
+        _result, status = ApplicantsApi.verify_applicant_key(
+            "test-market", "vendor@example.com", otp,
+        )
+
+        assert status == 429
 
     def test_guessing_is_bounded_per_caller(self, published_market, apps_coll, login_codes):
         """The attempt cap is per code and the cooldown is per address, so neither of them bounds a
