@@ -129,6 +129,13 @@ docker run -d \
   ```bash
    mkdir -p flask_session csv_exports
   ```
+5. Initialize the database:
+  ```bash
+   python init_database.py
+  ```
+   This creates the collections and records the market-key migration marker.
+   The back end refuses to boot without that marker (see Troubleshooting below), and a MongoDB you started yourself has never run `back-end/mongo-init.js`, which is what records it for the Docker stack.
+   Re-running it is harmless.
 
 ## Step 3: Frontend Setup
 
@@ -408,6 +415,8 @@ Both keys are configured in `.env` and forwarded to the backend via `docker-comp
 - **API Modules**: `back-end/api/` (users, markets, source_data)
 - **Assignment Logic**: `back-end/assignment/assignment.py`
 - **Data Types**: `back-end/datatypes.py` (Pydantic models)
+- **Phase Guards**: `back-end/guards.py` (every precondition for every market phase transition)
+- **Market Documents**: `back-end/market_documents.py` (the canonical keys stored market documents use, and the migration marker the app boots on)
 - **Database Config**: `back-end/db_config.py` (MongoDB connection)
 
 ### Frontend Structure

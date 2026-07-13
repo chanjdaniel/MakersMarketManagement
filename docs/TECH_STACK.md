@@ -25,7 +25,7 @@ This document outlines the complete technology stack used in the Conventioner ap
 ### Database
 - **MongoDB 7** - NoSQL document database
   - Primary data storage
-  - Collections: `users`, `markets`, `organizations`, `source_data`, `attendance`, `applications`, `floorplan_templates` (created by `back-end/mongo-init.js` on a fresh volume)
+  - Collections: `users`, `markets`, `organizations`, `source_data`, `attendance`, `applications`, `floorplan_templates`, `schema_migrations` (created by `back-end/mongo-init.js` on a fresh volume)
   - Connection via PyMongo 4.6.1
   - Database name: `conventioner`
 
@@ -266,6 +266,8 @@ Conventioner/
 │   ├── assignment/       # Assignment algorithm logic
 │   ├── app.py            # Flask application entry point
 │   ├── datatypes.py      # Pydantic data models
+│   ├── guards.py         # Every phase-transition precondition (the D16 registry)
+│   ├── market_documents.py  # Canonical market document keys + migration marker
 │   ├── db_config.py      # MongoDB connection configuration
 │   └── requirements.txt  # Python dependencies
 ├── front-end/
