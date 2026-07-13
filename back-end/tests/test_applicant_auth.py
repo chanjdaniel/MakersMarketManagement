@@ -399,3 +399,62 @@ class TestGetApplication:
         assert status == 200
         assert result["application"]["applicantEmail"] == "vendor@example.com"
         assert result["application"]["formData"]["business_name"] == "Acme"
+
+
+class TestSlugLookup:
+    """The applicant endpoints resolve a market by the same slug rule the front end links with.
+
+    ``marketNameToKebabSlug`` (front-end/src/utils/marketSlug.ts) folds accents before it
+    substitutes, so "Café Market" is linked as /cafe-market/apply. A lookup that skipped the fold
+    would compute "caf-market" and answer every applicant endpoint behind that link with 404.
+    """
+
+    ACCENTED_MARKET = stored_market(
+        phase=MarketPhase.APPLICATIONS_OPEN,
+        name="Café Market",
+        applicationForm=VALID_FORM,
+    )
+
+    @pytest.fixture
+    def accented_market(self, monkeypatch):
+        fake = FakeSlugMarketsCollection([self.ACCENTED_MARKET])
+        monkeypatch.setattr(ApplicantsApi, "markets_collection", fake)
+        return fake
+
+    def test_shared_rule_matches_the_front_end_slug(self):
+        from market_documents import market_name_slug
+        assert market_name_slug("Café Market") == "cafe-market"
+
+    def test_accented_market_is_found_by_its_folded_slug(self, accented_market, apps_coll, no_email):
+        result, status = ApplicantsApi.request_applicant_key("cafe-market", "vendor@example.com")
+
+        assert status == 200, result
+
+    def test_public_form_is_served_for_an_accented_market(self, accented_market):
+        result, status = ApplicantsApi.get_public_application_form("cafe-market")
+
+        assert status == 200
+        assert result["is_open"] is True
+
+    def test_attendance_resolves_the_same_market_by_the_same_slug(self, monkeypatch):
+        """The check-in lookup and the applicant lookup are the same lookup."""
+        import api.attendance as AttendanceApi
+
+        fake = FakeSlugMarketsCollection([self.ACCENTED_MARKET])
+        monkeypatch.setattr(AttendanceApi, "markets_collection", fake)
+        monkeypatch.setattr(ApplicantsApi, "markets_collection", fake)
+
+        by_check_in = AttendanceApi.get_published_market_by_slug("cafe-market")
+        by_applicant = ApplicantsApi._get_market_doc_by_slug("cafe-market")
+
+        assert by_check_in is not None
+        assert by_applicant is not None
+        assert by_check_in["id"] == by_applicant["id"]
+
+    def test_draft_market_is_not_reachable_by_slug(self, monkeypatch):
+        draft = stored_market(phase=MarketPhase.DRAFT, name="Café Market")
+        monkeypatch.setattr(
+            ApplicantsApi, "markets_collection", FakeSlugMarketsCollection([draft]),
+        )
+
+        assert ApplicantsApi._get_market_doc_by_slug("cafe-market") is None

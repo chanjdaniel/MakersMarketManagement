@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useApplicationStore } from '@/stores/application';
 import { applicantApi } from '@/utils/applicantApi';
+import { requiredFieldError } from '@/utils/applicationForm';
 import type { FormField } from '@/assets/types/datatypes';
 
 const route = useRoute();
@@ -21,10 +22,18 @@ const saving = ref(false);
 const applicationForm = ref<FormField[]>([]);
 const phaseLabel = ref('');
 const isOpen = ref(false);
+const formError = ref<string | null>(null);
 
 const sortedFields = computed(() => {
   return [...applicationForm.value].sort((a, b) => a.order - b.order);
 });
+
+// The form fetch failing is fatal to this view even when the application itself loaded: without
+// the field list the view branch renders a status and no answers, which reads as an empty
+// application rather than a failure.
+const loadError = computed(
+  () => formError.value || (store.application ? null : store.error),
+);
 
 async function loadAll() {
   if (!store.isAuthenticated) {
@@ -36,6 +45,7 @@ async function loadAll() {
   }
 
   loading.value = true;
+  formError.value = null;
   try {
     await store.fetchApplication();
     // Fetch the form separately for display fields
@@ -47,6 +57,10 @@ async function loadAll() {
     }
     phaseLabel.value = data.phase_label || '';
     isOpen.value = data.is_open === true;
+  } catch (err: unknown) {
+    const msg =
+      (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+    formError.value = msg || 'Failed to load the application form. Please try again.';
   } finally {
     loading.value = false;
   }
@@ -82,11 +96,7 @@ function cancelEditing() {
 }
 
 function validateField(field: FormField): string {
-  const value = formData.value[field.key];
-  if (field.required && (value === undefined || value === null || (typeof value === 'string' && value.trim() === ''))) {
-    return `${field.label} is required.`;
-  }
-  return '';
+  return requiredFieldError(field, formData.value[field.key]);
 }
 
 function validateAll(): boolean {
@@ -155,8 +165,8 @@ function getFieldError(field: FormField): string {
       Loading your application...
     </div>
 
-    <div v-else-if="store.error && !store.application" class="dash-error" data-testid="applicant-dashboard-error">
-      <p>{{ store.error }}</p>
+    <div v-else-if="loadError" class="dash-error" data-testid="applicant-dashboard-error">
+      <p>{{ loadError }}</p>
       <button class="dash-btn dash-btn-primary" @click="loadAll()">Retry</button>
     </div>
 

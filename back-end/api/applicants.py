@@ -24,7 +24,7 @@ from datatypes import (
     MarketPhase,
     phase_from_market_document,
 )
-from market_documents import non_draft_market_prefilter
+from market_documents import published_market_by_slug
 import api.applications as ApplicationsApi
 
 db = get_database()
@@ -41,30 +41,9 @@ OTP_EXPIRY_MINUTES = 5
 # ── slug helpers ───────────────────────────────────────────────────────────
 
 
-def _slugify(name: str) -> str:
-    """Slugify a market name for use in public URLs. Matches attendance.py."""
-    s = name.strip().lower()
-    s = re.sub(r"[^a-z0-9]+", "-", s)
-    s = s.strip("-")
-    return s
-
-
 def _get_market_doc_by_slug(market_slug: str) -> Optional[Dict[str, Any]]:
-    """Find a market whose slugified name matches the given slug.
-
-    Reuses the same prefilter + phase check pattern as
-    ``attendance.get_published_market_by_slug``.
-    """
-    if not market_slug:
-        return None
-    target = market_slug.strip().lower()
-    for doc in markets_collection.find(non_draft_market_prefilter()):
-        if _slugify(doc.get("name", "")) != target:
-            continue
-        if phase_from_market_document(doc) == MarketPhase.DRAFT:
-            continue
-        return doc
-    return None
+    """Find the published market whose slugified name matches the given slug."""
+    return published_market_by_slug(markets_collection, market_slug)
 
 
 def _get_market_phase(doc: Dict[str, Any]) -> MarketPhase:
@@ -98,6 +77,40 @@ def _find_or_create_application(
     return app
 
 
+def _is_answered(value: Any, field_type: str) -> bool:
+    """Whether a submitted value counts as an answer for a field of this type.
+
+    "Present in the payload" is not the same as "answered", and the difference is type-shaped:
+    an unticked mandatory consent checkbox arrives as ``False`` and an untouched mandatory
+    multi_select as ``[]``, both of which are non-null, non-empty-string values that a purely
+    null/blank test waves through. This is the one place that decides the question, so a required
+    field cannot be satisfied by a value that means "the applicant did not answer".
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip() != ""
+    if isinstance(value, list):
+        return len(value) > 0
+    if field_type == "checkbox":
+        return value is True
+    return True
+
+
+def _project_form_data(form_data: Dict[str, Any], fields: list) -> Dict[str, Any]:
+    """Keep only the answers the market's form actually declares.
+
+    ``_validate_form_data`` iterates the declared fields, so a key the form never declared is
+    never looked at and would otherwise be persisted verbatim - an authenticated applicant could
+    write arbitrary keys of arbitrary size into the applications collection, from where they ride
+    along into every organizer-side view and export of ``form_data``. The stored document is
+    projected onto the form instead: a market with no form declares no keys and therefore stores
+    none.
+    """
+    declared = {field.get("key", "") for field in fields}
+    return {key: value for key, value in form_data.items() if key in declared}
+
+
 def _validate_form_data(form_data: Dict[str, Any], fields: list) -> Optional[str]:
     """Validate form data against the form fields. Returns an error message or None.
 
@@ -110,7 +123,7 @@ def _validate_form_data(form_data: Dict[str, Any], fields: list) -> Optional[str
         ft = field.get("type", "text")
         value = form_data.get(key)
 
-        if required and (value is None or (isinstance(value, str) and value.strip() == "")):
+        if required and not _is_answered(value, ft):
             return f'"{label}" is required.'
 
         if value is not None and value != "":
@@ -339,6 +352,9 @@ def save_applicant_application(
 
     Anti-F6: validation errors name the specific field and problem.
     """
+    if not isinstance(form_data, dict):
+        return {"error": "Form answers must be an object keyed by field key."}, 400
+
     app_id = token_payload.get("application_id", "")
     market_id = token_payload.get("market_id", "")
 
@@ -361,16 +377,19 @@ def save_applicant_application(
 
     # Validate form data against the application form fields
     application_form = market_doc.get("applicationForm")
-    if application_form and application_form.get("fields"):
-        error = _validate_form_data(form_data, application_form["fields"])
+    fields = (application_form or {}).get("fields") or []
+    if fields:
+        error = _validate_form_data(form_data, fields)
         if error:
             return {"error": error}, 422
+
+    stored_form_data = _project_form_data(form_data, fields)
 
     now = datetime.now(timezone.utc).isoformat()
     ApplicationsApi.applications_collection.update_one(
         {"id": app_id},
         {"$set": {
-            "form_data": form_data,
+            "form_data": stored_form_data,
             "status": ApplicationStatus.OPEN.value,
             "submitted_at": app_doc.get("submitted_at") or now,
             "updated_at": now,

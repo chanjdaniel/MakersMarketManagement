@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import type { FormField, ApplicationForm } from '@/assets/types/datatypes';
 import { applicantApi } from '@/utils/applicantApi';
+import { requiredFieldError } from '@/utils/applicationForm';
 import { useApplicationStore } from '@/stores/application';
 
 const route = useRoute();
@@ -62,11 +63,7 @@ function getFieldError(field: FormField): string {
 }
 
 function validateField(field: FormField): string {
-  const value = formData.value[field.key];
-  if (field.required && (value === undefined || value === null || (typeof value === 'string' && value.trim() === ''))) {
-    return `${field.label} is required.`;
-  }
-  return '';
+  return requiredFieldError(field, formData.value[field.key]);
 }
 
 function validateAll(): boolean {

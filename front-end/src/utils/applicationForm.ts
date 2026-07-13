@@ -28,6 +28,30 @@ export function applicationFormHint(form: ApplicationForm | null): string | null
 }
 
 /**
+ * Whether an applicant's value counts as an answer to this field. "Present" is not "answered",
+ * and the difference is type-shaped: an unticked mandatory consent checkbox arrives as `false`
+ * and an untouched mandatory multi_select as `[]`, neither of which a null/blank test catches.
+ * Mirrors the back-end rule (`_is_answered` in `back-end/api/applicants.py`), which is the one
+ * that decides; this exists so the applicant sees the refusal on the field instead of as a
+ * server error after they submit.
+ */
+export function isFieldAnswered(field: FormField, value: unknown): boolean {
+    if (value === undefined || value === null) return false;
+    if (typeof value === 'string') return value.trim() !== '';
+    if (Array.isArray(value)) return value.length > 0;
+    if (field.type === 'checkbox') return value === true;
+    return true;
+}
+
+/** The message for a required field the applicant has not answered, or '' if it is answered. */
+export function requiredFieldError(field: FormField, value: unknown): string {
+    if (field.required && !isFieldAnswered(field, value)) {
+        return `${field.label} is required.`;
+    }
+    return '';
+}
+
+/**
  * Field keys and select options are the primary key and the persisted values of every applicant's
  * answers, so the back-end rejects blank, duplicate, or unaddressable ones. Say so before the
  * organizer clicks Save. Fields they have not started filling in are left to

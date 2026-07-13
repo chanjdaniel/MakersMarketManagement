@@ -92,21 +92,25 @@ const router = createRouter({
       path: '/:marketSlug/check-in',
       name: 'attendance-checkin',
       component: () => import('@/views/AttendanceCheckinView.vue'),
+      meta: { public: true },
     },
     {
       path: '/:marketSlug/apply',
       name: 'apply',
       component: () => import('@/views/ApplicationPage.vue'),
+      meta: { public: true },
     },
     {
       path: '/:marketSlug/applicant-login',
       name: 'applicant-login',
       component: () => import('@/views/ApplicantLogin.vue'),
+      meta: { public: true },
     },
     {
       path: '/:marketSlug/applicant/dashboard',
       name: 'applicant-dashboard',
       component: () => import('@/views/ApplicantDashboard.vue'),
+      meta: { public: true },
     },
     {
       path: '/:marketSlug',
@@ -125,18 +129,15 @@ router.beforeEach((to, from, next) => {
     return;
   }
 
-  // Public routes that don't require session auth:
-  // - Check-in page
-  // - Applicant pages (application form, login, dashboard)
-  if (to.path.endsWith('/check-in')) {
+  // Routes opted out of session auth via `meta: { public: true }` (check-in, applicant pages).
+  // Matching the resolved route rather than the path keeps a later organizer-side route whose
+  // path merely contains one of these segments from silently becoming publicly reachable.
+  if (to.matched.some((record) => record.meta.public === true)) {
     next();
     return;
   }
-  if (to.path.endsWith('/apply') || to.path.endsWith('/applicant-login') || to.path.includes('/applicant/')) {
-    next();
-    return;
-  }
-  
+
+
   if (!user) {
     next("/login");
     return;

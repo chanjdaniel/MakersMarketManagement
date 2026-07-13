@@ -462,3 +462,129 @@ class TestGetPublicApplicationForm:
         result, status = ApplicantsApi.get_public_application_form("draft")
 
         assert status == 404
+
+
+class TestRequiredFieldAnswers:
+    """A required field is not satisfied by a value that means "not answered".
+
+    ``False`` for a mandatory consent checkbox and ``[]`` for a mandatory multi_select are both
+    non-null and non-blank, so a purely null/empty-string test waves them through and the
+    applicant submits an unanswered mandatory field.
+    """
+
+    REQUIRED_FORM = {
+        "fields": [
+            {"key": "agree", "label": "Agree to Terms", "type": "checkbox", "required": True, "order": 0},
+            {"key": "days", "label": "Days", "type": "multi_select", "options": ["Fri", "Sat"],
+             "required": True, "order": 1},
+        ]
+    }
+
+    TOKEN = lambda self: {
+        "application_id": "app-xyz",
+        "market_id": "market-123",
+        "email": "vendor@example.com",
+    }
+
+    @pytest.fixture
+    def required_market(self, monkeypatch):
+        doc = stored_market(
+            phase=MarketPhase.APPLICATIONS_OPEN,
+            name="Required Market",
+            applicationForm=self.REQUIRED_FORM,
+        )
+        fake = FakeSlugMarketsCollection([doc])
+        monkeypatch.setattr(ApplicantsApi, "markets_collection", fake)
+        return fake
+
+    def test_required_checkbox_false_is_unanswered(self, required_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = ApplicantsApi.save_applicant_application(
+            self.TOKEN(), {"agree": False, "days": ["Fri"]}
+        )
+
+        assert status == 422
+        assert "Agree to Terms" in result["error"]
+        assert "required" in result["error"].lower()
+
+    def test_required_multi_select_empty_list_is_unanswered(self, required_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = ApplicantsApi.save_applicant_application(
+            self.TOKEN(), {"agree": True, "days": []}
+        )
+
+        assert status == 422
+        assert "Days" in result["error"]
+        assert "required" in result["error"].lower()
+
+    def test_answered_required_checkbox_and_multi_select_are_accepted(self, required_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = ApplicantsApi.save_applicant_application(
+            self.TOKEN(), {"agree": True, "days": ["Fri", "Sat"]}
+        )
+
+        assert status == 200
+        assert result["application"]["formData"] == {"agree": True, "days": ["Fri", "Sat"]}
+
+    def test_optional_checkbox_false_is_accepted(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = ApplicantsApi.save_applicant_application(
+            self.TOKEN(),
+            {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small",
+             "agree": True, "extra_days": []},
+        )
+
+        assert status == 200
+        assert result["application"]["formData"]["extra_days"] == []
+
+
+class TestFormDataIsProjectedOntoTheForm:
+    """Only the answers the market's form declares reach the applications collection."""
+
+    TOKEN = lambda self: {
+        "application_id": "app-xyz",
+        "market_id": "market-123",
+        "email": "vendor@example.com",
+    }
+
+    def test_undeclared_keys_are_not_stored(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = ApplicantsApi.save_applicant_application(
+            self.TOKEN(),
+            {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small", "agree": True,
+             "not_a_field": "x" * 5000, "status": "reviewer_approved"},
+        )
+
+        assert status == 200
+        stored = result["application"]["formData"]
+        assert "not_a_field" not in stored
+        assert "status" not in stored
+        assert stored["business_name"] == "Acme"
+        assert apps_coll.find_one({"id": "app-xyz"})["form_data"] == stored
+        assert apps_coll.find_one({"id": "app-xyz"})["status"] == "open"
+
+    def test_market_with_no_form_declares_no_keys_and_stores_none(self, monkeypatch, apps_coll):
+        doc = stored_market(phase=MarketPhase.APPLICATIONS_OPEN, name="No Form Market")
+        fake = FakeSlugMarketsCollection([doc])
+        monkeypatch.setattr(ApplicantsApi, "markets_collection", fake)
+        _seeded_app(apps_coll)
+
+        result, status = ApplicantsApi.save_applicant_application(
+            self.TOKEN(), {"anything": "goes"}
+        )
+
+        assert status == 200
+        assert result["application"]["formData"] == {}
+
+    def test_non_object_form_data_is_refused(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = ApplicantsApi.save_applicant_application(self.TOKEN(), ["not", "an", "object"])
+
+        assert status == 400
+        assert "object" in result["error"].lower()

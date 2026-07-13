@@ -25,6 +25,8 @@ deployed by accident. The marker is a single document read by ``_id``, so the ch
 indexed lookup rather than a scan over every market - cheap enough to fail closed on, which is
 what it does: an unknown migration state is not a migrated one.
 """
+import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -179,6 +181,51 @@ def non_draft_market_prefilter() -> Dict[str, Any]:
             {phase_key: {"$exists": False}, market_doc_key("is_draft"): True},
         ]
     }
+
+
+def market_name_slug(name: str) -> str:
+    """The URL path segment a market name is reachable under.
+
+    The front end builds every public link from the same rule
+    (``marketNameToKebabSlug`` in ``front-end/src/utils/marketSlug.ts``): decompose to NFKD and
+    drop combining marks, so an accented name and its ASCII fold produce the same segment. A
+    second copy of this rule that skips the fold does not merely differ in style - it computes
+    ``caf-market`` where the link says ``cafe-market``, and every lookup behind that link 404s.
+    So there is one copy, and every public slug lookup goes through it.
+    """
+    if not name:
+        return ""
+    s = unicodedata.normalize("NFKD", name.strip())
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    return re.sub(r"-+", "-", s).strip("-")
+
+
+def published_market_by_slug(collection: Any, market_slug: str) -> Optional[Dict[str, Any]]:
+    """The published (phase != draft) market whose slugified name equals ``market_slug``.
+
+    A Mongo condition cannot decide this: ``{"phase": {"$ne": "draft"}}`` also matches a document
+    that carries no ``phase`` at all, which is exactly what a draft written before the field
+    existed looks like - it would put an unpublished market on a public URL.
+    ``phase_from_market_document`` is the one authority on a document's effective phase, so the
+    draft test goes through it in Python. ``non_draft_market_prefilter`` only prunes the documents
+    that are unambiguously drafts, keeping this off a full-collection decode on an unauthenticated
+    endpoint without letting a Mongo condition decide what counts as published.
+
+    The collection is a parameter because the public surfaces that need this each hold their own
+    handle; the rule they share is the slug and the draft test, and those live here.
+    """
+    if not market_slug:
+        return None
+    target = market_slug.strip().lower()
+    for doc in collection.find(non_draft_market_prefilter()):
+        if market_name_slug(doc.get("name", "")) != target:
+            continue
+        if phase_from_market_document(doc) == MarketPhase.DRAFT:
+            continue
+        return doc
+    return None
 
 
 def market_from_document(
