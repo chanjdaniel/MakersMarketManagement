@@ -1,5 +1,4 @@
-import { execSync } from 'child_process'
-import type { Page } from '@playwright/test'
+import type { APIRequestContext, Browser, Page } from '@playwright/test'
 import {
   test,
   expect,
@@ -9,10 +8,7 @@ import {
   BACKEND_URL,
 } from './fixtures'
 import { loginViaApi } from './helpers/seeds'
-
-// ── Worktree-aware MongoDB container name ──
-const MONGO_CONTAINER =
-  process.env.E2E_MONGO_CONTAINER || 'conventioner-4-mongodb'
+import { ensureVerifiedUser } from './helpers/verifiedUser'
 
 // ── Test user credentials ──
 const ORG_MEMBER = {
@@ -26,42 +22,47 @@ const OUTSIDER = {
 
 // ── Helpers ──
 
-function ensureVerifiedUser(email: string, password: string): void {
-  const registerCmd =
-    `curl -k -s -X POST ${BACKEND_URL}/register-user ` +
-    `-H 'Content-Type: application/json' ` +
-    `-d '${JSON.stringify({ email, password, organizations: [] })}'`
-  const registerOutput = execSync(registerCmd, {
-    encoding: 'utf-8',
-    timeout: 10000,
-  })
-  if (
-    !registerOutput.includes('successfully') &&
-    !registerOutput.includes('already exists')
-  ) {
-    throw new Error(`Failed to register ${email}: ${registerOutput}`)
-  }
-
-  const mongoCmd =
-    `db.getSiblingDB("conventioner").users.updateOne(` +
-    `{email: "${email}"}, {$set: {email_verified: true}})`
-  execSync(
-    `docker exec ${MONGO_CONTAINER} mongosh --quiet ` +
-      `-u admin -p secret --authenticationDatabase admin ` +
-      `--eval '${mongoCmd}'`,
-    { encoding: 'utf-8', timeout: 10000 },
-  )
-}
-
-async function loginAndGoToMarkets(
-  page: Page,
+/**
+ * Log a user in inside their own browser context, so no two users in a test ever share a
+ * session cookie or the persisted `user` in localStorage. The context is closed afterwards.
+ */
+async function withUser<T>(
+  browser: Browser,
   email: string,
   password: string,
-): Promise<void> {
-  const loginPage = new LoginPage(page)
-  await loginPage.login(email, password)
-  await loginPage.waitForDashboardRedirect()
+  body: (page: Page) => Promise<T>,
+): Promise<T> {
+  const context = await browser.newContext()
+  try {
+    const page = await context.newPage()
+    const loginPage = new LoginPage(page)
+    await loginPage.login(email, password)
+    await loginPage.waitForDashboardRedirect()
+    return await body(page)
+  } finally {
+    await context.close()
+  }
+}
+
+/**
+ * Open /markets and wait for the fetch to settle.
+ *
+ * `.markets-view` is on the page from first render, and the card list only exists once the
+ * fetch resolves, so waiting on the view alone would let a `not.toBeVisible()` pass against a
+ * DOM that is still showing "Loading markets...". Waiting for the loading state to clear -
+ * and asserting the fetch did not error - is what makes the negative assertions mean anything.
+ */
+async function gotoMarketsLoaded(page: Page): Promise<void> {
   await page.goto('/markets')
+  await page.waitForSelector('.markets-view', { timeout: 10000 })
+  await expect(
+    page.locator('.markets-view .empty-state').filter({ hasText: 'Loading markets' }),
+  ).toHaveCount(0, { timeout: 10000 })
+  await expect(page.locator('.markets-view .error-state')).toHaveCount(0)
+}
+
+function marketCard(page: Page, marketName: string) {
+  return page.locator('[data-testid="market-card"]').filter({ hasText: marketName })
 }
 
 /**
@@ -69,7 +70,7 @@ async function loginAndGoToMarkets(
  * Returns the new org's ID, name, and the owner's user ID.
  */
 async function createTestOrg(
-  request: any,
+  request: APIRequestContext,
   name: string,
 ): Promise<{ orgId: string; orgName: string; ownerUserId: string }> {
   const ownerUserId = await loginViaApi(
@@ -96,11 +97,56 @@ async function createTestOrg(
   return { orgId, orgName, ownerUserId }
 }
 
+/** Add a user to an org as TEST_USER (the org owner). Throws on rejection. */
+async function addOrgMember(
+  request: APIRequestContext,
+  orgId: string,
+  userEmail: string,
+): Promise<void> {
+  const res = await request.post(`${BACKEND_URL}/organizations/${orgId}/members`, {
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Owner-Email': TEST_USER.email,
+    },
+    data: { user_email: userEmail },
+  })
+  if (!res.ok()) {
+    throw new Error(`Add member failed: ${res.status()} ${await res.text()}`)
+  }
+}
+
+/** Create a market owned by TEST_USER in `orgId`. Throws on rejection. */
+async function createMarket(
+  request: APIRequestContext,
+  name: string,
+  orgId: string,
+  ownerUserId: string,
+): Promise<string> {
+  const res = await request.post(`${BACKEND_URL}/markets`, {
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Owner-Email': TEST_USER.email,
+    },
+    data: {
+      name,
+      creationDate: new Date().toISOString(),
+      organizationId: orgId,
+      roles: { [ownerUserId]: 'owner' },
+      modificationList: [],
+      assignmentObject: {},
+    },
+  })
+  if (!res.ok()) {
+    throw new Error(`Market creation failed: ${res.status()} ${await res.text()}`)
+  }
+  return (await res.json()).market_id as string
+}
+
 /**
  * GET /markets/{id} for a user. Logs in via API first so the session is valid.
  */
 async function apiGetMarket(
-  request: any,
+  request: APIRequestContext,
   email: string,
   password: string,
   marketId: string,
@@ -126,7 +172,6 @@ async function apiGetMarket(
 test.describe('Market visibility - org membership', () => {
   let marketId: string
   let marketName: string
-  let orgId: string
 
   test.beforeAll(async ({ request }) => {
     ensureVerifiedUser(ORG_MEMBER.email, ORG_MEMBER.password)
@@ -135,50 +180,21 @@ test.describe('Market visibility - org membership', () => {
     const org = await createTestOrg(request, 'E2E Access Org')
 
     // Add ORG_MEMBER to the org (org-based VIEWER access, no explicit market role)
-    await request.post(`${BACKEND_URL}/organizations/${org.orgId}/members`, {
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Owner-Email': TEST_USER.email,
-      },
-      data: { user_email: ORG_MEMBER.email },
-    })
+    await addOrgMember(request, org.orgId, ORG_MEMBER.email)
 
     marketName = `E2E Org Access ${Date.now()}`
-    const createRes = await request.post(`${BACKEND_URL}/markets`, {
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Owner-Email': TEST_USER.email,
-      },
-      data: {
-        name: marketName,
-        creationDate: new Date().toISOString(),
-        organizationId: org.orgId,
-        roles: { [org.ownerUserId]: 'owner' },
-        modificationList: [],
-        assignmentObject: {},
-      },
-    })
-    if (!createRes.ok()) {
-      throw new Error(
-        `Market creation failed: ${createRes.status()} ${await createRes.text()}`,
-      )
-    }
-    marketId = (await createRes.json()).market_id as string
-    orgId = org.orgId
+    marketId = await createMarket(request, marketName, org.orgId, org.ownerUserId)
   })
 
   test('org member sees market; outsider does not (paired)', async ({
-    page,
+    browser,
     request,
   }) => {
     // ── Positive: org member (no explicit role) sees the market ──
-    await loginAndGoToMarkets(page, ORG_MEMBER.email, ORG_MEMBER.password)
-    await page.waitForSelector('.markets-view', { timeout: 10000 })
-
-    const memberCard = page
-      .locator('[data-testid="market-card"]')
-      .filter({ hasText: marketName })
-    await expect(memberCard).toBeVisible({ timeout: 10000 })
+    await withUser(browser, ORG_MEMBER.email, ORG_MEMBER.password, async (page) => {
+      await gotoMarketsLoaded(page)
+      await expect(marketCard(page, marketName)).toBeVisible({ timeout: 10000 })
+    })
 
     // Positive: org member can GET the single market by ID
     const memberGet = await apiGetMarket(
@@ -192,21 +208,11 @@ test.describe('Market visibility - org membership', () => {
     expect(memberBody.market?.name).toBe(marketName)
 
     // ── Negative: outsider does NOT see the market ──
-    const outsiderPage = await page.context().newPage()
-    try {
-      await loginAndGoToMarkets(outsiderPage, OUTSIDER.email, OUTSIDER.password)
-      await outsiderPage.waitForSelector('.markets-view', { timeout: 10000 })
-
-      const outsiderCard = outsiderPage
-        .locator('[data-testid="market-card"]')
-        .filter({ hasText: marketName })
-      await expect(outsiderCard).not.toBeVisible({ timeout: 5000 })
-
-      const cards = outsiderPage.locator('[data-testid="market-card"]')
-      await expect(cards).toHaveCount(0)
-    } finally {
-      await outsiderPage.close()
-    }
+    await withUser(browser, OUTSIDER.email, OUTSIDER.password, async (page) => {
+      await gotoMarketsLoaded(page)
+      await expect(marketCard(page, marketName)).not.toBeVisible({ timeout: 5000 })
+      await expect(page.locator('[data-testid="market-card"]')).toHaveCount(0)
+    })
 
     // Negative: outsider gets 404 on the single-market endpoint
     const outsiderGet = await apiGetMarket(
@@ -239,49 +245,37 @@ test.describe('Market visibility - explicit role', () => {
     const org = await createTestOrg(request, 'E2E Explicit Org')
 
     marketName = `E2E Explicit Role ${Date.now()}`
-    const createRes = await request.post(`${BACKEND_URL}/markets`, {
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Owner-Email': TEST_USER.email,
-      },
-      data: {
-        name: marketName,
-        creationDate: new Date().toISOString(),
-        organizationId: org.orgId,
-        roles: { [org.ownerUserId]: 'owner' },
-        modificationList: [],
-        assignmentObject: {},
-      },
-    })
-    if (!createRes.ok()) {
-      throw new Error(
-        `Market creation failed: ${createRes.status()} ${await createRes.text()}`,
-      )
-    }
-    marketId = (await createRes.json()).market_id as string
+    marketId = await createMarket(request, marketName, org.orgId, org.ownerUserId)
 
     // Give EXPLICIT_USER a viewer role on the market (they are NOT in the org)
-    await request.post(`${BACKEND_URL}/markets/${marketId}/roles`, {
+    const roleRes = await request.post(`${BACKEND_URL}/markets/${marketId}/roles`, {
       headers: {
         'Content-Type': 'application/json',
         'X-Owner-Email': TEST_USER.email,
       },
       data: { user_email: EXPLICIT_USER.email, role: 'viewer' },
     })
+    if (!roleRes.ok()) {
+      throw new Error(
+        `Viewer role grant failed: ${roleRes.status()} ${await roleRes.text()}`,
+      )
+    }
   })
 
   test('user with explicit role sees market; outsider does not (paired)', async ({
-    page,
+    browser,
     request,
   }) => {
     // ── Positive: explicit-role user sees the market ──
-    await loginAndGoToMarkets(page, EXPLICIT_USER.email, EXPLICIT_USER.password)
-    await page.waitForSelector('.markets-view', { timeout: 10000 })
-
-    const roleCard = page
-      .locator('[data-testid="market-card"]')
-      .filter({ hasText: marketName })
-    await expect(roleCard).toBeVisible({ timeout: 10000 })
+    await withUser(
+      browser,
+      EXPLICIT_USER.email,
+      EXPLICIT_USER.password,
+      async (page) => {
+        await gotoMarketsLoaded(page)
+        await expect(marketCard(page, marketName)).toBeVisible({ timeout: 10000 })
+      },
+    )
 
     const roleGet = await apiGetMarket(
       request,
@@ -292,18 +286,10 @@ test.describe('Market visibility - explicit role', () => {
     expect(roleGet.status).toBe(200)
 
     // ── Negative: outsider does NOT see the market ──
-    const outsiderPage = await page.context().newPage()
-    try {
-      await loginAndGoToMarkets(outsiderPage, OUTSIDER.email, OUTSIDER.password)
-      await outsiderPage.waitForSelector('.markets-view', { timeout: 10000 })
-
-      const outsiderCard = outsiderPage
-        .locator('[data-testid="market-card"]')
-        .filter({ hasText: marketName })
-      await expect(outsiderCard).not.toBeVisible({ timeout: 5000 })
-    } finally {
-      await outsiderPage.close()
-    }
+    await withUser(browser, OUTSIDER.email, OUTSIDER.password, async (page) => {
+      await gotoMarketsLoaded(page)
+      await expect(marketCard(page, marketName)).not.toBeVisible({ timeout: 5000 })
+    })
 
     const outsiderGet = await apiGetMarket(
       request,
@@ -331,100 +317,62 @@ test.describe('Market visibility - org membership changes', () => {
     orgId = org.orgId
 
     marketName = `E2E Membership Chg ${Date.now()}`
-    const createRes = await request.post(`${BACKEND_URL}/markets`, {
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Owner-Email': TEST_USER.email,
-      },
-      data: {
-        name: marketName,
-        creationDate: new Date().toISOString(),
-        organizationId: orgId,
-        roles: { [org.ownerUserId]: 'owner' },
-        modificationList: [],
-        assignmentObject: {},
-      },
-    })
-    if (!createRes.ok()) {
-      throw new Error(
-        `Market creation failed: ${createRes.status()} ${await createRes.text()}`,
-      )
-    }
-    marketId = (await createRes.json()).market_id as string
+    marketId = await createMarket(request, marketName, orgId, org.ownerUserId)
   })
 
   test('add user to org grants visibility; remove revokes it', async ({
-    page,
+    browser,
     request,
   }) => {
-    // ── Phase 1: Before adding to org, ORG_MEMBER does NOT see the market ──
-    await loginAndGoToMarkets(page, ORG_MEMBER.email, ORG_MEMBER.password)
-    await page.waitForSelector('.markets-view', { timeout: 10000 })
+    await withUser(browser, ORG_MEMBER.email, ORG_MEMBER.password, async (page) => {
+      // ── Phase 1: Before adding to org, ORG_MEMBER does NOT see the market ──
+      await gotoMarketsLoaded(page)
+      await expect(marketCard(page, marketName)).not.toBeVisible({ timeout: 5000 })
 
-    const cardBefore = page
-      .locator('[data-testid="market-card"]')
-      .filter({ hasText: marketName })
-    await expect(cardBefore).not.toBeVisible({ timeout: 5000 })
-
-    // ── Phase 2: Owner adds ORG_MEMBER to the org via API ──
-    await loginViaApi(request, BACKEND_URL, TEST_USER.email, TEST_USER.password)
-    const addRes = await request.post(
-      `${BACKEND_URL}/organizations/${orgId}/members`,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Owner-Email': TEST_USER.email,
-        },
-        data: { user_email: ORG_MEMBER.email },
-      },
-    )
-    if (!addRes.ok()) {
-      throw new Error(
-        `Add member failed: ${addRes.status()} ${await addRes.text()}`,
+      const getBefore = await apiGetMarket(
+        request,
+        ORG_MEMBER.email,
+        ORG_MEMBER.password,
+        marketId,
       )
-    }
+      expect(getBefore.status).toBe(404)
 
-    // ── Phase 3: Now ORG_MEMBER sees the market ──
-    await page.reload()
-    await page.waitForSelector('.markets-view', { timeout: 10000 })
+      // ── Phase 2: Owner adds ORG_MEMBER to the org via API ──
+      await loginViaApi(request, BACKEND_URL, TEST_USER.email, TEST_USER.password)
+      await addOrgMember(request, orgId, ORG_MEMBER.email)
 
-    const cardAfter = page
-      .locator('[data-testid="market-card"]')
-      .filter({ hasText: marketName })
-    await expect(cardAfter).toBeVisible({ timeout: 10000 })
+      // ── Phase 3: Now ORG_MEMBER sees the market ──
+      await gotoMarketsLoaded(page)
+      await expect(marketCard(page, marketName)).toBeVisible({ timeout: 10000 })
 
-    // ── Phase 4: Owner removes ORG_MEMBER from the org via API ──
-    // Need the member's user ID to call the remove endpoint.
-    const memberUser = await loginViaApi(
-      request,
-      BACKEND_URL,
-      ORG_MEMBER.email,
-      ORG_MEMBER.password,
-    )
-    await loginViaApi(request, BACKEND_URL, TEST_USER.email, TEST_USER.password)
-    const removeRes = await request.delete(
-      `${BACKEND_URL}/organizations/${orgId}/users/${memberUser}`,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Owner-Email': TEST_USER.email,
-        },
-      },
-    )
-    if (!removeRes.ok()) {
-      throw new Error(
-        `Remove member failed: ${removeRes.status()} ${await removeRes.text()}`,
+      // ── Phase 4: Owner removes ORG_MEMBER from the org via API ──
+      // Need the member's user ID to call the remove endpoint.
+      const memberUser = await loginViaApi(
+        request,
+        BACKEND_URL,
+        ORG_MEMBER.email,
+        ORG_MEMBER.password,
       )
-    }
+      await loginViaApi(request, BACKEND_URL, TEST_USER.email, TEST_USER.password)
+      const removeRes = await request.delete(
+        `${BACKEND_URL}/organizations/${orgId}/users/${memberUser}`,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Owner-Email': TEST_USER.email,
+          },
+        },
+      )
+      if (!removeRes.ok()) {
+        throw new Error(
+          `Remove member failed: ${removeRes.status()} ${await removeRes.text()}`,
+        )
+      }
 
-    // ── Phase 5: ORG_MEMBER no longer sees the market ──
-    await page.reload()
-    await page.waitForSelector('.markets-view', { timeout: 10000 })
-
-    const cardRemoved = page
-      .locator('[data-testid="market-card"]')
-      .filter({ hasText: marketName })
-    await expect(cardRemoved).not.toBeVisible({ timeout: 5000 })
+      // ── Phase 5: ORG_MEMBER no longer sees the market ──
+      await gotoMarketsLoaded(page)
+      await expect(marketCard(page, marketName)).not.toBeVisible({ timeout: 5000 })
+    })
 
     // ── API confirmation ──
     const getAfter = await apiGetMarket(
@@ -455,111 +403,47 @@ test.describe('Market visibility - org deletion', () => {
     orgName = org.orgName
 
     // Add ORG_MEMBER to the org
-    await request.post(`${BACKEND_URL}/organizations/${orgId}/members`, {
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Owner-Email': TEST_USER.email,
-      },
-      data: { user_email: ORG_MEMBER.email },
-    })
+    await addOrgMember(request, orgId, ORG_MEMBER.email)
 
     marketName = `E2E DeleteOrg ${Date.now()}`
-    const createRes = await request.post(`${BACKEND_URL}/markets`, {
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Owner-Email': TEST_USER.email,
-      },
-      data: {
-        name: marketName,
-        creationDate: new Date().toISOString(),
-        organizationId: orgId,
-        roles: { [org.ownerUserId]: 'owner' },
-        modificationList: [],
-        assignmentObject: {},
-      },
-    })
-    if (!createRes.ok()) {
-      throw new Error(
-        `Market creation failed: ${createRes.status()} ${await createRes.text()}`,
-      )
-    }
-    marketId = (await createRes.json()).market_id as string
+    marketId = await createMarket(request, marketName, orgId, org.ownerUserId)
   })
 
   test('deleting org revokes org-based access but owner still sees market via explicit role', async ({
-    page,
+    browser,
     request,
   }) => {
-    // ── Phase 1: ORG_MEMBER sees the market via org membership ──
-    const memberPage = await page.context().newPage()
-    try {
-      await loginAndGoToMarkets(
-        memberPage,
-        ORG_MEMBER.email,
-        ORG_MEMBER.password,
-      )
-      await memberPage.waitForSelector('.markets-view', { timeout: 10000 })
+    // Four full UI logins plus an org deletion do not fit the suite's default budget.
+    test.setTimeout(60_000)
 
-      const card = memberPage
-        .locator('[data-testid="market-card"]')
-        .filter({ hasText: marketName })
-      await expect(card).toBeVisible({ timeout: 10000 })
-    } finally {
-      await memberPage.close()
-    }
+    // ── Phase 1: ORG_MEMBER sees the market via org membership ──
+    await withUser(browser, ORG_MEMBER.email, ORG_MEMBER.password, async (page) => {
+      await gotoMarketsLoaded(page)
+      await expect(marketCard(page, marketName)).toBeVisible({ timeout: 10000 })
+    })
 
     // ── Phase 2: Owner deletes the org ──
-    const ownerPage = await page.context().newPage()
-    try {
-      await loginAndGoToMarkets(
-        ownerPage,
-        TEST_USER.email,
-        TEST_USER.password,
-      )
-      await ownerPage.goto('/organizations')
-      await ownerPage.waitForSelector('.organizations-view', { timeout: 10000 })
+    await withUser(browser, TEST_USER.email, TEST_USER.password, async (page) => {
+      await page.goto('/organizations')
+      await page.waitForSelector('.organizations-view', { timeout: 10000 })
 
-      const orgsPage = new OrganizationsPage(ownerPage)
-      await expect(
-        ownerPage.locator('.org-card').filter({ hasText: orgName }),
-      ).toBeVisible({ timeout: 5000 })
+      const orgsPage = new OrganizationsPage(page)
+      const orgCard = page.locator('.org-card').filter({ hasText: orgName })
+      await expect(orgCard).toBeVisible({ timeout: 5000 })
 
-      const manageButton = ownerPage
-        .locator('.org-card')
-        .filter({ hasText: orgName })
-        .getByTestId('organizations-manage-button')
-      await manageButton.click()
+      await orgCard.getByTestId('organizations-manage-button').click()
       await orgsPage.waitForManageOverlay()
 
       await orgsPage.deleteOrg()
-      await ownerPage.waitForTimeout(500)
 
-      await expect(
-        ownerPage.locator('.org-card').filter({ hasText: orgName }),
-      ).not.toBeVisible({ timeout: 5000 })
-    } finally {
-      await ownerPage.close()
-    }
+      await expect(orgCard).not.toBeVisible({ timeout: 5000 })
+    })
 
     // ── Phase 3: ORG_MEMBER no longer sees the market ──
-    const memberPageAfter = await page.context().newPage()
-    try {
-      await loginAndGoToMarkets(
-        memberPageAfter,
-        ORG_MEMBER.email,
-        ORG_MEMBER.password,
-      )
-      await memberPageAfter.waitForSelector('.markets-view', {
-        timeout: 10000,
-      })
-
-      const cardAfter = memberPageAfter
-        .locator('[data-testid="market-card"]')
-        .filter({ hasText: marketName })
-      await expect(cardAfter).not.toBeVisible({ timeout: 5000 })
-    } finally {
-      await memberPageAfter.close()
-    }
+    await withUser(browser, ORG_MEMBER.email, ORG_MEMBER.password, async (page) => {
+      await gotoMarketsLoaded(page)
+      await expect(marketCard(page, marketName)).not.toBeVisible({ timeout: 5000 })
+    })
 
     // ── Phase 4: Owner with explicit role STILL sees the market ──
     // This positive twin proves the market exists and the query works.
@@ -574,13 +458,10 @@ test.describe('Market visibility - org deletion', () => {
       data: { user_email: TEST_USER.email, role: 'owner' },
     })
 
-    await loginAndGoToMarkets(page, TEST_USER.email, TEST_USER.password)
-    await page.waitForSelector('.markets-view', { timeout: 10000 })
-
-    const ownerCard = page
-      .locator('[data-testid="market-card"]')
-      .filter({ hasText: marketName })
-    await expect(ownerCard).toBeVisible({ timeout: 10000 })
+    await withUser(browser, TEST_USER.email, TEST_USER.password, async (page) => {
+      await gotoMarketsLoaded(page)
+      await expect(marketCard(page, marketName)).toBeVisible({ timeout: 10000 })
+    })
 
     // ── API: Owner still accesses; ORG_MEMBER is denied ──
     const ownerGet = await apiGetMarket(
