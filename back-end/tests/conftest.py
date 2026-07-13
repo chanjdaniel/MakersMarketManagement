@@ -202,9 +202,34 @@ class FakeApplicationsCollection:
         self.count = count
         self.documents: list = []
 
+    def find_one(self, query):
+        for doc in self.documents:
+            match = True
+            for k, v in (query or {}).items():
+                if doc.get(k) != v:
+                    match = False
+                    break
+            if match:
+                return dict(doc)
+        return None
+
     def insert_one(self, document):
         self.documents.append(document)
         return SimpleNamespace(inserted_id=str(len(self.documents)))
+
+    def update_one(self, query, update):
+        for i, doc in enumerate(self.documents):
+            match = True
+            for k, v in (query or {}).items():
+                if doc.get(k) != v:
+                    match = False
+                    break
+            if match:
+                if "$set" in update:
+                    for k, v in update["$set"].items():
+                        doc[k] = v
+                return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
+        return SimpleNamespace(matched_count=0, modified_count=0, upserted_id=None)
 
     def count_documents(self, query):
         matched = sum(

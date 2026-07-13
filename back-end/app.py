@@ -5,6 +5,7 @@ import api.markets as MarketsApi
 import api.source_data as SourceDataApi
 import api.attendance as AttendanceApi
 import api.permissions as PermissionsApi
+import api.applicants as ApplicantsApi
 from api.floorplans import floorplans_bp
 from api.floorplans_placement import floorplans_placement_bp
 from api.floorplans_templates import floorplans_templates_bp
@@ -1025,6 +1026,92 @@ def get_market_tables(market_id: str) -> Response:
             "endpoint": f"/markets/{market_id}/tables",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }), 500
+
+
+# public applicant endpoints
+
+
+@app.route('/public/markets/<market_slug>/application-form', methods=['GET'])
+def public_get_application_form(market_slug: str) -> Response:
+    """Public: return the market's application form. No authentication required."""
+    try:
+        result, status_code = ApplicantsApi.get_public_application_form(market_slug)
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.error(f"Error in public_get_application_form {market_slug}: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@app.route('/public/applicant/request-key', methods=['POST'])
+def public_request_applicant_key() -> Response:
+    """Stage 1: request a one-time verification code for an applicant email."""
+    try:
+        data = request.json or {}
+        market_slug = data.get('marketSlug') or data.get('market_slug') or ''
+        email = data.get('email') or ''
+        result, status_code = ApplicantsApi.request_applicant_key(market_slug, email)
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.error(f"Error in public_request_applicant_key: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@app.route('/public/applicant/verify-key', methods=['POST'])
+def public_verify_applicant_key() -> Response:
+    """Stage 2: verify the one-time code and return an application-scoped JWT."""
+    try:
+        data = request.json or {}
+        market_slug = data.get('marketSlug') or data.get('market_slug') or ''
+        email = data.get('email') or ''
+        key = data.get('key') or ''
+        result, status_code = ApplicantsApi.verify_applicant_key(market_slug, email, key)
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.error(f"Error in public_verify_applicant_key: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@app.route('/public/applicant/application', methods=['GET'])
+def public_get_applicant_application() -> Response:
+    """Return the authenticated applicant's application. Bearer token required."""
+    try:
+        token_payload = ApplicantsApi.authenticate_request(
+            request.headers.get('Authorization')
+        )
+        if not token_payload:
+            return jsonify({"error": "Authentication required. Your session may have expired. "
+                                     "Please sign in again."}), 401
+
+        result, status_code = ApplicantsApi.get_applicant_application(token_payload)
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.error(f"Error in public_get_applicant_application: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@app.route('/public/applicant/application', methods=['PUT'])
+def public_save_applicant_application() -> Response:
+    """Save or update the authenticated applicant's application. Bearer token required."""
+    try:
+        token_payload = ApplicantsApi.authenticate_request(
+            request.headers.get('Authorization')
+        )
+        if not token_payload:
+            return jsonify({"error": "Authentication required. Your session may have expired. "
+                                     "Please sign in again."}), 401
+
+        data = request.json or {}
+        form_data = data.get('formData') or data.get('form_data') or {}
+        result, status_code = ApplicantsApi.save_applicant_application(token_payload, form_data)
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.error(f"Error in public_save_applicant_application: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": "Internal server error"}), 500
 
 
 # attendance
