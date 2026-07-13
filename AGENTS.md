@@ -255,6 +255,29 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   process that cannot enforce them does not serve. Do not soften either back into a logged warning -
   an index that will not build almost always means the collection already holds the duplicates the
   index forbids, which is the state serving on would deepen.
+- **`submitted_at` is what makes an application real - not the existence of the document, and not
+  `status`.**
+  In `applications_open`, `request_applicant_key` persists an application for *any* address a caller
+  types into the login box, before any code is verified. That is deliberate: it is the price of
+  closing the enumeration oracle (an address that got a document and one that did not would be
+  distinguishable), and it is safe (the slug lookup never resolves a draft market, so the D9 lock
+  cannot be tripped this way). The consequence is that the applications collection holds **login
+  stubs** - documents from typos, probes, and abandoned sign-ins, carrying `status: open` and an
+  empty `form_data`, indistinguishable from a real application by existence or by status.
+  A stub becomes an application when the applicant saves one, and `submitted_at` is the field that
+  says so (`save_applicant_application` stamps it on first save, and never again).
+  `ApplicantDashboard.vue` already keys on it. **Every reader that counts, lists, reviews, or assigns
+  applicants must key on it too** - a reviewer queue or a solver adapter that selects on
+  `{"status": "open"}`, or on the document being there at all, will silently pull in every stranger
+  who ever mistyped an address at this market.
+- **The applicant never writes `status`; it is the organizer's column.**
+  `save_applicant_application` writes `form_data`, `submitted_at` and `updated_at`, and names
+  `status` only on a document that has none. It used to set `open` unconditionally, which was inert
+  only because nothing writes a verdict yet: `applications_closed -> applications_open` is a
+  transition `guards.py` allows, so a market can be reopened *after* review has begun, and from that
+  moment one applicant editing one answer would have silently reset a recorded verdict
+  (`under_review` / `reviewer_approved` / `reviewer_rejected` / `assigned`) back to `open`. Keep the
+  applicant's writes to the applicant's columns. See `TestSaveDoesNotOwnStatus`.
 - **A request is admitted by all of its budgets or by none of them.** The applicant endpoints charge
   a per-IP budget and a global ceiling for the same request, and both are budgets *other people* are
   also spending, so they are charged together through `any_budget_exceeded()`
@@ -274,6 +297,14 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   capping it hands them the outage), and nothing may spend *any* budget before passing the captcha.
   Refused requests are refunded rather than counted (`back-end/utils/rate_limit.py`), so a shared
   window cannot be held down by requests that were already turned away.
+  That last rule binds **both** public applicant endpoints, so `verify-key` carries a captcha as well
+  as `request-key` and every caller must send a `captchaToken` on it. It is not there to bound
+  guessing - the per-code attempt cap and the resend cooldown do that - it is there because the budget
+  `verify-key` spends is *per-IP*, and a per-IP budget belongs to everyone behind the address, not to
+  the caller. Uncaptcha'd, a script with no code, no application and no account could burn that budget
+  to its ceiling and take sign-in away from every real applicant behind a venue's wifi or a carrier's
+  CGNAT pool - the ceiling *becoming* the outage it was sized to prevent. Any future endpoint that
+  charges a shared budget inherits this rule.
 
 ## Market Document Keys (Conventioner sharp edge)
 

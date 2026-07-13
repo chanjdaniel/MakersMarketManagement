@@ -250,6 +250,55 @@ class TestSaveApplication:
         assert status == 200
 
 
+class TestSaveDoesNotOwnStatus:
+    """An applicant's save writes the applicant's answers, and nothing that is the organizer's.
+
+    ``status`` is the organizer's column: the only writer of anything but ``open`` is a reviewer
+    recording a verdict. This is reachable, not theoretical - ``applications_closed ->
+    applications_open`` is a transition ``guards.py`` allows, so an organizer can reopen a market
+    after review has begun, and from that moment every applicant with a session can save.
+    """
+
+    TOKEN = lambda self: {
+        "application_id": "app-xyz",
+        "market_id": "market-123",
+        "email": "vendor@example.com",
+    }
+
+    @pytest.mark.parametrize("verdict", [
+        ApplicationStatus.UNDER_REVIEW,
+        ApplicationStatus.REVIEWER_APPROVED,
+        ApplicationStatus.REVIEWER_REJECTED,
+        ApplicationStatus.ASSIGNED,
+    ])
+    def test_an_edit_does_not_reset_a_recorded_verdict(self, open_market, apps_coll, verdict):
+        _seeded_app(apps_coll, status=verdict)
+        token = self.TOKEN()
+
+        result, status = ApplicantsApi.save_applicant_application(
+            MARKET_SLUG, token,
+            {"business_name": "Edited", "email": "a@b.com", "booth_size": "Small", "agree": True},
+        )
+
+        assert status == 200
+        assert result["application"]["formData"]["business_name"] == "Edited", "the answers are theirs"
+        assert apps_coll.documents[0]["status"] == verdict.value, "the verdict is not"
+
+    def test_a_document_with_no_status_is_opened(self, open_market, apps_coll):
+        """The one case with no status to preserve. ``open`` is what a missing one means."""
+        _seeded_app(apps_coll)
+        apps_coll.documents[0].pop("status", None)
+        token = self.TOKEN()
+
+        _result, status = ApplicantsApi.save_applicant_application(
+            MARKET_SLUG, token,
+            {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small", "agree": True},
+        )
+
+        assert status == 200
+        assert apps_coll.documents[0]["status"] == ApplicationStatus.OPEN.value
+
+
 class TestPhaseGate:
     """Tests that applications are refused when the market is not in applications_open."""
 

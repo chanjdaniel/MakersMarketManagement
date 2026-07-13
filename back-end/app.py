@@ -1168,8 +1168,9 @@ def public_verify_applicant_key() -> Response:
         market_slug = data.get('marketSlug') or data.get('market_slug') or ''
         email = data.get('email') or ''
         key = data.get('key') or ''
+        captcha_token = data.get('captchaToken') or data.get('captcha_token') or ''
         result, status_code = ApplicantsApi.verify_applicant_key(
-            market_slug, email, key, request.remote_addr
+            market_slug, email, key, captcha_token, request.remote_addr
         )
         return jsonify(result), status_code
     except Exception as e:

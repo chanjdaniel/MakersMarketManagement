@@ -40,24 +40,66 @@ onMounted(async () => {
     isOpen.value = form.isOpen;
   } catch (err: unknown) {
     pageError.value = getApiErrorMessage(err, 'Failed to load the application form.');
+    return;
   } finally {
     loading.value = false;
   }
+
+  await completePendingSave();
 });
 
-// Prefill from the store if the applicant just verified. The application in the store belongs to
-// the market its session was issued for, so it is only this page's to prefill from when that is
-// this market: an application read under any other condition is another market's answers, copied
-// into this form wherever the two forms share a field key.
+// Prefill from what the applicant has already put into this market's form, from either of the two
+// places it can be.
+//
+// The store's `application` is the server's copy. It belongs to the market its session was issued
+// for, so it is only this page's to prefill from when that is this market: an application read under
+// any other condition is another market's answers, copied into this form wherever the two forms
+// share a field key.
+//
+// The draft is answers typed on this page and not yet saved - which, for a first-time applicant, is
+// all of them: "Save & Continue" cannot save anything before they have a session, so it sends them
+// to sign in first, and this page unmounts. It is layered *over* the saved answers because it is the
+// more recent typing, and it is read whether or not they are signed in: a visitor who backs out of
+// the login screen lands right back here, and their answers are still theirs.
 watch(
   () => (signedIn.value ? store.application : null),
   (app) => {
-    if (app?.formData && Object.keys(app.formData).length > 0) {
-      formData.value = { ...app.formData };
+    const merged = {
+      ...(app?.formData ?? {}),
+      ...(store.draftAnswers(marketSlug.value) ?? {}),
+    };
+    if (Object.keys(merged).length > 0) {
+      formData.value = merged;
     }
   },
   { immediate: true },
 );
+
+/**
+ * The applicant pressed "Save & Continue", got sent to sign in, and has come back holding a session.
+ * The save they asked for is still owed to them: the watcher above has already put their answers
+ * back into the form, and this is what finishes the sentence the button started. Leaving it for them
+ * to press a second time is the same broken promise, one step further along.
+ *
+ * A save that fails leaves the draft alone (see `saveApplication`), so nothing is lost by trying:
+ * the answers stay on screen, the error says why, and the button is there to try again.
+ */
+async function completePendingSave() {
+  if (!signedIn.value || !isOpen.value) return;
+
+  const draft = store.draftAnswers(marketSlug.value);
+  if (!draft || Object.keys(draft).length === 0) return;
+
+  if (!validateAll()) return;
+
+  saving.value = true;
+  try {
+    const ok = await store.saveApplication(marketSlug.value, formData.value);
+    if (ok) saved.value = true;
+  } finally {
+    saving.value = false;
+  }
+}
 
 function validateAll(): boolean {
   validationErrors.value = formValidationErrors(sortedFields.value, formData.value);
@@ -80,7 +122,9 @@ async function submitForm() {
       const ok = await store.saveApplication(marketSlug.value, formData.value);
       if (ok) saved.value = true;
     } else {
-      // Not yet logged in -- redirect to login flow with market slug
+      // Signing in is a redirect, and a redirect unmounts this form. The answers are handed to the
+      // store *before* that happens, or the button labelled "Save" is the one that loses them.
+      store.rememberDraftAnswers(marketSlug.value, formData.value);
       router.push({
         name: 'applicant-login',
         params: { marketSlug: marketSlug.value },

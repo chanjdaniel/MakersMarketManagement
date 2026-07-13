@@ -1232,15 +1232,55 @@ class TestVerifyKey:
 
         for _ in range(5):
             ApplicantsApi.verify_applicant_key(
-                "test-market", "vendor@example.com", "000000", "203.0.113.9",
+                "test-market", "vendor@example.com", "000000", client_ip="203.0.113.9",
             )
 
         result, status = ApplicantsApi.verify_applicant_key(
-            "test-market", "vendor@example.com", "000000", "203.0.113.9",
+            "test-market", "vendor@example.com", "000000", client_ip="203.0.113.9",
         )
 
         assert status == 429
         assert result["error"] == ApplicantsApi.RATE_LIMITED_ERROR
+
+    def test_a_failed_captcha_spends_no_budget_and_compares_no_guess(
+        self, published_market, apps_coll, login_codes, rate_limits, monkeypatch,
+    ):
+        """The rule the budgets are written under: nothing spends one before passing the captcha.
+
+        The guess budget is per-IP, and a per-IP budget is not one caller's - everybody behind a
+        convention hall's wifi or a carrier's CGNAT pool spends the same one. A script that could
+        charge it without passing the captcha would not be guessing codes, it would be taking sign-in
+        away from every real applicant behind that address, which is the outage the ceiling exists to
+        prevent rather than to become.
+        """
+        _app, otp = self._signed_up(apps_coll, login_codes)
+        monkeypatch.setattr(ApplicantsApi, "verify_recaptcha", lambda *_a, **_kw: (False, 0.0))
+
+        result, status = ApplicantsApi.verify_applicant_key(
+            "test-market", "vendor@example.com", otp, "bad-token", "203.0.113.9",
+        )
+
+        assert status == 400
+        assert result["error"] == ApplicantsApi.CAPTCHA_REQUIRED_ERROR
+        assert rate_limits.documents == [], "a caller that failed the captcha spent a shared budget"
+        assert _stored_challenge(login_codes, "vendor@example.com")["attempts"] == 0, (
+            "the code was compared against a guess that never passed the captcha"
+        )
+
+    def test_the_captcha_is_scored_against_the_caller_ip(
+        self, published_market, apps_coll, login_codes,
+    ):
+        seen = []
+
+        with patch.object(
+            ApplicantsApi, "verify_recaptcha",
+            side_effect=lambda token, ip: seen.append((token, ip)) or (True, 1.0),
+        ):
+            ApplicantsApi.verify_applicant_key(
+                "test-market", "vendor@example.com", "000000", "tok-123", "203.0.113.9",
+            )
+
+        assert seen == [("tok-123", "203.0.113.9")]
 
     def test_separate_market_otps_dont_cross_markets(self, apps_coll, login_codes, no_email, monkeypatch):
         fake1 = FakeSlugMarketsCollection([

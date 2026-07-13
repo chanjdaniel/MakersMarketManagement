@@ -865,11 +865,29 @@ def _accepted_after_floor(started: float, floor: float) -> Tuple[Dict[str, Any],
 
 
 def verify_applicant_key(
-    market_slug: str, email: str, key: str, client_ip: Optional[str] = None,
+    market_slug: str,
+    email: str,
+    key: str,
+    captcha_token: str = "",
+    client_ip: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], int]:
     """Stage 2 of the applicant login flow: verify the one-time key.
 
     On success returns a short-lived application-scoped JWT + application data.
+
+    Carries the captcha for the same reason ``request_applicant_key`` does, and verifies it in the
+    same place: before anything else happens, and before any budget is counted. The rule it is
+    keeping is the one stated above the budgets - *nothing spends a budget until it has passed the
+    captcha* - and this endpoint is where breaking it would cost the most, because the budget it
+    spends is the per-IP guess budget and a per-IP budget is not one caller's. It belongs to
+    everybody behind the address: a convention hall's wifi is one address, and a carrier's CGNAT
+    pool is one address for thousands of phones. Left uncaptcha'd, a script needs no code, no
+    application and no account to burn that budget to its ceiling in an hour, and what it takes down
+    is not the guessing it was sized to bound - it is sign-in itself, for every real applicant behind
+    that address.
+
+    The captcha refusal leaks nothing it must not: it is decided before the market is looked up and
+    before the address is used for anything, so it knows only that the caller is not a browser.
 
     Every refusal names exactly what is wrong - except that none of them may reveal whether an
     application exists for the address, and here that is not a matter of wording. It is why the
@@ -886,7 +904,8 @@ def verify_applicant_key(
         market_slug: The URL-safe slug of the market.
         email: The applicant's email address.
         key: The 6-digit verification code.
-        client_ip: The caller's IP, for the per-IP guess budget.
+        captcha_token: The reCAPTCHA token the browser obtained for this action.
+        client_ip: The caller's IP, for the per-IP guess budget and for the captcha's own scoring.
 
     Returns:
         Tuple of (response_body, status_code).
@@ -904,6 +923,10 @@ def verify_applicant_key(
         return {"error": "Verification code is required."}, 400
 
     key = key.strip()
+
+    captcha_ok, _score = verify_recaptcha(captcha_token, client_ip)
+    if not captcha_ok:
+        return {"error": CAPTCHA_REQUIRED_ERROR}, 400
 
     if rate_limit_exceeded(
         "applicant_verify_key_ip",
@@ -990,6 +1013,9 @@ def save_applicant_application(
     Refuses submission when the market is not in ``applications_open``, and refuses a session
     that was issued for a different market.
 
+    Writes the applicant's own columns and no others. ``status`` in particular is the organizer's,
+    and this endpoint never sets it on an application that already has one - see the write below.
+
     Args:
         market_slug: The URL-safe slug of the market the request is acting on.
         token_payload: Decoded JWT payload from ``verify_application_token``.
@@ -1028,15 +1054,28 @@ def save_applicant_application(
         return {"error": error}, 422
 
     now = datetime.now(timezone.utc).isoformat()
-    ApplicationsApi.applications_collection.update_one(
-        {"id": app_id},
-        {"$set": {
-            "form_data": stored_form_data,
-            "status": ApplicationStatus.OPEN.value,
-            "submitted_at": app_doc.get("submitted_at") or now,
-            "updated_at": now,
-        }},
-    )
+
+    # The applicant owns their answers. They do not own ``status``: that is the organizer's column,
+    # and the only writer of anything but ``open`` is a reviewer recording a verdict. So this save
+    # must not name it on an application that already has one.
+    #
+    # Setting ``open`` here unconditionally would be a no-op right up until it is not.
+    # ``applications_closed -> applications_open`` is a transition an organizer is allowed to make
+    # (``guards.py``), so a market can be reopened *after* review has begun - and from that moment
+    # one applicant editing one answer would silently reset a recorded verdict to ``open``, with
+    # nothing anywhere saying it had happened.
+    #
+    # A document with no status at all is the one case with nothing to preserve, and ``open`` is
+    # what a missing one means.
+    changes: Dict[str, Any] = {
+        "form_data": stored_form_data,
+        "submitted_at": app_doc.get("submitted_at") or now,
+        "updated_at": now,
+    }
+    if not app_doc.get("status"):
+        changes["status"] = ApplicationStatus.OPEN.value
+
+    ApplicationsApi.applications_collection.update_one({"id": app_id}, {"$set": changes})
 
     # Return the updated application
     updated_doc = ApplicationsApi.applications_collection.find_one({"id": app_id})
