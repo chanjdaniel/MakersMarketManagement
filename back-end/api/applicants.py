@@ -145,8 +145,21 @@ TEXT_FIELD_TYPES = ("text", "email", "date")
 
 # The login email is the application's primary key, so it is held to the same shape as a declared
 # ``email`` answer: one rule, one place, so the address an applicant signs in with cannot be one the
-# form itself would refuse.
+# form itself would refuse. ``_is_valid_email_address`` is that place, and both callers go through
+# it - a bound applied to only one of them is not a shared rule, and the login address is the one
+# that must not miss it: it is written by an unauthenticated caller into the key of a login
+# challenge and of an application, so without a bound it is an unbounded write bounded only by the
+# app-wide body limit. 254 is the longest address SMTP can carry (RFC 5321), so nothing this
+# refuses could have been delivered a code anyway.
+MAX_EMAIL_LENGTH = 254
+
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _is_valid_email_address(value: str) -> bool:
+    """Whether a string is an address this product will accept, by the one rule both callers use."""
+    candidate = value.strip()
+    return len(candidate) <= MAX_EMAIL_LENGTH and bool(EMAIL_PATTERN.match(candidate))
 
 # The states of a review the organizer has not finished delivering. A reviewer recording a verdict
 # is not the organizer sending it, and until the organizer acts outward - which as of this build is
@@ -253,15 +266,18 @@ def _normalized_email(value: Any) -> Tuple[Optional[Tuple[Dict[str, Any], int]],
 
     Returns ``(refusal, "")`` or ``(None, email)``.
 
-    Anti-F6: the refusal quotes the address back and says it is the address that is wrong.
+    Anti-F6: the refusal quotes the address back and says it is the address that is wrong. It quotes
+    back at most ``MAX_EMAIL_LENGTH`` characters of it, because what arrived here is an
+    unauthenticated request body and an unbounded refusal would echo all of it.
     """
     if not isinstance(value, str) or not value.strip():
         return ({"error": "Email address is required."}, 400), ""
 
     email = value.strip().lower()
-    if not EMAIL_PATTERN.match(email):
+    if not _is_valid_email_address(email):
         return ({
-            "error": f'"{email}" is not a valid email address. Check it and try again.',
+            "error": f'"{email[:MAX_EMAIL_LENGTH]}" is not a valid email address. '
+                     "Check it and try again.",
         }, 400), ""
 
     return None, email
@@ -555,7 +571,7 @@ def _checked_value(field: Dict[str, Any], value: Any) -> Tuple[Optional[str], An
                 f'"{label}" is too long. It must be at most {MAX_TEXT_LENGTH} characters.',
                 None,
             )
-        if ft == "email" and not EMAIL_PATTERN.match(value.strip()):
+        if ft == "email" and not _is_valid_email_address(value):
             return f'"{label}" must be a valid email address.', None
         if ft == "date":
             # The check is the format the refusal promises, not merely one ``fromisoformat`` can
@@ -1031,8 +1047,11 @@ def save_applicant_application(
 def get_public_application_form(market_slug: str) -> Tuple[Dict[str, Any], int]:
     """Return the public application form for a market.
 
-    Accessible without authentication. Returns the form only when the market
-    phase allows applicants to see it.
+    Accessible without authentication. The form is returned for every published market, in every
+    phase, alongside the phase and an ``is_open`` flag that says whether the market is still taking
+    applications. It is not phase-gated on purpose: the applicant dashboard renders stored answers
+    against this field list, so a market that has closed still has to be able to hand it over -
+    which means nothing phase-sensitive may be added to this payload without a gate of its own.
 
     Args:
         market_slug: The URL-safe slug of the market.

@@ -242,6 +242,12 @@ def published_market_by_slug(collection: Any, market_slug: str) -> Optional[Dict
     the same draft test again: it is the document being returned, and a market unpublished
     between the two reads must not be served on a public URL by a decision made about the
     version before it.
+
+    A candidate with no ``id`` is skipped rather than re-fetched: ``find_one({"id": None})`` is not
+    a lookup that misses, it is a filter that matches every document whose ``id`` is null *or
+    absent*, so it would answer with some other market entirely and that market's name is never
+    re-checked against the slug. Nothing writes a market without an id, and this is what keeps that
+    true of the read as well.
     """
     if not market_slug:
         return None
@@ -251,7 +257,10 @@ def published_market_by_slug(collection: Any, market_slug: str) -> Optional[Dict
             continue
         if phase_from_market_document(candidate) == MarketPhase.DRAFT:
             continue
-        doc = collection.find_one({"id": candidate.get("id")})
+        market_id = candidate.get("id")
+        if not market_id:
+            continue
+        doc = collection.find_one({"id": market_id})
         if doc is None or phase_from_market_document(doc) == MarketPhase.DRAFT:
             continue
         return doc
