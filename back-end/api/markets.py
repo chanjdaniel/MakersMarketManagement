@@ -18,7 +18,12 @@ from datatypes import (
 from assignment.assignment import assign_market
 from assignment.utils import convert_keys_to_snake_case, convert_keys_to_camel_case, snake_to_camel
 import api.applications as ApplicationsApi
-from market_documents import market_doc_field, market_doc_filter, market_from_document
+from market_documents import (
+    market_doc_field,
+    market_doc_filter,
+    market_doc_key,
+    market_from_document,
+)
 import api.source_data as SourceDataApi
 import api.permissions as PermissionsApi
 import api.organizations as OrgsApi
@@ -408,6 +413,19 @@ def load_market_context(market_id: str) -> Optional[MarketContext]:
     return MarketContext(market_dict, market, organization, org_dict)
 
 
+def _stamp_effective_phase(market: Dict[str, Any], phase: MarketPhase) -> None:
+    """Serve a raw market document with its phase and ``isDraft`` agreeing.
+
+    A response built from a raw document bypasses ``Market``, and with it the guarantee that
+    ``is_draft`` is derived strictly from phase - a document the old publish flow wrote
+    (``phase: draft`` from create, ``isDraft: false`` from the publish PUT) would otherwise go
+    out with the two fields contradicting each other. Deriving ``isDraft`` from the effective
+    phase here means no reader has to know which of the two to believe, migrated or not.
+    """
+    market['phase'] = phase.value
+    market[market_doc_key('is_draft')] = phase == MarketPhase.DRAFT
+
+
 def get_market_for_user(user_email: str, market_id: str) -> Optional[Dict[str, Any]]:
     """Get a market by id, checking user has access."""
     context = load_market_context(market_id)
@@ -424,7 +442,7 @@ def get_market_for_user(user_email: str, market_id: str) -> Optional[Dict[str, A
 
     market_dict['_id'] = str(market_dict['_id'])
     market_dict['user_role'] = user_role.value
-    market_dict['phase'] = market.phase.value
+    _stamp_effective_phase(market_dict, market.phase)
     if market.organization_id and org_dict:
         market_dict['organization_name'] = org_dict.get('name')
     role_emails = {}
@@ -475,7 +493,7 @@ def _decorate_market_summary(
     """
     market['_id'] = str(market['_id'])
     market['user_role'] = user_role
-    market['phase'] = phase_from_market_document(market).value
+    _stamp_effective_phase(market, phase_from_market_document(market))
     organization_id = market_doc_field(market, 'organization_id')
     if organization_id:
         org = lookups.organization(organization_id)
