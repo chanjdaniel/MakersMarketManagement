@@ -371,16 +371,20 @@ class TestAuthenticateRequest:
 
 
 class TestGetApplication:
-    def test_returns_404_for_missing_application(self, apps_coll):
-        result, status = ApplicantsApi.get_applicant_application({
-            "application_id": "no-such-app",
-            "market_id": "mkt-1",
-            "email": "test@example.com",
-        })
+    TOKEN = {
+        "application_id": "app-xyz",
+        "market_id": "market-123",
+        "email": "vendor@example.com",
+    }
+
+    def test_returns_404_for_missing_application(self, published_market, apps_coll):
+        result, status = ApplicantsApi.get_applicant_application(
+            "test-market", {**self.TOKEN, "application_id": "no-such-app"},
+        )
 
         assert status == 404
 
-    def test_returns_application_in_camel_case(self, apps_coll):
+    def test_returns_application_in_camel_case(self, published_market, apps_coll):
         app = Application(
             id="app-xyz",
             market_id="market-123",
@@ -390,11 +394,7 @@ class TestGetApplication:
         )
         apps_coll.insert_one(app.model_dump())
 
-        result, status = ApplicantsApi.get_applicant_application({
-            "application_id": "app-xyz",
-            "market_id": "market-123",
-            "email": "vendor@example.com",
-        })
+        result, status = ApplicantsApi.get_applicant_application("test-market", self.TOKEN)
 
         assert status == 200
         assert result["application"]["applicantEmail"] == "vendor@example.com"

@@ -24,7 +24,12 @@ from datatypes import (
     MarketPhase,
     phase_from_market_document,
 )
-from market_documents import market_doc_field, market_doc_filter, published_market_by_slug
+from market_documents import (
+    market_doc_field,
+    market_doc_filter,
+    market_name_slug,
+    published_market_by_slug,
+)
 import api.applications as ApplicationsApi
 
 db = get_database()
@@ -38,6 +43,13 @@ logger = logging.getLogger(__name__)
 MAX_OTP_ATTEMPTS = 5
 OTP_EXPIRY_MINUTES = 5
 
+# An answer is a form response, not a payload channel. Without a bound, every declared text key is
+# an unbounded write into the applications collection: the app-wide 50 MB body limit is the only
+# ceiling, and a document that grows past Mongo's 16 MB fails the write with a 500.
+MAX_TEXT_LENGTH = 5000
+
+TEXT_FIELD_TYPES = ("text", "email", "date")
+
 # ── slug helpers ───────────────────────────────────────────────────────────
 
 
@@ -49,6 +61,45 @@ def _get_market_doc_by_slug(market_slug: str) -> Optional[Dict[str, Any]]:
 def _get_market_phase(doc: Dict[str, Any]) -> MarketPhase:
     """Get the effective phase of a market document."""
     return phase_from_market_document(doc)
+
+
+def _market_for_applicant(
+    market_slug: str, token_payload: Dict[str, Any],
+) -> Tuple[Optional[Tuple[Dict[str, Any], int]], Optional[Dict[str, Any]]]:
+    """The market this request acts on, refused unless the token was issued for that same market.
+
+    An applicant session is scoped to one market, because an application is: the token carries the
+    market it was minted for, and every applicant route names the market it acts on. Resolving the
+    target from the token alone lets a session for one market act on another - the applicant fills
+    in market B's form, the write lands on market A's application, and where the two forms share a
+    field key (``business_name``, ``email``) it silently overwrites a submitted application with
+    another market's answers. So the route names the market and the server is the authority that the
+    two agree; the front-end guard only keeps the UI from inviting the action.
+
+    The market is loaded by the token's ``market_id`` rather than by slug, because the slug lookup
+    only sees published markets and this has to answer for the market the applicant is actually
+    signed in to whatever phase it has since moved to - that is the phase gate's question to answer,
+    with the phase named, not this one's to hide behind a 404.
+
+    Returns ``(refusal, None)`` or ``(None, market_doc)``.
+
+    Anti-F6: the refusal says the session is for a different market, not merely "forbidden".
+    """
+    if not market_slug or not market_slug.strip():
+        return ({"error": "Market identifier is required."}, 400), None
+
+    market_id = token_payload.get("market_id", "")
+    market_doc = markets_collection.find_one(market_doc_filter("id", market_id))
+    if not market_doc:
+        return ({"error": "Market not found."}, 404), None
+
+    if market_name_slug(market_doc.get("name", "")) != market_slug.strip().lower():
+        return ({
+            "error": "You are signed in for a different market. "
+                     "Please sign in again to work on this market's application.",
+        }, 403), None
+
+    return None, market_doc
 
 
 # ── application helpers ─────────────────────────────────────────────────────
@@ -115,17 +166,54 @@ def _as_number(value: Any) -> Any:
     return int(number) if number.is_integer() else number
 
 
+def _unanswered_value(field_type: str) -> Any:
+    """What an unanswered field of this type stores.
+
+    An unanswered value is still a stored value, so it is the field's own empty one rather than
+    whatever the request happened to carry. Echoing the incoming value back into the document is
+    the same hole as not checking an answered one: a text field handed ``[]`` reads as unanswered
+    and would store a list under a key the form declares as text. A number has no empty scalar,
+    so it stores nothing at all -- ``""`` is not a number.
+    """
+    if field_type == "number":
+        return None
+    if field_type == "checkbox":
+        return False
+    if field_type == "multi_select":
+        return []
+    return ""
+
+
 def _checked_value(field: Dict[str, Any], value: Any) -> Tuple[Optional[str], Any]:
     """Check one answered value against its field, and return the value as it should be stored.
 
-    Every field type the builder can produce must validate -- no per-field special-casing.
+    Every field type the builder can produce must validate -- no per-field special-casing -- and
+    every one of them constrains the *type* of what it accepts, not just its shape when it happens
+    to arrive as the expected one. A branch that checks a value only ``if isinstance(value, str)``
+    is not a check: everything that is not a string falls straight through it and is stored
+    verbatim, so a field the form declares as text can hold an arbitrary nested object, and every
+    later reader - the reviewer UI, an export, the application-to-solver adapter - inherits a value
+    whose type contradicts the form. Anything this build cannot validate it refuses rather than
+    stores, because storing an unvalidated value is the thing this function exists to prevent.
     """
     label = field.get("label", field.get("key", ""))
     ft = field.get("type", "text")
 
-    if ft == "email":
-        if isinstance(value, str) and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value.strip()):
+    if ft in TEXT_FIELD_TYPES:
+        if not isinstance(value, str):
+            return f'"{label}" must be text.', None
+        if len(value) > MAX_TEXT_LENGTH:
+            return (
+                f'"{label}" is too long. It must be at most {MAX_TEXT_LENGTH} characters.',
+                None,
+            )
+        if ft == "email" and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value.strip()):
             return f'"{label}" must be a valid email address.', None
+        if ft == "date":
+            try:
+                datetime.fromisoformat(value.strip())
+            except (ValueError, TypeError):
+                return f'"{label}" must be a valid date (YYYY-MM-DD).', None
     elif ft == "number":
         try:
             return None, _as_number(value)
@@ -138,18 +226,24 @@ def _checked_value(field: Dict[str, Any], value: Any) -> Tuple[Optional[str], An
         options = field.get("options", [])
         if not isinstance(value, list):
             return f'"{label}" must be a list of selections.', None
+        seen = []
         for v in value:
             if v not in options:
                 return f'"{label}" contains an invalid selection: "{v}".', None
+            # Selecting one option twice is not an answer the form can express, and without this
+            # the list is bounded only by the request body: the same valid option, a million times.
+            if v in seen:
+                return f'"{label}" repeats the selection "{v}".', None
+            seen.append(v)
     elif ft == "checkbox":
         if not isinstance(value, bool):
             return f'"{label}" must be true or false.', None
-    elif ft == "date":
-        if isinstance(value, str):
-            try:
-                datetime.fromisoformat(value.strip())
-            except (ValueError, TypeError):
-                return f'"{label}" must be a valid date (YYYY-MM-DD).', None
+    else:
+        return (
+            f'"{label}" has a field type this application cannot accept ({ft}). '
+            f'Contact the market organizer.',
+            None,
+        )
 
     return None, value
 
@@ -186,8 +280,7 @@ def _validated_form_data(
             continue
 
         if not answered:
-            # A blank answer to a number field is not the string "" -- it is no number at all.
-            stored[key] = None if ft == "number" else value
+            stored[key] = _unanswered_value(ft)
             continue
 
         error, checked = _checked_value(field, value)
@@ -356,15 +449,22 @@ def verify_applicant_key(
     }, 200
 
 
-def get_applicant_application(token_payload: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
-    """Return the authenticated applicant's application data.
+def get_applicant_application(
+    market_slug: str, token_payload: Dict[str, Any],
+) -> Tuple[Dict[str, Any], int]:
+    """Return the authenticated applicant's application data for this market.
 
     Args:
+        market_slug: The URL-safe slug of the market the request is acting on.
         token_payload: Decoded JWT payload from ``verify_application_token``.
 
     Returns:
         Tuple of (response_body, status_code).
     """
+    refusal, _ = _market_for_applicant(market_slug, token_payload)
+    if refusal:
+        return refusal
+
     app_id = token_payload.get("application_id", "")
     app_doc = ApplicationsApi.applications_collection.find_one({"id": app_id})
     if not app_doc:
@@ -375,14 +475,16 @@ def get_applicant_application(token_payload: Dict[str, Any]) -> Tuple[Dict[str, 
 
 
 def save_applicant_application(
-    token_payload: Dict[str, Any], form_data: Dict[str, Any],
+    market_slug: str, token_payload: Dict[str, Any], form_data: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], int]:
-    """Save or update the authenticated applicant's application.
+    """Save or update the authenticated applicant's application for this market.
 
     Validates the form data against the market's application form fields.
-    Refuses submission when the market is not in ``applications_open``.
+    Refuses submission when the market is not in ``applications_open``, and refuses a session
+    that was issued for a different market.
 
     Args:
+        market_slug: The URL-safe slug of the market the request is acting on.
         token_payload: Decoded JWT payload from ``verify_application_token``.
         form_data: The form answers keyed by field keys.
 
@@ -394,17 +496,14 @@ def save_applicant_application(
     if not isinstance(form_data, dict):
         return {"error": "Form answers must be an object keyed by field key."}, 400
 
-    app_id = token_payload.get("application_id", "")
-    market_id = token_payload.get("market_id", "")
+    refusal, market_doc = _market_for_applicant(market_slug, token_payload)
+    if refusal:
+        return refusal
 
+    app_id = token_payload.get("application_id", "")
     app_doc = ApplicationsApi.applications_collection.find_one({"id": app_id})
     if not app_doc:
         return {"error": "Application not found."}, 404
-
-    # Check market phase
-    market_doc = markets_collection.find_one(market_doc_filter("id", market_id))
-    if not market_doc:
-        return {"error": "Market not found."}, 404
 
     phase = phase_from_market_document(market_doc)
     if phase != MarketPhase.APPLICATIONS_OPEN:
@@ -462,6 +561,7 @@ def get_public_application_form(market_slug: str) -> Tuple[Dict[str, Any], int]:
     phase = _get_market_phase(market_doc)
     application_form = market_doc_field(market_doc, "application_form")
 
+    form_payload = None
     if application_form:
         # Return the form with field-level details (camelCase for front-end)
         fields = []
@@ -475,18 +575,14 @@ def get_public_application_form(market_slug: str) -> Tuple[Dict[str, Any], int]:
                 "helpText": f.get("helpText"),
                 "order": f.get("order", i),
             })
-
-        return {
-            "application_form": {
-                "fields": fields,
-            },
-            "phase": phase.value,
-            "is_open": phase == MarketPhase.APPLICATIONS_OPEN,
-            "phase_label": phase.value.replace("_", " ").title(),
-        }, 200
+        form_payload = {"fields": fields}
 
     return {
-        "application_form": None,
+        "application_form": form_payload,
+        # The applicant knows the market by its name; the slug is a URL detail they never chose.
+        # This is the only public endpoint that holds the market document, so it is what every
+        # applicant-facing screen has to get the name from.
+        "market_name": market_doc.get("name", ""),
         "phase": phase.value,
         "is_open": phase == MarketPhase.APPLICATIONS_OPEN,
         "phase_label": phase.value.replace("_", " ").title(),

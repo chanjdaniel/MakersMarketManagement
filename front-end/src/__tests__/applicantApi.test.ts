@@ -41,13 +41,13 @@ describe('applicant api session expiry', () => {
   });
 
   it('ends the session when the token is refused', async () => {
-    await reject(rejection('/public/applicant/application', 401));
+    await reject(rejection('/public/markets/test-market/applicant/application', 401));
 
     expect(onExpired).toHaveBeenCalledTimes(1);
   });
 
   it('drops the refused token, so a retry cannot re-send it', async () => {
-    await reject(rejection('/public/applicant/application', 401));
+    await reject(rejection('/public/markets/test-market/applicant/application', 401));
 
     const config = { headers: new AxiosHeaders() };
     const request = (
@@ -67,7 +67,7 @@ describe('applicant api session expiry', () => {
   });
 
   it('leaves the session alone on any other failure', async () => {
-    await reject(rejection('/public/applicant/application', 403));
+    await reject(rejection('/public/markets/test-market/applicant/application', 403));
 
     expect(onExpired).not.toHaveBeenCalled();
   });

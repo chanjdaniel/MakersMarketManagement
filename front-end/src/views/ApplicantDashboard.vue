@@ -4,8 +4,8 @@ import { useRoute, useRouter } from 'vue-router';
 import { useApplicationStore } from '@/stores/application';
 import ApplicationFormFields from '@/components/application/ApplicationFormFields.vue';
 import { getApiErrorMessage } from '@/utils/api';
-import { applicantApi } from '@/utils/applicantApi';
 import { formValidationErrors, sortedFormFields } from '@/utils/applicationForm';
+import { fetchPublicApplicationForm } from '@/utils/publicApplicationForm';
 import type { FormField } from '@/assets/types/datatypes';
 
 const route = useRoute();
@@ -21,12 +21,13 @@ const validationErrors = ref<Record<string, string>>({});
 const saving = ref(false);
 
 // Application form fields for display and editing
-const applicationForm = ref<FormField[]>([]);
+const fields = ref<FormField[]>([]);
+const marketName = ref('');
 const phaseLabel = ref('');
 const isOpen = ref(false);
 const formError = ref<string | null>(null);
 
-const sortedFields = computed(() => sortedFormFields(applicationForm.value));
+const sortedFields = computed(() => sortedFormFields(fields.value));
 
 // The form fetch failing is fatal to this view even when the application itself loaded: without
 // the field list the view branch renders a status and no answers, which reads as an empty
@@ -36,7 +37,9 @@ const loadError = computed(
 );
 
 async function loadAll() {
-  if (!store.isAuthenticated) {
+  // A token for another market is not a session here: it would fetch that market's application and
+  // render its answers against this market's labels.
+  if (!store.isAuthenticatedFor(marketSlug.value)) {
     router.push({
       name: 'applicant-login',
       params: { marketSlug: marketSlug.value },
@@ -47,16 +50,13 @@ async function loadAll() {
   loading.value = true;
   formError.value = null;
   try {
-    await store.fetchApplication();
+    await store.fetchApplication(marketSlug.value);
     // Fetch the form separately for display fields
-    const { data } = await applicantApi.get(
-      `/public/markets/${marketSlug.value}/application-form`,
-    );
-    if (data.application_form?.fields) {
-      applicationForm.value = data.application_form.fields;
-    }
-    phaseLabel.value = data.phase_label || '';
-    isOpen.value = data.is_open === true;
+    const form = await fetchPublicApplicationForm(marketSlug.value);
+    fields.value = form.fields;
+    marketName.value = form.marketName;
+    phaseLabel.value = form.phaseLabel;
+    isOpen.value = form.isOpen;
   } catch (err: unknown) {
     formError.value = getApiErrorMessage(
       err,
@@ -118,7 +118,7 @@ function clearFieldError(field: FormField) {
 async function saveEdits() {
   if (!validateAll()) return;
   saving.value = true;
-  const ok = await store.saveApplication(formData.value);
+  const ok = await store.saveApplication(marketSlug.value, formData.value);
   saving.value = false;
   if (ok) editing.value = false;
 }
@@ -144,17 +144,22 @@ function getFieldValue(field: FormField): string {
   <div class="dashboard-page" data-testid="applicant-dashboard-page">
     <header class="dash-header">
       <h1>Your Application</h1>
+      <!-- The status belongs to the application, so it cannot be on screen before the application
+           is: rendered outside the load guard it paints an "Unknown" chip on every visit, and
+           leaves it above the error when the load fails - reporting a status for an application
+           the page could not load. -->
       <span
+        v-if="!loading && !loadError && store.application"
         class="dash-status"
         :class="{ 'dash-status-pending': !isSubmitted }"
-        :data-testid="`applicant-dashboard-status-${store.application?.status}`"
+        :data-testid="`applicant-dashboard-status-${store.application.status}`"
       >
         {{ statusLabel }}
       </span>
     </header>
 
     <p class="dash-market" data-testid="applicant-dashboard-market">
-      {{ marketSlug }}
+      {{ marketName || marketSlug }}
     </p>
 
     <div v-if="loading" class="dash-loading" data-testid="applicant-dashboard-loading">

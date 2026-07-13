@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useApplicationStore } from '@/stores/application';
+import { fetchPublicApplicationForm } from '@/utils/publicApplicationForm';
 
 const route = useRoute();
 const router = useRouter();
@@ -9,6 +10,7 @@ const store = useApplicationStore();
 
 const marketSlug = computed(() => (route.params.marketSlug as string) || '');
 const redirect = computed(() => (route.query.redirect as string) || 'dashboard');
+const marketName = ref('');
 
 // Step 1: enter email
 const email = ref('');
@@ -20,13 +22,23 @@ const key = ref('');
 const step = ref<'email' | 'key'>('email');
 const submitting = ref(false);
 
-onMounted(() => {
-  // If already authenticated, go straight to dashboard
-  if (store.isAuthenticated) {
+onMounted(async () => {
+  // Only a session for *this* market skips the sign-in; a token for another one signs in nobody here.
+  if (store.isAuthenticatedFor(marketSlug.value)) {
     router.push({
       name: 'applicant-dashboard',
       params: { marketSlug: marketSlug.value },
     });
+    return;
+  }
+
+  // The name is the only thing that tells the applicant which market they are signing in to. The
+  // slug they are here from is a URL detail, and failing to fetch it is not worth an error on a
+  // sign-in screen that works without it.
+  try {
+    marketName.value = (await fetchPublicApplicationForm(marketSlug.value)).marketName;
+  } catch {
+    marketName.value = '';
   }
 });
 
@@ -78,7 +90,7 @@ function goBack() {
     <header class="login-header">
       <h1>Sign In</h1>
       <p class="login-market" data-testid="applicant-login-market">
-        {{ marketSlug }}
+        {{ marketName || marketSlug }}
       </p>
     </header>
 

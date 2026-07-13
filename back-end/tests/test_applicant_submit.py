@@ -64,6 +64,9 @@ class FakeSlugMarketsCollection:
         return iter([dict(d) for d in self.docs])
 
 
+MARKET_SLUG = "test-market"
+
+
 def _token(application_id="app-xyz", market_id="market-123", email="vendor@example.com"):
     from utils.application_token import generate_application_token
     return generate_application_token(application_id, market_id, email)
@@ -118,7 +121,7 @@ class TestSaveApplication:
         token = self.TOKEN()
 
         result, status = ApplicantsApi.save_applicant_application(
-            token, {"business_name": "Acme Corp", "email": "acme@example.com",
+            MARKET_SLUG, token, {"business_name": "Acme Corp", "email": "acme@example.com",
                     "booth_size": "Large", "agree": True}
         )
 
@@ -131,7 +134,7 @@ class TestSaveApplication:
         token = self.TOKEN()
 
         result, _ = ApplicantsApi.save_applicant_application(
-            token, {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small", "agree": True}
+            MARKET_SLUG, token, {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small", "agree": True}
         )
 
         assert result["application"]["submittedAt"] is not None
@@ -141,7 +144,7 @@ class TestSaveApplication:
         token = self.TOKEN()
 
         result, _ = ApplicantsApi.save_applicant_application(
-            token, {"business_name": "Acme v2", "email": "a@b.com", "booth_size": "Large", "agree": True}
+            MARKET_SLUG, token, {"business_name": "Acme v2", "email": "a@b.com", "booth_size": "Large", "agree": True}
         )
 
         assert result["application"]["submittedAt"] == "2026-01-15T00:00:00Z"
@@ -151,7 +154,7 @@ class TestSaveApplication:
         token = self.TOKEN()
 
         result, status = ApplicantsApi.save_applicant_application(
-            token, {"email": "a@b.com", "booth_size": "Small", "agree": True}
+            MARKET_SLUG, token, {"email": "a@b.com", "booth_size": "Small", "agree": True}
             # missing required "business_name"
         )
 
@@ -164,7 +167,7 @@ class TestSaveApplication:
         token = self.TOKEN()
 
         result, status = ApplicantsApi.save_applicant_application(
-            token, {"business_name": "Acme", "email": "not-an-email", "booth_size": "Small", "agree": True}
+            MARKET_SLUG, token, {"business_name": "Acme", "email": "not-an-email", "booth_size": "Small", "agree": True}
         )
 
         assert status == 422
@@ -175,7 +178,7 @@ class TestSaveApplication:
         token = self.TOKEN()
 
         result, status = ApplicantsApi.save_applicant_application(
-            token, {"business_name": "Acme", "email": "a@b.com", "booth_size": "Invalid", "agree": True}
+            MARKET_SLUG, token, {"business_name": "Acme", "email": "a@b.com", "booth_size": "Invalid", "agree": True}
         )
 
         assert status == 422
@@ -186,7 +189,7 @@ class TestSaveApplication:
         token = self.TOKEN()
 
         result, status = ApplicantsApi.save_applicant_application(
-            token, {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small",
+            MARKET_SLUG, token, {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small",
                     "extra_days": ["Fri", "Sun"], "agree": True}
         )
 
@@ -198,7 +201,7 @@ class TestSaveApplication:
         token = self.TOKEN()
 
         result, status = ApplicantsApi.save_applicant_application(
-            token, {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small",
+            MARKET_SLUG, token, {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small",
                     "agree": "yes"}
         )
 
@@ -210,7 +213,7 @@ class TestSaveApplication:
         token = self.TOKEN()
 
         result, status = ApplicantsApi.save_applicant_application(
-            token, {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small",
+            MARKET_SLUG, token, {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small",
                     "agree": True, "staff_count": "many"}
         )
 
@@ -222,7 +225,7 @@ class TestSaveApplication:
         token = self.TOKEN()
 
         result, status = ApplicantsApi.save_applicant_application(
-            token, {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small", "agree": True}
+            MARKET_SLUG, token, {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small", "agree": True}
             # optional fields omitted
         )
 
@@ -231,14 +234,14 @@ class TestSaveApplication:
 
     def test_no_form_skips_validation(self, monkeypatch, apps_coll):
         """When the market has no application form, any data is accepted."""
-        doc = stored_market(phase=MarketPhase.APPLICATIONS_OPEN, name="No Form Market")
+        doc = stored_market(phase=MarketPhase.APPLICATIONS_OPEN, name="Test Market")
         fake = FakeSlugMarketsCollection([doc])
         monkeypatch.setattr(ApplicantsApi, "markets_collection", fake)
         _seeded_app(apps_coll)
         token = self.TOKEN()
 
         result, status = ApplicantsApi.save_applicant_application(
-            token, {"anything": "goes"}
+            MARKET_SLUG, token, {"anything": "goes"}
         )
 
         assert status == 200
@@ -254,7 +257,7 @@ class TestPhaseGate:
     }
 
     def _market_in_phase(self, monkeypatch, apps_coll, phase):
-        doc = stored_market(phase=phase, name="Phase Test", applicationForm=VALID_FORM)
+        doc = stored_market(phase=phase, name="Test Market", applicationForm=VALID_FORM)
         fake = FakeSlugMarketsCollection([doc])
         monkeypatch.setattr(ApplicantsApi, "markets_collection", fake)
         _seeded_app(apps_coll)
@@ -264,7 +267,7 @@ class TestPhaseGate:
         token = self._market_in_phase(monkeypatch, apps_coll, MarketPhase.DRAFT)
 
         result, status = ApplicantsApi.save_applicant_application(
-            token, {"business_name": "Test"}
+            MARKET_SLUG, token, {"business_name": "Test"}
         )
 
         assert status == 403
@@ -275,7 +278,7 @@ class TestPhaseGate:
         token = self._market_in_phase(monkeypatch, apps_coll, MarketPhase.APPLICATIONS_CLOSED)
 
         result, status = ApplicantsApi.save_applicant_application(
-            token, {"business_name": "Test"}
+            MARKET_SLUG, token, {"business_name": "Test"}
         )
 
         assert status == 403
@@ -284,14 +287,14 @@ class TestPhaseGate:
     def test_refuses_in_review(self, monkeypatch, apps_coll):
         token = self._market_in_phase(monkeypatch, apps_coll, MarketPhase.REVIEW)
 
-        result, _ = ApplicantsApi.save_applicant_application(token, {"business_name": "Test"})
+        result, _ = ApplicantsApi.save_applicant_application(MARKET_SLUG, token, {"business_name": "Test"})
         assert result.get("error", "")
 
     def test_refuses_in_archived(self, monkeypatch, apps_coll):
         token = self._market_in_phase(monkeypatch, apps_coll, MarketPhase.ARCHIVED)
 
         result, status = ApplicantsApi.save_applicant_application(
-            token, {"business_name": "Test"}
+            MARKET_SLUG, token, {"business_name": "Test"}
         )
         assert status == 403
 
@@ -303,7 +306,7 @@ class TestPhaseGate:
             token = self._market_in_phase(monkeypatch, apps_coll, phase)
 
             result, status = ApplicantsApi.save_applicant_application(
-                token, {"business_name": "Test"}
+                MARKET_SLUG, token, {"business_name": "Test"}
             )
             assert status == 403, f"Phase {phase.value} should return 403"
 
@@ -434,6 +437,14 @@ class TestGetPublicApplicationForm:
         assert result["is_open"] is True
         assert result["phase"] == "applications_open"
 
+    def test_returns_the_market_name_the_applicant_knows_it_by(self, open_market):
+        """The applicant-facing screens have nowhere else to get the name from, and a URL slug is
+        not a market name."""
+        result, status = ApplicantsApi.get_public_application_form("test-market")
+
+        assert status == 200
+        assert result["market_name"] == "Test Market"
+
     def test_returns_null_form_when_no_form_exists(self, monkeypatch):
         doc = stored_market(phase=MarketPhase.APPLICATIONS_OPEN, name="No Form")
         fake = FakeSlugMarketsCollection([doc])
@@ -490,7 +501,7 @@ class TestRequiredFieldAnswers:
     def required_market(self, monkeypatch):
         doc = stored_market(
             phase=MarketPhase.APPLICATIONS_OPEN,
-            name="Required Market",
+            name="Test Market",
             applicationForm=self.REQUIRED_FORM,
         )
         fake = FakeSlugMarketsCollection([doc])
@@ -501,7 +512,7 @@ class TestRequiredFieldAnswers:
         _seeded_app(apps_coll)
 
         result, status = ApplicantsApi.save_applicant_application(
-            self.TOKEN(), {"agree": False, "days": ["Fri"]}
+            MARKET_SLUG, self.TOKEN(), {"agree": False, "days": ["Fri"]}
         )
 
         assert status == 422
@@ -512,7 +523,7 @@ class TestRequiredFieldAnswers:
         _seeded_app(apps_coll)
 
         result, status = ApplicantsApi.save_applicant_application(
-            self.TOKEN(), {"agree": True, "days": []}
+            MARKET_SLUG, self.TOKEN(), {"agree": True, "days": []}
         )
 
         assert status == 422
@@ -523,7 +534,7 @@ class TestRequiredFieldAnswers:
         _seeded_app(apps_coll)
 
         result, status = ApplicantsApi.save_applicant_application(
-            self.TOKEN(), {"agree": True, "days": ["Fri", "Sat"]}
+            MARKET_SLUG, self.TOKEN(), {"agree": True, "days": ["Fri", "Sat"]}
         )
 
         assert status == 200
@@ -533,7 +544,7 @@ class TestRequiredFieldAnswers:
         _seeded_app(apps_coll)
 
         result, status = ApplicantsApi.save_applicant_application(
-            self.TOKEN(),
+            MARKET_SLUG, self.TOKEN(),
             {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small",
              "agree": True, "extra_days": []},
         )
@@ -553,7 +564,7 @@ class TestNumberAnswersAreStoredAsNumbers:
 
     def _save(self, staff_count):
         return ApplicantsApi.save_applicant_application(
-            self.TOKEN(),
+            MARKET_SLUG, self.TOKEN(),
             {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small",
              "agree": True, "staff_count": staff_count},
         )
@@ -613,7 +624,7 @@ class TestFormDataIsProjectedOntoTheForm:
         _seeded_app(apps_coll)
 
         result, status = ApplicantsApi.save_applicant_application(
-            self.TOKEN(),
+            MARKET_SLUG, self.TOKEN(),
             {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small", "agree": True,
              "not_a_field": "x" * 5000, "status": "reviewer_approved"},
         )
@@ -627,13 +638,13 @@ class TestFormDataIsProjectedOntoTheForm:
         assert apps_coll.find_one({"id": "app-xyz"})["status"] == "open"
 
     def test_market_with_no_form_declares_no_keys_and_stores_none(self, monkeypatch, apps_coll):
-        doc = stored_market(phase=MarketPhase.APPLICATIONS_OPEN, name="No Form Market")
+        doc = stored_market(phase=MarketPhase.APPLICATIONS_OPEN, name="Test Market")
         fake = FakeSlugMarketsCollection([doc])
         monkeypatch.setattr(ApplicantsApi, "markets_collection", fake)
         _seeded_app(apps_coll)
 
         result, status = ApplicantsApi.save_applicant_application(
-            self.TOKEN(), {"anything": "goes"}
+            MARKET_SLUG, self.TOKEN(), {"anything": "goes"}
         )
 
         assert status == 200
@@ -642,7 +653,175 @@ class TestFormDataIsProjectedOntoTheForm:
     def test_non_object_form_data_is_refused(self, open_market, apps_coll):
         _seeded_app(apps_coll)
 
-        result, status = ApplicantsApi.save_applicant_application(self.TOKEN(), ["not", "an", "object"])
+        result, status = ApplicantsApi.save_applicant_application(MARKET_SLUG, self.TOKEN(), ["not", "an", "object"])
 
         assert status == 400
         assert "object" in result["error"].lower()
+
+
+class TestAnswerValuesAreTyped:
+    """A declared field constrains the type of what it accepts, not only its shape when it happens
+    to arrive as the expected one. Otherwise every text key is an unbounded, untyped write."""
+
+    TOKEN = lambda self: {
+        "application_id": "app-xyz",
+        "market_id": "market-123",
+        "email": "vendor@example.com",
+    }
+
+    def _save(self, **answers):
+        base = {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small", "agree": True}
+        base.update(answers)
+        return ApplicantsApi.save_applicant_application(MARKET_SLUG, self.TOKEN(), base)
+
+    def test_object_under_a_text_key_is_refused(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = self._save(business_name={"deeply": {"nested": ["x"]}})
+
+        assert status == 422
+        assert "text" in result["error"].lower()
+        assert apps_coll.find_one({"id": "app-xyz"})["form_data"] == {}
+
+    def test_object_under_an_email_key_is_refused(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = self._save(email={"not": "an email"})
+
+        assert status == 422
+        assert "text" in result["error"].lower()
+
+    def test_object_under_a_date_key_is_refused(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = self._save(start_date={"y": 2026})
+
+        assert status == 422
+
+    def test_oversized_text_is_refused(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = self._save(business_name="x" * (ApplicantsApi.MAX_TEXT_LENGTH + 1))
+
+        assert status == 422
+        assert "too long" in result["error"].lower()
+
+    def test_text_at_the_limit_is_accepted(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = self._save(business_name="x" * ApplicantsApi.MAX_TEXT_LENGTH)
+
+        assert status == 200
+
+    def test_repeated_multi_select_option_is_refused(self, open_market, apps_coll):
+        """Without this the list is bounded only by the request body: one valid option, a million
+        times, is a million valid selections."""
+        _seeded_app(apps_coll)
+
+        result, status = self._save(extra_days=["Fri"] * 1000)
+
+        assert status == 422
+        assert "repeats" in result["error"].lower()
+
+    def test_unanswered_text_field_stores_its_own_empty_value_not_the_payload(
+        self, open_market, apps_coll,
+    ):
+        """`[]` reads as unanswered, and an unanswered text field stores text, not a list."""
+        _seeded_app(apps_coll)
+
+        result, status = self._save(start_date=[])
+
+        assert status == 200
+        assert result["application"]["formData"]["start_date"] == ""
+
+    def test_field_type_the_build_cannot_validate_is_refused_not_stored(
+        self, monkeypatch, apps_coll,
+    ):
+        doc = stored_market(
+            phase=MarketPhase.APPLICATIONS_OPEN,
+            name="Test Market",
+            applicationForm={"fields": [
+                {"key": "portfolio", "label": "Portfolio", "type": "file", "required": False,
+                 "order": 0},
+            ]},
+        )
+        monkeypatch.setattr(
+            ApplicantsApi, "markets_collection", FakeSlugMarketsCollection([doc]),
+        )
+        _seeded_app(apps_coll)
+
+        result, status = ApplicantsApi.save_applicant_application(
+            MARKET_SLUG, self.TOKEN(), {"portfolio": {"bytes": "x" * 100}},
+        )
+
+        assert status == 422
+        assert apps_coll.find_one({"id": "app-xyz"})["form_data"] == {}
+
+
+class TestApplicantSessionIsMarketScoped:
+    """A token issued for one market must not read or write another market's application.
+
+    Both applicant routes name the market they act on and the server decides that the token agrees,
+    because the alternative is that the client decides: an applicant signed in for market A who
+    opens market B's public application URL submits B's answers onto A's application, and where the
+    two forms share a field key it silently overwrites a submitted application.
+    """
+
+    TOKEN = lambda self: {
+        "application_id": "app-xyz",
+        "market_id": "market-123",
+        "email": "vendor@example.com",
+    }
+
+    ANSWERS = {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small", "agree": True}
+
+    def test_save_refuses_a_token_issued_for_another_market(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = ApplicantsApi.save_applicant_application(
+            "some-other-market", self.TOKEN(), self.ANSWERS,
+        )
+
+        assert status == 403
+        assert "different market" in result["error"].lower()
+        assert apps_coll.find_one({"id": "app-xyz"})["form_data"] == {}
+
+    def test_get_refuses_a_token_issued_for_another_market(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = ApplicantsApi.get_applicant_application(
+            "some-other-market", self.TOKEN(),
+        )
+
+        assert status == 403
+        assert "different market" in result["error"].lower()
+
+    def test_the_market_the_token_was_issued_for_is_accepted(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        result, status = ApplicantsApi.save_applicant_application(
+            MARKET_SLUG, self.TOKEN(), self.ANSWERS,
+        )
+
+        assert status == 200
+
+    def test_slug_of_a_market_the_token_does_not_name_is_refused(self, monkeypatch, apps_coll):
+        """Two published markets, a session for the first, a request naming the second."""
+        market_a = stored_market(
+            phase=MarketPhase.APPLICATIONS_OPEN, name="Test Market", applicationForm=VALID_FORM,
+        )
+        market_b = stored_market(
+            phase=MarketPhase.APPLICATIONS_OPEN, name="Other Market", id="market-456",
+            applicationForm=VALID_FORM,
+        )
+        monkeypatch.setattr(
+            ApplicantsApi, "markets_collection", FakeSlugMarketsCollection([market_a, market_b]),
+        )
+        _seeded_app(apps_coll)
+
+        result, status = ApplicantsApi.save_applicant_application(
+            "other-market", self.TOKEN(), self.ANSWERS,
+        )
+
+        assert status == 403
+        assert apps_coll.find_one({"id": "app-xyz"})["form_data"] == {}

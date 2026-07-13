@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import type { FormField, ApplicationForm } from '@/assets/types/datatypes';
+import type { FormField } from '@/assets/types/datatypes';
 import ApplicationFormFields from '@/components/application/ApplicationFormFields.vue';
 import { getApiErrorMessage } from '@/utils/api';
-import { applicantApi } from '@/utils/applicantApi';
 import { formValidationErrors, sortedFormFields } from '@/utils/applicationForm';
+import { fetchPublicApplicationForm } from '@/utils/publicApplicationForm';
 import { useApplicationStore } from '@/stores/application';
 
 const route = useRoute();
@@ -14,7 +14,8 @@ const store = useApplicationStore();
 
 const marketSlug = computed(() => (route.params.marketSlug as string) || '');
 
-const applicationForm = ref<ApplicationForm | null>(null);
+const fields = ref<FormField[]>([]);
+const marketName = ref('');
 const phaseLabel = ref('');
 const isOpen = ref(false);
 const loading = ref(true);
@@ -25,18 +26,18 @@ const validationErrors = ref<Record<string, string>>({});
 const saving = ref(false);
 const saved = ref(false);
 
-const sortedFields = computed(() => sortedFormFields(applicationForm.value?.fields ?? []));
+const sortedFields = computed(() => sortedFormFields(fields.value));
+
+/** A session is for one market, so holding a token for another one is not being signed in here. */
+const signedIn = computed(() => store.isAuthenticatedFor(marketSlug.value));
 
 onMounted(async () => {
   try {
-    const { data } = await applicantApi.get(
-      `/public/markets/${marketSlug.value}/application-form`,
-    );
-    if (data.application_form) {
-      applicationForm.value = { fields: data.application_form.fields };
-    }
-    phaseLabel.value = data.phase_label || '';
-    isOpen.value = data.is_open === true;
+    const form = await fetchPublicApplicationForm(marketSlug.value);
+    fields.value = form.fields;
+    marketName.value = form.marketName;
+    phaseLabel.value = form.phaseLabel;
+    isOpen.value = form.isOpen;
   } catch (err: unknown) {
     pageError.value = getApiErrorMessage(err, 'Failed to load the application form.');
   } finally {
@@ -71,9 +72,9 @@ async function submitForm() {
 
   saving.value = true;
   try {
-    // If already authenticated, save directly
-    if (store.isAuthenticated) {
-      const ok = await store.saveApplication(formData.value);
+    // If already authenticated for this market, save directly
+    if (signedIn.value) {
+      const ok = await store.saveApplication(marketSlug.value, formData.value);
       if (ok) saved.value = true;
     } else {
       // Not yet logged in -- redirect to login flow with market slug
@@ -110,7 +111,7 @@ function goToLogin() {
 
     <template v-else>
       <header class="apply-header">
-        <h1>Apply for {{ marketSlug }}</h1>
+        <h1 data-testid="apply-market-name">Apply for {{ marketName || marketSlug }}</h1>
         <div class="phase-badge" :class="{ open: isOpen }" data-testid="apply-phase-badge">
           {{ isOpen ? 'Applications Open' : `Market Status: ${phaseLabel}` }}
         </div>
@@ -121,14 +122,14 @@ function goToLogin() {
           Applications are not currently open for this market.
           The market is in the <strong>{{ phaseLabel }}</strong> phase.
         </p>
-        <p v-if="store.isAuthenticated">
+        <p v-if="signedIn">
           You can still
           <a href="#" @click.prevent="goToLogin">view your existing application</a>.
         </p>
       </div>
 
       <template v-else>
-        <div v-if="!applicationForm?.fields?.length" class="apply-no-form" data-testid="apply-no-form">
+        <div v-if="!sortedFields.length" class="apply-no-form" data-testid="apply-no-form">
           <p>This market does not have an application form yet.</p>
         </div>
 
@@ -162,7 +163,7 @@ function goToLogin() {
               :disabled="saving || !sortedFields.length"
               data-testid="apply-submit-button"
             >
-              {{ saving ? 'Saving...' : (store.isAuthenticated ? 'Save Application' : 'Save & Continue') }}
+              {{ saving ? 'Saving...' : (signedIn ? 'Save Application' : 'Save & Continue') }}
             </button>
           </div>
         </form>
