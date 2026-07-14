@@ -217,6 +217,24 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   stale `isDraft: true` has its `isDraft` recomputed. Documents with **no** `phase` are left
   alone; they are `migrate_phase.py`'s to backfill.
 
+## Security Hardening (PR 5a)
+
+- **Invariant: a security control must never key on a variable whose default is the insecure value.**
+  This is the root cause of both vulnerabilities this PR closes: `SECRET_KEY` fell back to a
+  committed literal, and the CORS policy gated on `FLASK_ENV`, whose default (`development`) ran
+  the permissive branch on every deployment.
+- **There is no fallback signing secret anywhere in this repository** and there must never be one
+  again - not even "for dev". A committed fallback is a published key.
+- **`ALLOW_INSECURE_LOCAL_DEV` is the ONLY escape hatch** for the five boot-time requirements
+  (`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `TRUSTED_PROXY_HOPS`, `CORS_ALLOWED_ORIGINS`,
+  `RESEND_API_KEY`). It defaults to OFF - the secure state is the one you get by forgetting.
+- **Nothing on the public applicant endpoints may differ** between an address that has applied and
+  one that has not - not status, not body, not the attempt counter. Who has applied is the
+  organizer's private data.
+- **The required production environment is documented in `docs/RELEASING.md`** - keep that table
+  in step with the boot check in `back-end/app.py`. A deploy doc that is wrong is worse than one
+  that is missing, because it will be trusted.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

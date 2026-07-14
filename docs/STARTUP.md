@@ -366,8 +366,8 @@ mkdir -p flask_session
 
 **CORS Errors**:
 
-- Backend has CORS enabled with `supports_credentials=True`
-- Ensure you're accessing frontend via `http://localhost` (not `127.0.0.1`)
+- The back end answers credentialed requests only from the origins in `CORS_ALLOWED_ORIGINS`. `docker-compose.yml` leaves it empty and sets `ALLOW_INSECURE_LOCAL_DEV`, which allows any loopback origin (`localhost` or `127.0.0.1`, any port) - so a front end served from anywhere else needs its origin listed
+- Running the back end outside `docker-compose` means setting one of the two yourself; without either it refuses to boot, and the log says so
 
 ### MongoDB Issues
 
