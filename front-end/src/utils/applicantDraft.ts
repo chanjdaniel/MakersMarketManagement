@@ -1,8 +1,8 @@
 /**
  * Answers an applicant typed and has not saved yet, kept somewhere that outlives the page.
  *
- * The application page renders an editable form to a signed-out visitor, and its "Save & Continue"
- * button cannot save anything until they have signed in - so it sends them to the login screen
+ * The application page renders an editable form to a signed-out visitor, and its "Continue to sign
+ * in" button cannot save anything until they have signed in - so it sends them to the login screen
  * first, which unmounts the form and takes every component-local answer with it. The applicant's
  * token expires after 30 minutes, so a Save at the end of a long form does the same thing by a
  * different route: the 401 ends the session and redirects, and the page goes with it. The store's
@@ -32,11 +32,18 @@
  * An **unowned** draft was typed before anyone signed in, which is the whole reason it exists - and
  * the product has *no* evidence about who typed it. The only thing it knows is that the answers were
  * entered in this tab, and a tab at a shared desk outlives the person who used it: an applicant can
- * type, press "Save & Continue", and walk away from the login screen before the next person sits
- * down. So an unowned draft is never adopted by whoever signs in next, never prefilled on its own,
- * and above all never *saved* on anyone's behalf - it is offered back, visibly, for a person to
- * accept or discard. Answers shown to the wrong person can be cleared; answers written onto the
- * wrong person's application cannot.
+ * type, press "Continue to sign in", and walk away from the login screen before the next person sits
+ * down. So an unowned draft is never *adopted* by whoever signs in next - it stays unowned, and the
+ * line it may not cross is the *write*: nothing saves it onto anybody's application, and it is not
+ * laid over an application that already holds saved answers (see `draftFor` in the store).
+ *
+ * Short of that write it is restored, visibly, into the form, under a notice saying where the
+ * answers came from and that they have not been submitted. Withholding them is not the safe default
+ * it looks like: on the ordinary path they are the reader's own - typed a moment ago, on this page,
+ * before signing in - and a first-time applicant asked to re-accept what they just pressed a button
+ * to keep reads that as the product having lost it. Answers shown to the wrong person are cleared by
+ * that person; answers written onto the wrong person's application are not. The line is drawn at the
+ * write, not at the display.
  */
 
 const DRAFT_KEY_PREFIX = 'applicant-draft:';
@@ -131,8 +138,8 @@ export function readDraft(marketSlug: string, email: DraftOwner): StoredDraft | 
  *
  * An unowned draft is deliberately left as it is. Signing in proves who *this* applicant is; it
  * proves nothing about who typed answers before anyone was signed in, so the sign-in is not licence
- * to adopt them. They stay unowned, and the application page offers them back for a person to accept
- * on sight.
+ * to adopt them. They stay unowned, which is what keeps them out of every write; the application
+ * page still puts them back on screen, and says so.
  */
 export function forgetForeignDraft(marketSlug: string, email: string): void {
   const draft = loadDraft(marketSlug);

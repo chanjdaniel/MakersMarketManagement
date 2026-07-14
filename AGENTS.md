@@ -168,16 +168,22 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ## Public Applicant Endpoints (Conventioner sharp edge)
 
 - **The back end refuses to boot, anywhere, without `SECRET_KEY`, `RECAPTCHA_SECRET_KEY`,
-  `TRUSTED_PROXY_HOPS`, and `CORS_ALLOWED_ORIGINS`** (`verify_public_endpoint_defenses()` in
-  `back-end/app.py`).
+  `TRUSTED_PROXY_HOPS`, `CORS_ALLOWED_ORIGINS`, and `RESEND_API_KEY`**
+  (`verify_public_endpoint_defenses()` in `back-end/app.py`).
   The first three defend `/public/applicant/*`, which is unauthenticated, writes to the database, and
-  sends mail from the product's domain; the fourth defends the organizer API beside it. All four
+  sends mail from the product's domain; the fourth defends the organizer API beside it. All of them
   silently degrade to nothing when unset:
   `verify_recaptcha` passes every caller with no secret, a rate limit keyed on `remote_addr`
   behind a proxy is one shared budget that locks out every real applicant instead of bounding an
   attacker, and a credentialed CORS policy with no origin list reflects whatever `Origin` the caller
   sent - which, with a `SameSite=None` session cookie, is every website an organizer visits reading
   and writing the organizer API as them.
+  The fifth is not a defense and belongs here anyway, because it fails in the same shape: the
+  one-time code is an applicant's *only* way in (no password, no account), and no layer on that path
+  may report a failed send - a response that distinguished one would say who has applied - so a
+  deployment without `RESEND_API_KEY` serves a sign-in nobody can complete while telling every
+  applicant a code is on the way, and says so nowhere. A dependency that vanishes silently is the
+  same problem to an operator as a control that does.
   Set `TRUSTED_PROXY_HOPS` to the number of proxies of our own a request passes through
   (0 = Flask exposed directly, 1 on Vercel); ProxyFix then reads exactly that many `X-Forwarded-For`
   entries from the right, which is the part a client cannot forge.
@@ -185,7 +191,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   refused in it: a credentialed wildcard is not a permissive setting, it is the absence of the
   control. Under the escape hatch an unconfigured process allows *loopback* origins on any port -
   still a list, just one nobody had to type, and one the dev server's moving port does not outgrow.
-  The check runs all four and the refusal names *every* variable that is missing, in one message:
+  The check runs all five and the refusal names *every* variable that is missing, in one message:
   stopping at the first would cost the operator a redeploy per variable.
   This is a boot-time deploy contract - a deployment missing one serves nothing, organizer app
   included - so it is written down where the promotion is: `docs/RELEASING.md`, "Required Production
@@ -379,6 +385,13 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   application are not - so the line is drawn at the write, not at the display. Both shared-tab paths -
   the expired session's owned draft and the walk-away unowned one - are pinned in
   `front-end/e2e/applicant.spec.ts`, and no unit test can reach either.
+  The one place an unowned draft is *not* restored is over an application that already holds saved
+  answers: `draftFor` (the store) destroys it instead of handing it back. Display is only recoverable
+  while the reader can tell the answers are not theirs, and a returning applicant looking at a form
+  that says "we put back what you entered on this device" has every reason to read a stranger's
+  typing as their own draft and press Save on it - which lands it on a submitted application by a
+  deliberate press instead of a silent write. The rule lives in the store and not in the two views
+  that restore drafts, because the third one will be written without it.
 - **The signed-out button does not say "Save".** It cannot save - there is no session to save into -
   so it says `Continue to sign in`, and the Save it promised is the one waiting on the other side of
   the redirect (`submitLabel` in `ApplicationPage`). A button labelled Save that saves nothing is how

@@ -31,6 +31,7 @@ from market_documents import (
 )
 from utils.captcha import CaptchaNotConfiguredError, assert_captcha_configured
 from utils.cors import CorsConfigError, apply_cors, describe_origins
+from utils.email import MailerNotConfiguredError, assert_mailer_configured
 from utils.proxy import TrustedProxyConfigError, apply_trusted_proxy_fix
 from utils.secret_key import SecretKeyNotConfiguredError, signing_secret
 import db_config
@@ -106,19 +107,26 @@ class PublicEndpointDefenseError(RuntimeError):
 
 
 def verify_public_endpoint_defenses() -> str:
-    """Refuse to boot without the configuration this app's public surface is defended by.
+    """Refuse to boot without the configuration this app's public surface rests on.
 
     The applicant login endpoints are unauthenticated, they write to the database, and they send
     mail from this domain. What keeps a script off them is a reCAPTCHA secret; what keeps their rate
     limits keyed on the caller rather than on a shared proxy address is a trusted-hop count; and
     what makes the token they authenticate with mean anything is a signing secret. The organizer API
     beside them is defended by a different thing entirely - the list of browser origins allowed to
-    send it the organizer's session cookie. All four silently degrade to nothing when unset - the
-    captcha passes everybody, the limits lock out everybody, a token signed with a key the repository
-    publishes is a token anyone can write, and a credentialed CORS policy with no origin list hands
-    the organizer API to every website an organizer visits - so, as with the market-key migration
-    above, an unknown state is never taken for a safe one: it fails at boot, naming the variables,
-    rather than in production, naming nothing.
+    send it the organizer's session cookie. And what carries the one-time code an applicant's only
+    way in depends on is a mail key. All five silently degrade to nothing when unset - the captcha
+    passes everybody, the limits lock out everybody, a token signed with a key the repository
+    publishes is a token anyone can write, a credentialed CORS policy with no origin list hands
+    the organizer API to every website an organizer visits, and an applicant with no mail key is
+    told a code is on its way that was never sent - so, as with the market-key migration above, an
+    unknown state is never taken for a safe one: it fails at boot, naming the variables, rather than
+    in production, naming nothing.
+
+    The mail key sits with the defenses rather than apart from them because it fails in their shape:
+    the thing it removes is removed silently, and the silence is deliberate everywhere it is
+    reachable (a send this endpoint reported on would be an oracle for who has applied). A control
+    and a dependency that both vanish without a word are one kind of problem to an operator.
 
     Every check runs, and the refusal carries *all* of them. Stopping at the first would hand an
     operator one variable at a time and a redeploy between each, which turns one loud failure into a
@@ -147,6 +155,11 @@ def verify_public_endpoint_defenses() -> str:
         problems.append(str(e))
 
     try:
+        assert_mailer_configured()
+    except MailerNotConfiguredError as e:
+        problems.append(str(e))
+
+    try:
         secret = signing_secret()
     except SecretKeyNotConfiguredError as e:
         problems.append(str(e))
@@ -163,9 +176,10 @@ def verify_public_endpoint_defenses() -> str:
 
     if problems:
         message = "\n\n".join([
-            f"Refusing to start: {len(problems)} of the defenses this app's public surface rests "
-            f"on are not configured. All of them are named below. See the required production "
-            f"environment in docs/RELEASING.md before promoting.",
+            f"Refusing to start: {len(problems)} of the things this app's public surface rests on "
+            f"are not configured, and every one of them fails silently when unset. All of them are "
+            f"named below. See the required production environment in docs/RELEASING.md before "
+            f"promoting.",
             *problems,
         ])
         logger.critical("%s", message)

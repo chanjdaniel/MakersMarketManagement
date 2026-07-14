@@ -14,11 +14,13 @@ function applicationUrl(marketSlug: string): string {
 /**
  * Unsaved answers to one market's form, and whether the product knows whose they are.
  *
- * `owned` is what a view is allowed to act on. Answers written under a verified session belong to
- * that applicant and may be restored, and the save they were interrupted by finished, without asking
- * again. Answers typed before anyone signed in belong to whoever was at the keyboard, which is not
- * necessarily whoever is at it now - they may only be offered back, on screen, to be accepted.
- * See `@/utils/applicantDraft`.
+ * `owned` is what decides how far a view may go with them. Answers written under a verified session
+ * belong to that applicant, so they are restored and the save they were interrupted by is finished,
+ * without asking again. Answers typed before anyone signed in belong to whoever was at the keyboard,
+ * which is not necessarily whoever is at it now: they are restored into the visible form - on the
+ * ordinary path they are the reader's own, and withholding them loses a first-time applicant exactly
+ * what they pressed a button to keep - but they are never written to the server on anybody's behalf,
+ * and never laid over an application that already has saved answers. See `@/utils/applicantDraft`.
  */
 export interface ApplicantDraft {
   answers: Record<string, unknown>;
@@ -213,23 +215,47 @@ export const useApplicationStore = defineStore('application', () => {
    * into yet - so it is the one that has to hand its answers over itself. It writes an *unowned*
    * draft, because a visitor who has not signed in on this market has not said who they are: a token
    * held for some other market names them to that market, not to this form, so `identityFor` is what
-   * decides the owner and not the bare address on the session. Nobody may save an unowned draft on
-   * anyone's behalf; it is offered back to be accepted. See `@/utils/applicantDraft`.
+   * decides the owner and not the bare address on the session. An unowned draft is put back into the
+   * form for a person to read, and is never saved on anybody's behalf. See `@/utils/applicantDraft`.
    */
   function rememberDraftAnswers(slug: string, formData: Record<string, unknown>): void {
     rememberDraft(slug, identityFor(slug), formData);
   }
 
+  /** Whether the signed-in applicant has answers on the server already. */
+  function hasSavedAnswers(): boolean {
+    const saved = application.value?.formData;
+    return !!saved && Object.keys(saved).length > 0;
+  }
+
   /**
    * The unsaved answers this market's pages may act on, and whether the product knows whose they
    * are. A draft another applicant left on this tab is not readable here at all; one typed before
-   * anyone signed in comes back marked unowned, which is what stops a view restoring or saving it as
-   * though its author were the person now looking at the screen.
+   * anyone signed in comes back marked unowned, which is what tells a view it may put those answers
+   * on screen but may never save them on anybody's behalf.
+   *
+   * An unowned draft is destroyed here rather than handed back when the applicant reading it already
+   * has answers on the server. Unowned answers are restored because on the ordinary path they are
+   * the applicant's own - typed a moment ago, on this page, before signing in. An applicant who has
+   * *saved* an application did not type them on the way to this session, so on the device this
+   * mechanism is written for - a shared one - they are a stranger's, and laying them over a
+   * submitted application under a notice reading "we put back what you entered" is an invitation to
+   * press Save on somebody else's answers. The saved application wins, and the draft that could only
+   * corrupt it goes.
+   *
+   * The rule lives here, not in the views, because both of them restore drafts and the next one
+   * will too: a boundary kept per call site is a boundary the next call site is written without.
    */
   function draftFor(slug: string): ApplicantDraft | null {
     const draft = readDraft(slug, identityFor(slug));
     if (!draft || Object.keys(draft.answers).length === 0) return null;
-    return { answers: draft.answers, owned: draft.email !== null };
+
+    const owned = draft.email !== null;
+    if (!owned && isAuthenticatedFor(slug) && hasSavedAnswers()) {
+      forgetDraft(slug);
+      return null;
+    }
+    return { answers: draft.answers, owned };
   }
 
   /**

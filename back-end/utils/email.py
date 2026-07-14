@@ -6,13 +6,19 @@ import os
 import logging
 import resend
 
-from utils.deployment import insecure_local_dev
+from utils.deployment import (
+    INSECURE_LOCAL_DEV_VAR,
+    insecure_local_dev,
+    warn_insecure_local_dev,
+)
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
+RESEND_API_KEY_VAR = "RESEND_API_KEY"
+
 # Initialize Resend client
-resend_api_key = os.getenv("RESEND_API_KEY")
+resend_api_key = os.getenv(RESEND_API_KEY_VAR)
 resend_initialized = False
 if resend_api_key:
     resend.api_key = resend_api_key
@@ -20,6 +26,45 @@ if resend_api_key:
     logger.info("Resend API initialized successfully")
 else:
     logger.warning("RESEND_API_KEY not set - email sending will be disabled")
+
+
+class MailerNotConfiguredError(RuntimeError):
+    """There is no mail key, so the applicant's login code would be delivered nowhere."""
+
+
+def assert_mailer_configured() -> None:
+    """Refuse to serve an applicant flow whose one-time code cannot be delivered.
+
+    Every failure to deliver the applicant's code is silent, and each layer is silent on purpose: the
+    send is not reported to the caller because who is on the organizer's applicant list is the
+    organizer's private data, so ``request-key`` answers "a code is on the way" identically whether
+    one was sent, and ``send_otp_email`` returns False with a log line nobody is reading. There is no
+    other way in: an applicant has no password and no account, so a deployment that forgot this
+    variable serves a sign-in that *cannot* succeed, tells every applicant a code is coming, and says
+    nothing anywhere an operator would look.
+
+    That is the same failure shape as the four defenses beside it - a variable whose absence removes
+    the thing rather than announcing it - so it is checked in the same place, at boot, and named in
+    the same refusal.
+
+    Raises:
+        MailerNotConfiguredError: when no key is configured and this is not an opted-in local
+            development process.
+    """
+    if resend_initialized:
+        return
+    if insecure_local_dev():
+        warn_insecure_local_dev(f"outbound email ({RESEND_API_KEY_VAR})")
+        return
+    raise MailerNotConfiguredError(
+        f"{RESEND_API_KEY_VAR} is not set. It is what delivers the one-time code the public "
+        f"applicant sign-in is built on, and an applicant has no other way in - no password, no "
+        f"account. Every failure on that path is silent by design (the response cannot say whether "
+        f"mail was sent without disclosing who has applied), so a deployment without this key serves "
+        f"a sign-in that no applicant can ever complete, and nothing says so. Set "
+        f"{RESEND_API_KEY_VAR} (https://resend.com/api-keys), or set {INSECURE_LOCAL_DEV_VAR}=true "
+        f"if this really is a local development machine."
+    )
 
 # Get frontend URL from environment
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")

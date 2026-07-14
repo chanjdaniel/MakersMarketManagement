@@ -274,4 +274,45 @@ test.describe('Public applicant flow', () => {
     await expect(dashboard.unsubmittedNotice).toBeVisible();
     await expect(dashboard.field('business_name')).toContainText(NO_ANSWER);
   });
+
+  test('answers typed by a stranger are not laid over the saved application of the applicant who signs in', async ({
+    page,
+  }) => {
+    const apply = new ApplyPage(page);
+    const login = new ApplicantLoginPage(page);
+
+    // The applicant has applied already: they filled in the form, signed in, and saved. Their
+    // answers are on the server, and the save that landed them there took the draft with it.
+    await apply.goto(market.marketSlug);
+    await apply.fillField('business_name', 'Acme Bakery');
+    await apply.fillField('product_type', 'Sourdough');
+    await apply.submit();
+    await page.waitForURL(loginUrl(market.marketSlug, 'apply'));
+    await login.signIn(market.marketId, APPLICANT);
+    await page.waitForURL(applyUrl(market.marketSlug));
+    await apply.submit();
+    await expect(apply.savedBanner).toBeVisible();
+
+    // The applicant token is held in memory only, so reloading the tab is signing out of it - and it
+    // leaves the tab exactly as the next person at a shared desk finds it.
+    await page.reload();
+
+    // Somebody else types into the form and walks away from the login screen without signing in.
+    await apply.goto(market.marketSlug);
+    await apply.fillField('business_name', 'Stranger Bakery');
+    await apply.fillField('product_type', 'Pretzels');
+    await apply.submit();
+    await page.waitForURL(loginUrl(market.marketSlug, 'apply'));
+
+    // The applicant comes back and signs in as themselves. Restoring an unowned draft is only
+    // recoverable while the reader can tell the answers are not theirs - and an applicant reading
+    // "we put back the answers entered on this device" over their own form has every reason to take
+    // a stranger's typing for their own draft and press Save on it. So their saved application wins,
+    // and the draft that could only corrupt it is destroyed rather than shown.
+    await login.signIn(market.marketId, APPLICANT);
+    await page.waitForURL(applyUrl(market.marketSlug));
+    await expect(apply.input('business_name')).toHaveValue('Acme Bakery');
+    await expect(apply.input('product_type')).toHaveValue('Sourdough');
+    await expect(apply.draftNotice).not.toBeVisible();
+  });
 });

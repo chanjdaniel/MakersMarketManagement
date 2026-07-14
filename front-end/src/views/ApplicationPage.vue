@@ -86,6 +86,10 @@ function readDraft() {
 // what an unowned draft may not do is reach the *server* on somebody's behalf - see
 // `completePendingSave`. Withholding them until asked for cost the first-time applicant, on the
 // product's primary path, the answers they had just pressed a button to keep.
+//
+// An unowned draft never reaches an applicant who has saved answers already: `draftFor` destroys it
+// rather than hand it back, so the merge below cannot lay a stranger's typing over a submitted
+// application under a notice its owner would read as their own. See `draftFor` in the store.
 watch(
   () => (signedIn.value ? store.application : null),
   (app) => {

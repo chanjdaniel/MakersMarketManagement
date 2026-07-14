@@ -27,4 +27,15 @@ installApplicantSessionExpiry(router)
 // about no page at all. `App.vue` would lay the organizer's 1000px width floor over an applicant's
 // phone for that first frame, which is a visible flash of the sideways-scrolled layout the floor was
 // scoped away from those pages to prevent.
-router.isReady().then(() => app.mount('#app'))
+//
+// Waiting for it is not the same as depending on it. `isReady()` *rejects* when the first navigation
+// fails - a lazy route chunk that a deploy has replaced, a guard that threw - and a mount chained
+// only to its fulfilment would leave the app permanently unmounted on a white page, which is a far
+// worse thing than the frame of layout it is waiting to avoid. So the failure is absorbed and the
+// app is mounted either way: the router reports the navigation error through its own channels, and
+// the shell it paints is the only surface that could tell anyone about it.
+router.isReady()
+  .catch((err: unknown) => {
+    console.error('The first navigation failed; mounting anyway.', err)
+  })
+  .then(() => app.mount('#app'))

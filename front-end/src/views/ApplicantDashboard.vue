@@ -82,8 +82,9 @@ async function loadAll() {
  *
  * Only an *owned* draft is restored - one written under a verified session, so the product knows it
  * is this applicant's. Answers typed before anyone signed in belong to whoever was at the keyboard
- * then, who on a shared device is not whoever is signed in now; they stay where they were typed, and
- * the application page offers them back on sight rather than laying them over an application here.
+ * then, who on a shared device is not whoever is signed in now, and an applicant who has reached
+ * this page has an application of their own for those answers to be laid over. The application page
+ * is where an unowned draft is put back on screen, in an empty form, with a notice saying so.
  *
  * Only while the market is still open, because that is the only time an edit could be saved at all -
  * and the edit form is not reachable otherwise.

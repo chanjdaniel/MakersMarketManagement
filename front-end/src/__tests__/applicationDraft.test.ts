@@ -60,11 +60,11 @@ function mountPage() {
  * the address it belongs to, because an application is identified by (market, email) and the draft
  * that shadows it has to be reconciled against the same pair.
  */
-function signInAs(email: string) {
+function signInAs(email: string, formData: Record<string, unknown> = {}) {
   vi.spyOn(applicantApi, 'post').mockResolvedValue({
     data: {
       token: 'a-token',
-      application: { id: `app-${email}`, applicantEmail: email, formData: {} },
+      application: { id: `app-${email}`, applicantEmail: email, formData },
     },
   });
 }
@@ -194,6 +194,39 @@ describe('answers typed before signing in survive the login redirect', () => {
       (back.find('[data-testid="apply-input-business_name"]').element as HTMLInputElement).value,
     ).toBe('');
     expect(back.find('[data-testid="apply-draft-notice"]').exists()).toBe(false);
+    expect(store.draftFor(MARKET)).toBeNull();
+  });
+
+  it('leaves a returning applicant their own saved answers, not a stranger typing on this device', async () => {
+    // The other half of the shared tab. Somebody typed into the form, pressed the button, and walked
+    // away from the login screen; the applicant who signs in next has an application of their own.
+    await typeAndLeaveForTheLoginScreen();
+
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    signInAs('returning@example.com', { business_name: 'Their Own Bakery', booth_size: 'Small' });
+    const put = vi.spyOn(applicantApi, 'put').mockResolvedValue({
+      data: { application: { id: 'app-3', formData: {} } },
+    } as never);
+    const store = useApplicationStore();
+    await store.verifyKey(MARKET, 'returning@example.com', '123456');
+
+    const back = mount(ApplicationPage, { global: { plugins: [pinia] } });
+    await flushPromises();
+
+    // Their saved application wins outright. Restoring is only recoverable while the reader can tell
+    // the answers are not theirs - and a returning applicant reading "we put back what you entered on
+    // this device" has every reason to take a stranger's typing for their own draft and press Save on
+    // it, which lands it on their submitted application by a deliberate press instead of a silent
+    // write. So the stranger's draft is destroyed rather than shown.
+    expect(
+      (back.find('[data-testid="apply-input-business_name"]').element as HTMLInputElement).value,
+    ).toBe('Their Own Bakery');
+    expect(
+      (back.find('[data-testid="apply-input-booth_size"]').element as HTMLSelectElement).value,
+    ).toBe('Small');
+    expect(back.find('[data-testid="apply-draft-notice"]').exists()).toBe(false);
+    expect(put).not.toHaveBeenCalled();
     expect(store.draftFor(MARKET)).toBeNull();
   });
 
