@@ -319,7 +319,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   a deep link into it must work in a browser that has not run a script yet. What it serves is public
   by design. So its per-IP ceiling (`PUBLIC_FORM_IP_LIMIT`) is the only bound it has, which means the
   endpoint has to stay cheap enough that a bound is all it needs - hence the indexed slug lookup
-  above. There is deliberately **no global ceiling** on it: a global cap on an unauthenticated read is
+  above, and hence the projection: the public applicant endpoints fetch the fields they serve
+  (`PUBLIC_MARKET_FIELDS`, passed to `published_market_by_slug`), never the organizer's `setupObject`,
+  `assignmentObject` and `modificationList`, which for a market with a full assignment is a
+  multi-megabyte decode per page load. An indexed query bounds how many documents a public read
+  touches; only a projection bounds how big one is. There is deliberately **no global ceiling** on it:
+  a global cap on an unauthenticated read is
   a cap an attacker reaches on purpose, and what breaks when they do is the application form for every
   applicant at every market, which is the outage the limit was written to prevent (the same reason
   there is no per-market cap on `request-key`).
@@ -327,8 +332,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ## Applicant Answers Across a Redirect (Conventioner sharp edge)
 
 - **The applicant's answers live in a component ref, and two normal paths unmount that component
-  mid-form.** Signing in from `ApplicationPage` is a redirect (the "Save & Continue" button cannot
-  save before there is a session), and the applicant token expires after 30 minutes, so a Save at the
+  mid-form.** Signing in from `ApplicationPage` is a redirect (its button cannot save before there is
+  a session), and the applicant token expires after 30 minutes, so a Save at the
   end of a long form gets a 401, and `utils/applicantApi`'s interceptor ends the session and
   redirects. Either way the page unmounts and every unsaved answer goes with it. `utils/applicantDraft`
   (sessionStorage, keyed by market) is what outlives both.
@@ -359,18 +364,26 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   session names an applicant to *the one market it was issued for*, so a vendor signed in to market A
   who types into market B's form must not have B's draft stamped with the address A knows them by -
   they would be unable to read their own answers back after signing in to B as anyone else.
-- **An unowned draft is offered, never adopted and never saved on anyone's behalf.** Answers typed
-  before any sign-in are the whole reason the draft exists, and the product holds no evidence about
-  who typed them - only that this tab did. Signing in proves who *that* applicant is; it proves
-  nothing about whoever used the tab before them, and an applicant can press "Save & Continue" and
-  walk away from the login screen before the next one sits down at it. So an unowned draft is not
-  claimed by the next sign-in, not laid into the form by itself, and above all not written onto an
-  application by `completePendingSave` - which runs for an *owned* draft and nothing else.
-  `ApplicationPage` offers it instead (`apply-draft-offer`) and a person says whether it is theirs.
-  Answers put in front of the wrong person are cleared by that person; answers saved onto the wrong
-  person's application are not, so the recoverable failure is the one to choose. Both shared-tab
-  paths - the expired session's owned draft and the walk-away unowned one - are pinned in
+- **An unowned draft is restored, never adopted and never saved on anyone's behalf** - and the two
+  halves of that are not the same rule. Answers typed before any sign-in are the whole reason the
+  draft exists, and the product holds no evidence about who typed them: only that this tab did.
+  Signing in proves who *that* applicant is and nothing about whoever used the tab before them, and an
+  applicant can press the button and walk away from the login screen before the next one sits down.
+  So an unowned draft is *not* claimed by the next sign-in and is never written onto an application by
+  `completePendingSave`, which runs for an *owned* draft and nothing else. It **is** laid back into
+  the visible form, with a notice saying where the answers came from and that they are not submitted
+  (`apply-draft-notice`, and a button to clear them). Restoring is safe and withholding is not free:
+  on the ordinary path those answers are the applicant's own, and asking a first-time applicant to
+  re-accept what they typed a moment ago is a click most of them read as an error. Answers put in
+  front of the wrong person are cleared by that person; answers *saved* onto the wrong person's
+  application are not - so the line is drawn at the write, not at the display. Both shared-tab paths -
+  the expired session's owned draft and the walk-away unowned one - are pinned in
   `front-end/e2e/applicant.spec.ts`, and no unit test can reach either.
+- **The signed-out button does not say "Save".** It cannot save - there is no session to save into -
+  so it says `Continue to sign in`, and the Save it promised is the one waiting on the other side of
+  the redirect (`submitLabel` in `ApplicationPage`). A button labelled Save that saves nothing is how
+  an applicant walks away from an application that was never submitted, believing it was - which is
+  the same failure as losing the answers, arriving by a route no test of the *storage* can catch.
 - **Every public page must work with no organizer session, and `meta: { public: true }` on the route
   is the only thing that says so** - `router/index.ts` and `App.vue` both read it, and they must
   keep reading the same field. `App.vue`'s `/check-session` probe redirects a session-less visitor

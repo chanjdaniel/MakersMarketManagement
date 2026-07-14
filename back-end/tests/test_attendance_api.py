@@ -13,7 +13,7 @@ class FakeAttendanceCollection:
         self.last_update = None
         self.upsert_called = False
 
-    def find(self, query):
+    def find(self, query, projection=None):
         out = []
         for d in self.docs:
             if all(d.get(k) == v for k, v in query.items()):

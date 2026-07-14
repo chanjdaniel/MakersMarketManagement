@@ -9,17 +9,18 @@ import { useApplicationStore } from '@/stores/application';
 import { fetchPublicApplicationForm } from '@/utils/publicApplicationForm';
 
 /**
- * The application page renders an editable form to a signed-out visitor and a button that says it
- * will save it. It cannot: saving needs a session, so the button sends them to sign in first - and
- * that redirect unmounts the form. The answers have to survive it, or the primary path of this whole
- * feature is a button labelled "Save" that throws away everything a first-time applicant typed.
+ * The application page renders an editable form to a signed-out visitor, and the button under it
+ * cannot save: saving needs a session, so the button sends them to sign in first - and that redirect
+ * unmounts the form. So the button says that is what it does, and the answers have to survive it, or
+ * the primary path of this whole feature throws away everything a first-time applicant typed.
  *
  * They survive as an *unowned* draft, and what may be done with one is the other half of these
  * tests. Nobody signed in when they were typed, so the product knows only that they were entered in
- * this tab - and a tab at a shared desk outlives the person who used it. So they are offered back to
- * be accepted on sight, and never written onto an application by the page itself. Answers shown to
- * the wrong person are cleared by that person; answers saved onto the wrong person's application are
- * not.
+ * this tab - and a tab at a shared desk outlives the person who used it. They go back into the form,
+ * because on the ordinary path they are the answers of the applicant now reading it and asking them
+ * to ask for them back is a click that reads as an error; the page says it put them there, and that
+ * they are not submitted. What it will not do is *save* them for anybody. Answers shown to the wrong
+ * person are cleared by that person; answers written onto the wrong person's application are not.
  *
  * These tests drive the real round-trip: fill in the form, press the button while signed out, then
  * mount the page again the way the router does when the applicant comes back holding a session.
@@ -75,7 +76,7 @@ async function typeAnswers(page: ReturnType<typeof mountPage>) {
   await page.find('[data-testid="apply-input-agree"]').setValue(true);
 }
 
-/** Type the form and press "Save & Continue" while signed out, which is what leaves the draft. */
+/** Type the form and press the button while signed out, which is what leaves the draft. */
 async function typeAndLeaveForTheLoginScreen() {
   const page = mountPage();
   await flushPromises();
@@ -98,10 +99,14 @@ describe('answers typed before signing in survive the login redirect', () => {
     } as never);
   });
 
-  it('keeps the answers when Save & Continue redirects a signed-out applicant to sign in', async () => {
+  it('keeps the answers when the signed-out button redirects the applicant to sign in', async () => {
     const page = mountPage();
     await flushPromises();
     await typeAnswers(page);
+
+    // The button states what it does. A "Save" that saves nothing is how an applicant walks away
+    // from an application that was never submitted, believing it was.
+    expect(page.find('[data-testid="apply-submit-button"]').text()).toBe('Continue to sign in');
 
     await page.find('[data-testid="apply-form"]').trigger('submit');
     await flushPromises();
@@ -117,7 +122,7 @@ describe('answers typed before signing in survive the login redirect', () => {
     });
   });
 
-  it('offers the answers back to the applicant who comes back signed in, and saves nothing until they accept', async () => {
+  it('puts the answers back in the form for the applicant who comes back signed in, and saves nothing on their behalf', async () => {
     await typeAndLeaveForTheLoginScreen();
 
     // The applicant verified their code. The back end hands back the application it created for
@@ -135,18 +140,8 @@ describe('answers typed before signing in survive the login redirect', () => {
     const back = mount(ApplicationPage, { global: { plugins: [pinia] } });
     await flushPromises();
 
-    // Signing in proves who this applicant is. It proves nothing about who typed answers into this
-    // tab before anyone was signed in, so nothing is put into the form and nothing is sent.
-    expect(back.find('[data-testid="apply-draft-offer"]').exists()).toBe(true);
-    expect(
-      (back.find('[data-testid="apply-input-business_name"]').element as HTMLInputElement).value,
-    ).toBe('');
-    expect(put).not.toHaveBeenCalled();
-    expect(back.find('[data-testid="apply-saved"]').exists()).toBe(false);
-
-    // The person at the screen says the answers are theirs, and now they are on screen - all of
-    // them, including the ones that are not strings.
-    await back.find('[data-testid="apply-draft-restore-button"]').trigger('click');
+    // The answers are on the screen, all of them, including the ones that are not strings - this is
+    // the ordinary path and they are what the applicant pressed a button to keep.
     expect(
       (back.find('[data-testid="apply-input-business_name"]').element as HTMLInputElement).value,
     ).toBe('Acme Bakery');
@@ -156,9 +151,16 @@ describe('answers typed before signing in survive the login redirect', () => {
     expect(
       (back.find('[data-testid="apply-input-agree"]').element as HTMLInputElement).checked,
     ).toBe(true);
-    expect(back.find('[data-testid="apply-draft-offer"]').exists()).toBe(false);
 
-    // And the save is theirs to press, having read what they are about to submit.
+    // But signing in proves who *this* applicant is, and nothing about who typed answers into this
+    // tab before anybody was signed in. So the page says where they came from and that they are not
+    // submitted, and sends nothing.
+    expect(back.find('[data-testid="apply-draft-notice"]').exists()).toBe(true);
+    expect(put).not.toHaveBeenCalled();
+    expect(back.find('[data-testid="apply-saved"]').exists()).toBe(false);
+
+    // The save is theirs to press, having read what they are about to submit.
+    expect(back.find('[data-testid="apply-submit-button"]').text()).toBe('Save Application');
     await back.find('[data-testid="apply-form"]').trigger('submit');
     await flushPromises();
 
@@ -169,21 +171,29 @@ describe('answers typed before signing in survive the login redirect', () => {
     expect(store.draftFor(MARKET)).toBeNull();
   });
 
-  it('discards the offered answers when the person at the screen says they are not theirs', async () => {
+  it('clears the restored answers when the person at the screen says they are not theirs', async () => {
     await typeAndLeaveForTheLoginScreen();
 
     const pinia = createPinia();
     setActivePinia(pinia);
     signInAs('someone-else@example.com');
+    const put = vi.spyOn(applicantApi, 'put').mockResolvedValue({
+      data: { application: { id: 'app-2', formData: {} } },
+    } as never);
     const store = useApplicationStore();
     await store.verifyKey(MARKET, 'someone-else@example.com', '123456');
 
     const back = mount(ApplicationPage, { global: { plugins: [pinia] } });
     await flushPromises();
-    await back.find('[data-testid="apply-draft-discard-button"]').trigger('click');
+    await back.find('[data-testid="apply-draft-clear-button"]').trigger('click');
 
-    // A shared tab must not go on offering one person's answers to everybody who sits down at it.
-    expect(back.find('[data-testid="apply-draft-offer"]').exists()).toBe(false);
+    // Nothing of the previous person reached this applicant's application, and a shared tab must not
+    // go on putting their answers in front of everybody who sits down at it.
+    expect(put).not.toHaveBeenCalled();
+    expect(
+      (back.find('[data-testid="apply-input-business_name"]').element as HTMLInputElement).value,
+    ).toBe('');
+    expect(back.find('[data-testid="apply-draft-notice"]').exists()).toBe(false);
     expect(store.draftFor(MARKET)).toBeNull();
   });
 
@@ -193,7 +203,6 @@ describe('answers typed before signing in survive the login redirect', () => {
     setActivePinia(createPinia());
     const back = mountPage();
     await flushPromises();
-    await back.find('[data-testid="apply-draft-restore-button"]').trigger('click');
 
     expect(
       (back.find('[data-testid="apply-input-business_name"]').element as HTMLInputElement).value,
@@ -291,8 +300,8 @@ describe('the draft belongs to one market, and to one applicant', () => {
     signInAs('vendor@example.com');
     await store.verifyKey(MARKET, 'vendor@example.com', '123456');
 
-    // Still nobody's: readable, so the page can offer them back, and unowned, so no page may
-    // restore them by itself or save them onto this applicant's application.
+    // Still nobody's: readable, so the page can put them back in front of a person, and unowned, so
+    // no page may save them onto this applicant's application.
     expect(store.draftFor(MARKET)).toEqual({
       answers: { business_name: 'Acme' },
       owned: false,

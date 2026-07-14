@@ -17,7 +17,6 @@ from utils.deployment import INSECURE_LOCAL_DEV_VAR
 from utils.secret_key import (
     SECRET_KEY_VAR,
     SecretKeyNotConfiguredError,
-    assert_signing_secret_configured,
     signing_secret,
 )
 
@@ -43,10 +42,12 @@ def deployed(monkeypatch):
 
 class TestADeploymentWithoutASecret:
     def test_refuses_to_start(self, monkeypatch, deployed):
+        """The boot check (``app.verify_public_endpoint_defenses``) asks for the secret it is about
+        to sign with, so the refusal it collects is this one."""
         monkeypatch.delenv(SECRET_KEY_VAR, raising=False)
 
         with pytest.raises(SecretKeyNotConfiguredError) as exc:
-            assert_signing_secret_configured()
+            signing_secret()
 
         assert SECRET_KEY_VAR in str(exc.value), "the refusal has to name the variable"
         assert INSECURE_LOCAL_DEV_VAR in str(exc.value)

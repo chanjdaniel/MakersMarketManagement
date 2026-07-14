@@ -218,6 +218,19 @@ def market_doc_set(field: str, value: Any) -> Dict[str, Any]:
     return {"$set": {market_doc_key(field): value}}
 
 
+def market_doc_projection(fields: Sequence[str]) -> Dict[str, Any]:
+    """Mongo projection over the persisted spellings of the named model fields."""
+    return {market_doc_key(field): 1 for field in fields}
+
+
+# What ``published_market_by_slug`` reads of a candidate itself: the name it re-checks the slug
+# against, and the two fields the draft test is decided from. A caller's projection is unioned with
+# these rather than trusted to contain them, because a projection that dropped one would not make
+# the lookup cheaper - it would make it answer a different question, and answer it wrongly (a market
+# with no ``phase`` in hand is a market that reads as a draft).
+_SLUG_LOOKUP_FIELDS: Tuple[str, ...] = ("name", "phase", "is_draft")
+
+
 def non_draft_market_prefilter() -> Dict[str, Any]:
     """Mongo filter over every market that could possibly be non-draft.
 
@@ -237,7 +250,9 @@ def non_draft_market_prefilter() -> Dict[str, Any]:
     }
 
 
-def published_market_by_slug(collection: Any, market_slug: str) -> Optional[Dict[str, Any]]:
+def published_market_by_slug(
+    collection: Any, market_slug: str, fields: Optional[Sequence[str]] = None,
+) -> Optional[Dict[str, Any]]:
     """The published (phase != draft) market whose slugified name equals ``market_slug``.
 
     The candidates come from the stored slug, which is indexed (``ensure_market_slug_index``), so
@@ -263,12 +278,23 @@ def published_market_by_slug(collection: Any, market_slug: str) -> Optional[Dict
 
     The collection is a parameter because the public surfaces that need this each hold their own
     handle; the rule they share is the slug and the draft test, and those live here.
+
+    ``fields`` are the market fields the caller will actually read, and naming them is what keeps
+    the *document* bounded now that the query is. A market document carries its ``setupObject``, its
+    ``assignmentObject`` and its ``modificationList``, which for a market with a full assignment is
+    megabytes - and the applicant's form page reads four fields of it, unauthenticated, on every
+    mount of every applicant screen. Decoding the rest is work an attacker gets for free at the one
+    public surface with no captcha in front of it. A caller that genuinely needs the whole document
+    (check-in does) names no fields and is served it.
     """
     if not market_slug:
         return None
     target = market_slug.strip().lower()
     query = {**non_draft_market_prefilter(), **market_doc_filter("slug", target)}
-    for candidate in collection.find(query):
+    projection = (
+        None if fields is None else market_doc_projection((*_SLUG_LOOKUP_FIELDS, *fields))
+    )
+    for candidate in collection.find(query, projection):
         if market_name_slug(candidate.get("name", "")) != target:
             continue
         if phase_from_market_document(candidate) == MarketPhase.DRAFT:

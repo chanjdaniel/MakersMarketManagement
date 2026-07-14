@@ -98,11 +98,18 @@ class TestTheLookupUsesTheStoredSlug:
         def __init__(self, docs):
             self.docs = docs
             self.queries = []
+            self.projections = []
 
         def find(self, query, projection=None):
             from conftest import mongo_matches
             self.queries.append(query)
-            return iter([dict(d) for d in self.docs if mongo_matches(d, query)])
+            self.projections.append(projection)
+            matched = [dict(d) for d in self.docs if mongo_matches(d, query)]
+            if projection is not None:
+                matched = [
+                    {k: v for k, v in d.items() if k in projection or k == "_id"} for d in matched
+                ]
+            return iter(matched)
 
     def test_the_market_is_found_by_its_stored_slug(self):
         collection = self._Collection([
@@ -121,3 +128,48 @@ class TestTheLookupUsesTheStoredSlug:
         doc = stored_market(phase=MarketPhase.ARCHIVED, name="Café Market")
 
         assert doc["slug"] == market_name_slug("Café Market")
+
+
+class TestThePublicLookupFetchesOnlyWhatItServes:
+    """An indexed query bounds how many documents the lookup touches. It says nothing about how big
+    one of them is, and a market carries the organizer's whole working state - which the applicant's
+    unauthenticated, captcha-less form page has no use for and must not be made to decode."""
+
+    def _collection(self):
+        return TestTheLookupUsesTheStoredSlug._Collection([
+            stored_market(phase=MarketPhase.ARCHIVED, name="Spring Market"),
+        ])
+
+    def test_a_caller_gets_the_fields_it_asked_for(self):
+        collection = self._collection()
+
+        found = published_market_by_slug(collection, "spring-market", ("id", "application_form"))
+
+        assert found["id"]
+        assert "assignmentObject" not in found
+        assert "modificationList" not in found
+
+    def test_the_fields_the_lookup_itself_reads_are_never_projected_away(self):
+        """Without the phase in hand every market reads as a draft, and the lookup would answer 404
+        for markets that are live. A caller cannot drop those by not asking for them."""
+        collection = self._collection()
+
+        found = published_market_by_slug(collection, "spring-market", ("id",))
+
+        assert found is not None
+        for field in ("name", "phase", "isDraft"):
+            assert field in collection.projections[0]
+
+    def test_a_caller_that_names_nothing_still_gets_the_whole_document(self):
+        """Public check-in reads the assignment out of the market it resolves this way."""
+        collection = self._collection()
+
+        found = published_market_by_slug(collection, "spring-market")
+
+        assert collection.projections[0] is None
+        assert "assignmentObject" in found
+
+    def test_the_public_applicant_endpoints_ask_for_the_bounded_set(self):
+        from api.applicants import PUBLIC_MARKET_FIELDS
+
+        assert set(PUBLIC_MARKET_FIELDS) == {"id", "name", "application_form"}

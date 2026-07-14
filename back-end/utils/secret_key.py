@@ -66,11 +66,6 @@ def signing_secret() -> str:
     )
 
 
-def assert_signing_secret_configured() -> None:
-    """Refuse to boot without a signing secret. Called from the public-endpoint defense check."""
-    signing_secret()
-
-
 def _ephemeral_dev_secret() -> str:
     """A random secret for this process only, so an unconfigured dev machine still has a real key.
 

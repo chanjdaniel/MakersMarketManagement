@@ -25,22 +25,15 @@ provide("setUser", setUser);
 
 /**
  * Whether the page being shown is one of the product's public ones: check-in, and every applicant
- * screen. Read from the same `meta.public` the router guard reads, because two answers to "is this
- * page public" is one answer too many - the guard would let a visitor in and this would throw them
- * straight back out.
- */
-const onPublicRoute = () => router.currentRoute.value.matched.some(
-  (record) => record.meta.public === true,
-);
-
-/**
- * The same question, asked of the page currently on screen, for layout rather than for auth.
+ * screen. Read from the same `meta.public` the router guard reads, and asked in exactly one place,
+ * because two answers to "is this page public" is one answer too many - the copy that decides auth
+ * would throw a visitor out of a page the copy that decides layout had already sized for them.
  *
- * The organizer's shell is 1000px wide at its narrowest: its views are tables, floorplans and market
- * setup, and squeezing those onto a phone is not what this class is for. The public pages are the
- * opposite - an applicant reaches the application form from a link, with no account, most often on a
- * phone - and inheriting that floor renders every one of them zoomed out and scrolled sideways. So
- * the floor belongs to the organizer shell, not to the app.
+ * Both of those depend on it. The session probe below must not send an applicant to the organizer's
+ * sign-in page for having no organizer account. And the organizer's shell is 1000px wide at its
+ * narrowest - its views are tables, floorplans and market setup - while the public pages are the
+ * opposite: an applicant reaches the application form from a link, with no account, most often on a
+ * phone, and inheriting that floor renders every one of them zoomed out and scrolled sideways.
  */
 const isPublicPage = computed(() =>
   route.matched.some((record) => record.meta.public === true),
@@ -64,17 +57,17 @@ onMounted(async () => {
 
   localStorage.clear();
 
-  // Every route component is lazily imported, so the first navigation is still in flight while this
-  // probe is: asking where we are before it lands asks about no page at all, whose answer to "is it
-  // public" is no. That is a race an applicant loses whenever their chunk is slower than the
-  // session check - on a cold load, most times.
+  // Every route component is lazily imported, so a navigation still in flight has matched nothing
+  // yet, and asking where we are before it lands asks about no page at all - whose answer to "is it
+  // public" is no. `main.ts` mounts this app only once the router is ready, and this waits for the
+  // same thing, because a mount from anywhere else must not lose that race either.
   await router.isReady();
 
   // Having no session on a public route is not a problem to fix: those pages are reached by
   // applicants and by vendors checking in, none of whom have an organizer account at all, so
   // anonymous is the normal state there. Sending them to the organizer's sign-in page would make
   // every public page in this product unreachable for precisely the people it exists for.
-  if (onPublicRoute()) return;
+  if (isPublicPage.value) return;
 
   router.push("/login");
 });

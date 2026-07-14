@@ -220,9 +220,18 @@ ATTEMPTS_EXHAUSTED_ERROR = (
 # ── slug helpers ───────────────────────────────────────────────────────────
 
 
+# Everything the public applicant endpoints read off a market: the id they resolve an application
+# by, the name they show the applicant, and the form they render. The rest of a market document is
+# the organizer's working state - ``setupObject``, ``assignmentObject``, ``modificationList`` - which
+# for a market with a full assignment is megabytes, and which no unauthenticated caller has any use
+# for. It is not fetched, so a page load cannot be made to pay for decoding it. See
+# ``published_market_by_slug``.
+PUBLIC_MARKET_FIELDS = ("id", "name", "application_form")
+
+
 def _get_market_doc_by_slug(market_slug: str) -> Optional[Dict[str, Any]]:
     """Find the published market whose slugified name matches the given slug."""
-    return published_market_by_slug(markets_collection, market_slug)
+    return published_market_by_slug(markets_collection, market_slug, PUBLIC_MARKET_FIELDS)
 
 
 def _get_market_phase(doc: Dict[str, Any]) -> MarketPhase:
@@ -1115,8 +1124,10 @@ def get_public_application_form(
     a page load, and a browser that has not run a script yet must still be able to open a market's
     application URL. That makes the ceiling the only bound there is here, so this endpoint must
     stay cheap enough that a bound is all it needs - which is why the slug lookup it makes is an
-    indexed query rather than a pass over every market (``published_market_by_slug``). See
-    ``PUBLIC_FORM_IP_LIMIT`` for how the ceiling is sized and why there is no global one.
+    indexed query rather than a pass over every market, and why it fetches the handful of fields it
+    reads rather than the whole market document (``published_market_by_slug``,
+    ``PUBLIC_MARKET_FIELDS``). See ``PUBLIC_FORM_IP_LIMIT`` for how the ceiling is sized and why
+    there is no global one.
 
     Args:
         market_slug: The URL-safe slug of the market.

@@ -93,9 +93,11 @@ test.describe('Public applicant flow', () => {
     const login = new ApplicantLoginPage(page);
     const dashboard = new ApplicantDashboardPage(page);
 
-    // The primary path: a stranger with a link, no account, and a form in front of them.
+    // The primary path: a stranger with a link, no account, and a form in front of them. The button
+    // says what it does - there is nothing to save into until they have signed in, and a button that
+    // claimed to save is how an applicant walks away from an application that was never submitted.
     await apply.goto(market.marketSlug);
-    await expect(apply.submitButton).toHaveText('Save & Continue');
+    await expect(apply.submitButton).toHaveText('Continue to sign in');
     await apply.fillField('business_name', 'Acme Bakery');
     await apply.fillField('product_type', 'Sourdough');
     await apply.submit();
@@ -105,15 +107,18 @@ test.describe('Public applicant flow', () => {
     await page.waitForURL(loginUrl(market.marketSlug, 'apply'));
     await login.signIn(market.marketId, APPLICANT);
 
-    // Back on the page they came from, and their answers survived it. They are offered rather than
-    // laid into the form: nobody was signed in when they were typed, so this is the applicant who
-    // typed them only if the person now at the keyboard says so.
+    // Back on the page they came from, with their answers back in the form and nothing to click:
+    // this is the ordinary path, and asking a first-time applicant to re-accept what they typed a
+    // moment ago is a click most of them read as an error. The page says it restored them, and that
+    // they are not submitted yet, because it cannot prove who typed them.
     await page.waitForURL(applyUrl(market.marketSlug));
-    await expect(apply.draftOffer).toBeVisible();
-    await apply.restoreOfferedDraft();
     await expect(apply.input('business_name')).toHaveValue('Acme Bakery');
     await expect(apply.input('product_type')).toHaveValue('Sourdough');
+    await expect(apply.draftNotice).toBeVisible();
+    await expect(apply.savedBanner).not.toBeVisible();
 
+    // Submitting is theirs to do, and now the button says so.
+    await expect(apply.submitButton).toHaveText('Save Application');
     await apply.submit();
     await expect(apply.savedBanner).toBeVisible();
 
@@ -196,7 +201,6 @@ test.describe('Public applicant flow', () => {
     await page.waitForURL(loginUrl(market.marketSlug, 'apply'));
     await login.signIn(market.marketId, APPLICANT);
     await page.waitForURL(applyUrl(market.marketSlug));
-    await apply.restoreOfferedDraft();
     await apply.submit();
     await expect(apply.savedBanner).toBeVisible();
 
@@ -214,10 +218,11 @@ test.describe('Public applicant flow', () => {
     await page.waitForURL(applyUrl(market.marketSlug));
 
     // The first applicant's business details are not theirs to read - not in the form, and not even
-    // as something to be offered: those answers have an owner, and it is not this applicant.
+    // as something to be put in front of them: those answers have an owner, and it is not this
+    // applicant.
     await expect(apply.input('business_name')).toHaveValue('');
     await expect(apply.input('product_type')).toHaveValue('');
-    await expect(apply.draftOffer).not.toBeVisible();
+    await expect(apply.draftNotice).not.toBeVisible();
     await expect(apply.savedBanner).not.toBeVisible();
 
     // Which the server confirms: their application is untouched.
@@ -249,16 +254,18 @@ test.describe('Public applicant flow', () => {
     await login.signIn(market.marketId, OTHER_APPLICANT);
     await page.waitForURL(applyUrl(market.marketSlug));
 
-    // The answers are offered, because they may well be this applicant's own - but they are not put
-    // into the form, and above all this page does not finish anybody's save with them. Answers on a
-    // screen can be cleared by the person looking at them; answers written onto their application
-    // cannot.
-    await expect(apply.draftOffer).toBeVisible();
-    await expect(apply.input('business_name')).toHaveValue('');
+    // The answers are put back into the form - on the ordinary path they are this applicant's own -
+    // and the page says so, and says they are not submitted. What it will not do is finish anybody's
+    // save with them: answers on a screen can be cleared by the person looking at them, and answers
+    // written onto their application cannot.
+    await expect(apply.draftNotice).toBeVisible();
+    await expect(apply.input('business_name')).toHaveValue('Alice Bakery');
     await expect(apply.savedBanner).not.toBeVisible();
 
-    await apply.discardOfferedDraft();
-    await expect(apply.draftOffer).not.toBeVisible();
+    // Which is what the person who did not type them does.
+    await apply.clearRestoredDraft();
+    await expect(apply.draftNotice).not.toBeVisible();
+    await expect(apply.input('business_name')).toHaveValue('');
 
     // And the server agrees: nothing was written onto the application of the applicant who signed in.
     await login.goto(market.marketSlug);

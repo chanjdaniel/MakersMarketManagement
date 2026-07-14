@@ -21,4 +21,10 @@ app.use(VueKonva)
 // applicant somewhere they can do something about it. See `applicantSessionExpiry`.
 installApplicantSessionExpiry(router)
 
-app.mount('#app')
+// Mounting before the first navigation resolves paints a page the app cannot yet name: route
+// components are lazily imported, so `route.matched` is empty until the chunk lands, and every
+// question the shell asks about the page - starting with whether it is a public one - is answered
+// about no page at all. `App.vue` would lay the organizer's 1000px width floor over an applicant's
+// phone for that first frame, which is a visible flash of the sideways-scrolled layout the floor was
+// scoped away from those pages to prevent.
+router.isReady().then(() => app.mount('#app'))

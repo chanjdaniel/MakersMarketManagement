@@ -43,18 +43,15 @@ export class ApplyPage {
   }
 
   /**
-   * Answers typed in this browser before anyone signed in. The page will not put them into the form
-   * or save them by itself - it cannot know who typed them - so it offers them, and a person says.
+   * Shown when answers typed in this browser before anyone signed in have been put back into the
+   * form. The page restores them - they are almost always this applicant's - but it cannot know who
+   * typed them, so it says so and will not submit them for anybody.
    */
-  get draftOffer(): Locator {
-    return this.page.getByTestId('apply-draft-offer');
+  get draftNotice(): Locator {
+    return this.page.getByTestId('apply-draft-notice');
   }
 
-  async restoreOfferedDraft() {
-    await this.page.getByTestId('apply-draft-restore-button').click();
-  }
-
-  async discardOfferedDraft() {
-    await this.page.getByTestId('apply-draft-discard-button').click();
+  async clearRestoredDraft() {
+    await this.page.getByTestId('apply-draft-clear-button').click();
   }
 }
