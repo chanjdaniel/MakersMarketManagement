@@ -49,6 +49,11 @@ services:
       # on it. A serverless deployment has none and must set `null` - which is why there is no
       # default to inherit. See docs/RELEASING.md.
       - SESSION_TYPE=${SESSION_TYPE:-filesystem}
+      # Stated for the same reason: nothing of ours sits in front of this container, so the peer
+      # address IS the caller's and no forwarded header may be believed. A deployment behind an
+      # ingress must say how many hops it owns (Vercel: 1), because that address is what organizer
+      # signup reports to reCAPTCHA, and reCAPTCHA v3 scores on it.
+      - TRUSTED_PROXY_HOPS=${TRUSTED_PROXY_HOPS:-0}
       - MONGODB_HOST=mongodb
       - MONGODB_PORT=27017
       - MONGODB_USER=admin

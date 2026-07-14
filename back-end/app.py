@@ -57,6 +57,11 @@ from utils.email import (
     MailerNotConfiguredError,
     assert_mailer_configured,
 )
+from utils.proxy import (
+    TrustedProxyConfigError,
+    install_trusted_proxy_fix,
+    trusted_proxy_hops,
+)
 from utils.secret_key import (
     SecretKeyNotConfiguredError,
     signing_secret,
@@ -113,6 +118,7 @@ class PublicEndpointDefenses(NamedTuple):
     signing_secret: str
     origins: List[AllowedOrigin]
     session_backend: str
+    trusted_proxy_hops: int
 
 
 def check_public_endpoint_defenses() -> PublicEndpointDefenses:
@@ -123,18 +129,21 @@ def check_public_endpoint_defenses() -> PublicEndpointDefenses:
     secret; what makes the session cookie they hand back mean anything is a signing secret; what
     decides which websites may spend that cookie against the organizer API is the browser origin
     list; what carries the verification link, the reset link, and the login code - the only ways an
-    organizer account is ever reached - is a mail key; and what says where that session is kept at
-    all, which has no answer that is right for both a container and a serverless function, is
-    ``SESSION_TYPE``.
+    organizer account is ever reached - is a mail key; what says where that session is kept at all,
+    which has no answer that is right for both a container and a serverless function, is
+    ``SESSION_TYPE``; and what decides whose address the captcha is actually scored against, when
+    something the deployment owns sits in front of Flask, is ``TRUSTED_PROXY_HOPS``.
 
-    Three of the five fail *silently* when unset: the captcha passes everybody, a session cookie
+    Three of the six fail *silently* when unset: the captcha passes everybody, a session cookie
     signed with a key the repository publishes is a session anyone can forge, and a credentialed
     CORS policy with no origin list hands the organizer API to every website an organizer visits.
     The mail key and the session backend are here for the mirror-image reason - unset, the first
     fails *every* registration, reset and OTP with a 500 that names nothing, and the second sends a
     serverless deployment looking for a disk it does not have, failing at import and naming nothing
     either - and a variable whose absence has to be diagnosed one broken deployment at a time
-    belongs in the same refusal as the ones whose absence is never diagnosed at all. As with the
+    belongs in the same refusal as the ones whose absence is never diagnosed at all. The hop count
+    is the quietest of all: unset behind a proxy, every signup in the world is reported to Google
+    as coming from one address, and a reCAPTCHA score is the only place it ever shows. As with the
     market-key migration above, an unknown state is never taken for a safe one: it fails at boot,
     naming the variables, rather than in production, naming nothing.
 
@@ -161,6 +170,7 @@ def check_public_endpoint_defenses() -> PublicEndpointDefenses:
     secret = ""
     origins: List[AllowedOrigin] = []
     sessions = ON_DISK
+    hops = 0
 
     try:
         assert_captcha_configured()
@@ -187,29 +197,37 @@ def check_public_endpoint_defenses() -> PublicEndpointDefenses:
     except SessionStorageNotConfiguredError as e:
         problems.append(str(e))
 
+    try:
+        hops = trusted_proxy_hops()
+    except TrustedProxyConfigError as e:
+        problems.append(str(e))
+
     if problems:
         message = "\n\n".join([
             f"Refusing to start: {len(problems)} of the things this app's public surface rests on "
             f"are not configured, and not one of them announces itself when unset - each is either "
             f"a defense that quietly stops defending, the mail without which no organizer account "
-            f"can be reached at all, or the store the session itself is kept in. All of them are "
-            f"named below. See the required production environment in docs/RELEASING.md before "
-            f"promoting.",
+            f"can be reached at all, the store the session itself is kept in, or the address a "
+            f"caller is taken to be at. All of them are named below. See the required production "
+            f"environment in docs/RELEASING.md before promoting.",
             *problems,
         ])
         logger.critical("%s", message)
         raise PublicEndpointDefenseError(message)
 
     return PublicEndpointDefenses(
-        signing_secret=secret, origins=origins, session_backend=sessions,
+        signing_secret=secret,
+        origins=origins,
+        session_backend=sessions,
+        trusted_proxy_hops=hops,
     )
 
 
 def configure_public_endpoint_defenses(
     flask_app: Flask, defenses: PublicEndpointDefenses,
 ) -> None:
-    """Install what the check confirmed: the signing key, the origins it may be spent from, and the
-    store it is kept in.
+    """Install what the check confirmed: the signing key, the origins it may be spent from, the store
+    it is kept in, and the hops a caller's address may be read back through.
 
     The session store goes on last, because a cookie-only session *is* the signed cookie: the
     interface is built against the app's ``SECRET_KEY``, which the first line here is what puts
@@ -220,6 +238,7 @@ def configure_public_endpoint_defenses(
     logger.info(
         "Allowing credentialed browser requests from: %s", describe_origins(defenses.origins),
     )
+    install_trusted_proxy_fix(flask_app, defenses.trusted_proxy_hops)
     install_session_storage(flask_app, defenses.session_backend)
 
 

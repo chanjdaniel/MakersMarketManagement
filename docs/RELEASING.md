@@ -64,7 +64,7 @@ Once `v0.1.0` is tagged, remove the `release-as` field from `release-please-conf
 
 ## Pre-Deploy: Required Production Environment
 
-The back end **refuses to start** unless all five of these are set, and it fails at import, so a deployment that is missing one serves nothing at all.
+The back end **refuses to start** unless all six of these are set, and it fails at import, so a deployment that is missing one serves nothing at all.
 Set them in the hosting environment **before** promoting `dev` → `main`.
 The startup log names every variable that is missing, all of them at once.
 
@@ -80,7 +80,8 @@ Two consequences of that are worth knowing before you promote, because both are 
    That is the price of the key not being public, and reaching for the old value to avoid it is reaching for the vulnerability.
 
 Three of them are defenses, and each fails *silently* when unset - it stops defending and says nothing.
-The other two are required for the opposite reason: unset, the mail key breaks every route into an organizer account one 500 at a time, and the session backend sends a serverless deployment looking for a disk it does not have - and neither of those failures names the variable behind it.
+Two are required for the opposite reason: unset, the mail key breaks every route into an organizer account one 500 at a time, and the session backend sends a serverless deployment looking for a disk it does not have - and neither of those failures names the variable behind it.
+The sixth, the trusted-hop count, is quieter than any of them: nothing visibly breaks, and the only place an unset one shows is a reCAPTCHA score.
 
 | Variable | What it is | What an unset value would do |
 |----------|------------|------------------------------|
@@ -89,6 +90,7 @@ The other two are required for the opposite reason: unset, the mail key breaks e
 | `CORS_ALLOWED_ORIGINS` | The comma-separated list of browser origins allowed to make credentialed requests to the API, each written exactly as a browser sends it - `https://app.example.com`, no trailing slash, no path. Usually just the front end's own origin. | The API answers cross-site requests with `Access-Control-Allow-Credentials: true`, and the organizer's session cookie is `SameSite=None`, so with no origin list every website an organizer visits could read and write the organizer API - markets, vendors, applications - as them. `*` is refused for the same reason. |
 | `RESEND_API_KEY` | The Resend API key ([dashboard](https://resend.com/api-keys)). Delivers the email-verification link, the password-reset link, and the OTP login code. | No organizer could get an account at all: registration rolls the new user back and answers 500 when the verification mail cannot be sent, an unverified account cannot log in, and password reset and OTP answer 500. The deployment would look healthy and onboard nobody. |
 | `SESSION_TYPE` | Where the organizer's session is kept: `null` on a serverless host (Vercel), which keeps it in the signed cookie, or `filesystem` on a container or VM, which keeps it on local disk. | Neither value is right for both hosts, so there is no default to fall back on. A serverless deployment that got `filesystem` would go looking for a disk that does not outlive a request: it raises at import, every request answers 500, and nothing in the log names this variable. It used to be derived from `FLASK_ENV`, which our own image pins to `development` - so the derivation answered `filesystem` on precisely the deployments that have no filesystem. |
+| `TRUSTED_PROXY_HOPS` | How many proxies of **this deployment's own** a request passes through before it reaches Flask - a reverse proxy, a load balancer, or a serverless ingress each count as one. Vercel is `1`. `0` means Flask is exposed directly, and is a legitimate answer an operator has to give deliberately. | This is the address organizer signup reports to Google as reCAPTCHA's `remoteip`, and reCAPTCHA v3 *scores* on it rather than passing or failing. Unset behind an ingress, that address is the ingress's - the same client, reported for every signup in the world - so real organizers are scored against `MIN_SCORE` on a signal that describes none of them. Setting it too high is the mirror failure: `X-Forwarded-For` is written by the caller, so trusting a hop the deployment does not own lets a caller name any address it likes. Only this variable makes the captcha - which this release enforces for the first time - score the person actually signing up. |
 
 There is deliberately **no default** for any of them.
 A default that quietly becomes the production value is the failure each of these checks exists to prevent - the signing key was such a default, and it was a literal committed to this repository.
@@ -107,8 +109,9 @@ That is the price of the key not being public, and it is not a reason to reach f
 The one exemption is `ALLOW_INSECURE_LOCAL_DEV=true`, which `docker-compose.yml` and `back-end/.env.example` set and which logs every defense it turns off.
 It must never be set on a deployed environment.
 
-A deployment that terminates TLS at a proxy in front of Flask needs nothing here today: no code on this branch keys anything on the caller's IP address except the optional `remoteip` hint passed to reCAPTCHA.
-The trusted-hop configuration lands with the applicant endpoints and the rate limits that will key on that address.
+`TRUSTED_PROXY_HOPS` is here for the captcha, and for nothing else yet.
+The one thing on this branch that reads the caller's address is the `remoteip` hint organizer signup passes to reCAPTCHA, and that hint only started mattering when `RECAPTCHA_SECRET_KEY` became a boot requirement: before, a deployment without a secret took the dev-bypass path and no token ever reached Google.
+The per-IP rate limits that will also key on this address are not on this branch - they land with the applicant endpoints they bound - so do not read this variable as configuring a limiter that does not exist yet.
 
 ### The front end has one requirement too, and it is the other half of the reCAPTCHA pair
 

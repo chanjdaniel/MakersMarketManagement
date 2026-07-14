@@ -23,10 +23,15 @@ FRONTEND_URL=https://your-frontend-domain.vercel.app
 RECAPTCHA_SECRET_KEY=<the reCAPTCHA v3 secret from the Google admin console>
 CORS_ALLOWED_ORIGINS=https://your-frontend-domain.vercel.app
 RESEND_API_KEY=<the API key from the Resend dashboard>
+TRUSTED_PROXY_HOPS=1
 ```
 
-All five of `SECRET_KEY`, `SESSION_TYPE`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS` and `RESEND_API_KEY` are **boot-time requirements**: the function refuses to start without them, so a deployment that is missing one serves nothing at all.
+All six of `SECRET_KEY`, `SESSION_TYPE`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY` and `TRUSTED_PROXY_HOPS` are **boot-time requirements**: the function refuses to start without them, so a deployment that is missing one serves nothing at all.
 See [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment) for what each one defends and what an unset value would do.
+
+`TRUSTED_PROXY_HOPS=1` is the right answer on Vercel: a request reaches the function through Vercel's own ingress, so the peer address Flask sees is the ingress, not the caller.
+That address is what organizer signup reports to Google as reCAPTCHA's `remoteip`, and reCAPTCHA v3 scores on it - so a function that has not been told about the hop in front of it reports the same client for every signup in the world.
+Do not raise it above the number of proxies you actually own: `X-Forwarded-For` is written by the caller, and a hop you do not own is a hop the caller fills in.
 
 The three secrets above are written as `<...>` on purpose, and pasting one of those brackets in verbatim is refused: **every value this repository has printed where a secret goes is rejected by name**, along with anything shaped like a placeholder (a run of x's, a `your-` prefix).
 This guide used to print `RESEND_API_KEY=your-resend-api-key` and `RECAPTCHA_SECRET_KEY=6Lcxxxxx...` as if they were fill-in values, and a placeholder is *truthy* - so a deployment that copied one passed the boot check with a secret that cannot do its job, and the failure landed later, as a 500 that named nothing.
@@ -126,8 +131,9 @@ FROM_EMAIL=your-verified-email@domain.com
      - `FROM_EMAIL=your-verified-email@domain.com`
      - `RECAPTCHA_SECRET_KEY=` the secret from the [reCAPTCHA admin console](https://www.google.com/recaptcha/admin) - a placeholder such as `6Lcxxxxx` is refused
      - `CORS_ALLOWED_ORIGINS=https://your-frontend-domain.vercel.app`
+     - `TRUSTED_PROXY_HOPS=1` - the Vercel ingress is one hop, and it is the reason `remote_addr` is not the caller's address here
    - **Note**: `MONGODB_URI` should already be set if you used the MongoDB Atlas integration
-   - **Note**: `SECRET_KEY`, `SESSION_TYPE`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS` and `RESEND_API_KEY` are checked at import, and on a serverless function that runs on **every cold start**. Miss one and the function does not boot at all - it does not degrade, and no request is served; the log names every one that is missing. Set them **before** promoting, not after.
+   - **Note**: `SECRET_KEY`, `SESSION_TYPE`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY` and `TRUSTED_PROXY_HOPS` are checked at import, and on a serverless function that runs on **every cold start**. Miss one and the function does not boot at all - it does not degrade, and no request is served; the log names every one that is missing. Set them **before** promoting, not after.
    - Apply to Production, Preview, and Development environments as needed
 
 5. **Initialize / migrate the database** (before the first deploy, and before any deploy that carries a new migration)
@@ -159,7 +165,7 @@ back-end/
 - **MongoDB Connection Issues**: Check your MongoDB Atlas network access settings
 - **Session Issues**: Verify `SESSION_TYPE=null` is set for Vercel. There is no default - the function refuses to boot without it - and `filesystem` is a store a serverless function does not keep between requests.
 - **CORS Issues**: Ensure `CORS_ALLOWED_ORIGINS` lists your frontend's origin exactly as the browser sends it (`https://your-frontend-domain.vercel.app` - scheme and host, no trailing slash, no path). A preview deployment served from a different domain is a different origin and has to be listed too. `FRONTEND_URL` is only used for the links in outgoing mail and has no say in CORS.
-- **"Refusing to start: N of the things this app's public surface rests on are not configured"**: one or more of `SECRET_KEY`, `SESSION_TYPE`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY` is unset. The log names every one of them, and each names what it defends, delivers or stores. Set them and redeploy; do not work around it by setting `ALLOW_INSECURE_LOCAL_DEV`, which turns all of that off. See [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment).
+- **"Refusing to start: N of the things this app's public surface rests on are not configured"**: one or more of `SECRET_KEY`, `SESSION_TYPE`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY`, `TRUSTED_PROXY_HOPS` is unset. The log names every one of them, and each names what it defends, delivers or stores. Set them and redeploy; do not work around it by setting `ALLOW_INSECURE_LOCAL_DEV`, which turns all of that off. See [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment).
 - **"`SECRET_KEY` is set to a value this repository has published"**: the key you set is one of the placeholders or fallbacks that appear in this repo (or its history), so it is readable by anyone who can read the repo. Generate a real one with `python -c 'import secrets; print(secrets.token_urlsafe(48))'`. This ends every session signed with the old key, so organizers log in again once - that is the cost of the key not being public.
 - **"`RECAPTCHA_SECRET_KEY` / `RESEND_API_KEY` is set to a placeholder this repository has printed"**: the value you set is one of the example strings from an env template or an older version of this guide (`6Lcxxxxx...`, `re_xxxxx...`, `your-...`), not a secret an issuer ever gave you. Google and Resend both reject it, so the captcha would fail every signup and no verification mail would ever be delivered - a check that passed on a value nothing works with is the failure this refusal exists to move to boot time. Set the real key from the linked console, or, if this is a local machine, clear the variable and set `ALLOW_INSECURE_LOCAL_DEV=true` with `DISABLE_CAPTCHA=true` / `DISABLE_EMAIL=true`.
 - **"The market-key migration has not been applied to this database"**: the function is refusing to boot because it cannot confirm the migration (see step 5 above). Run `migrations/migrate_market_keys.py` against the Atlas database and redeploy. The same error appears when the marker simply cannot be read - an unknown migration state is treated as unmigrated - so check network access too.

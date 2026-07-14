@@ -239,16 +239,22 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   a laptop as on a deployment. Add any future placeholder to that set; better, never let a doc or a
   template print a usable-looking key - **every env template in this repo ships blanks** (with
   `DISABLE_CAPTCHA`/`DISABLE_EMAIL` on) precisely so there is nothing to copy.
-- **`ALLOW_INSECURE_LOCAL_DEV` is the ONLY escape hatch** for the five boot-time requirements
-  (`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY`, `SESSION_TYPE`).
-  It defaults to OFF - the secure state is the one you get by forgetting. It does *not* excuse a
-  published `SECRET_KEY`: the hatch exists so a process with **no** key can boot with a random one.
-- **A boot requirement must defend something this branch actually serves.** Each of the five is
+- **`ALLOW_INSECURE_LOCAL_DEV` is the ONLY escape hatch** for the six boot-time requirements
+  (`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY`, `SESSION_TYPE`,
+  `TRUSTED_PROXY_HOPS`). It defaults to OFF - the secure state is the one you get by forgetting. It
+  does *not* excuse a published `SECRET_KEY`: the hatch exists so a process with **no** key can boot
+  with a random one.
+- **A boot requirement must defend something this branch actually serves.** Each of the six is
   reachable today: the session cookie, `POST /register`'s captcha, the organizer API's origin list,
-  the mail that carries every verification link, reset link and OTP, and the store the session is
-  kept in. Rate limiting and `TRUSTED_PROXY_HOPS` were cut from this PR and land with the applicant
-  endpoints they key on: a requirement with nothing behind it teaches operators to work around the
-  check.
+  the mail that carries every verification link, reset link and OTP, the store the session is kept
+  in, and - the subtlest - the address that captcha is scored against. A requirement with nothing
+  behind it teaches operators to work around the check, so `utils/rate_limit.py` is *not* here: it
+  bounds the applicant endpoints, which are not on this branch. `TRUSTED_PROXY_HOPS` is, because
+  `remote_addr` is what organizer signup hands Google as reCAPTCHA's `remoteip` - so the hop count
+  serves the captcha, not a limiter that does not exist yet. Make the requirement follow the caller,
+  not the module it was first written for: the same variable can be dead weight in one slice and
+  load-bearing in the next, and this one became load-bearing the moment `RECAPTCHA_SECRET_KEY` did
+  (before, a deployment with no secret took the dev bypass and no token ever reached Google).
 - **`FLASK_ENV` does not exist in this repository - nothing reads it, and nothing sets it.** It is
   gone from the Dockerfile, `docker-compose.yml` and the env templates, so the invariant is
   structural rather than aspirational: a variable nobody sets is a variable nobody can key on. Do not
@@ -282,7 +288,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - **`back-end/.env` is read by `back-end/utils/env_file.py`, called on `app.py`'s first line** (before
   the imports below it build their Mongo clients). Nothing loaded that file before this PR (no
   `load_dotenv`, no `python-dotenv`), which was harmless only while the app booted regardless; with
-  the five requirements in place, the developer who followed `docs/STARTUP.md` met a refusal naming
+  the six requirements in place, the developer who followed `docs/STARTUP.md` met a refusal naming
   the variable they had just set. The real environment wins (`override=False`): the Docker stack
   bind-mounts `back-end/` into the container, so a stray `.env` must never be able to hand a process
   an escape hatch or a signing key it did not choose. **The test suite reads no `.env` at all** -
@@ -299,6 +305,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   every organizer signup 400s on a deployment that looks healthy. `vite build` therefore refuses a
   bundle without it (`front-end/vite.config.ts`), with the same opt-in escape hatch by the same name
   (`VITE_ALLOW_INSECURE_LOCAL_DEV`). A defense that exists on only one side of the wire is not one.
+  Consequence for setup: **`cp .env.example .env` is a step in `front-end/` too**, not only in
+  `back-end/`. Vite's `loadEnv` reads `front-end/.env` and never `.env.example`, so a fresh clone has
+  no site key and no hatch, and `npm run build` throws. Both templates ship the shape that works as
+  it stands; `docs/STARTUP.md` names both copies.
 
 ## Maintaining this file
 

@@ -65,11 +65,11 @@ def is_published(value: str) -> bool:
 def configured_secret(value: str) -> str:
     """The secret ``value`` holds, or ``""`` when it holds none.
 
-    Takes the value rather than the variable name, because that is what the three callers have: the
-    signing key is read from the environment on every call, the reCAPTCHA secret is captured into a
-    module global at import, and the Resend key is handed to the mailer. All three ask this one
-    question, so the stripping happens once and no caller can disagree with the boot check about what
-    a configured deployment looks like.
+    Takes the value rather than the variable name, because that is what the three callers have. Each
+    reads its own variable from the environment when it is asked - ``secret_key.signing_secret``,
+    ``captcha.verifiable_secret`` and ``email.sendable_key``, none of them at import - and hands the
+    value here. All three ask this one question, so the stripping happens once and no caller can
+    disagree with the boot check about what a configured deployment looks like.
 
     A blank value and a published one both answer ``""``, because neither is a secret. Which of the
     two it was is ``is_published``'s to say, so a refusal can name what it actually met rather than

@@ -135,7 +135,7 @@ docker run -d \
   ```
    The template boots as it stands - no keys to go and fetch, no accounts to sign up for.
    `app.py` loads `back-end/.env` on the first line it runs (`back-end/utils/env_file.py`), and anything already set in the environment wins over the file, so a variable you export by hand is never shadowed by it.
-   The template works because it sets `ALLOW_INSECURE_LOCAL_DEV=true`, which is what lets a process start without the five variables a deployment must set (`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY`, `SESSION_TYPE`), and which names in the log everything it turns off.
+   The template works because it sets `ALLOW_INSECURE_LOCAL_DEV=true`, which is what lets a process start without the six variables a deployment must set (`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY`, `SESSION_TYPE`, `TRUSTED_PROXY_HOPS`), and which names in the log everything it turns off.
    Sessions are then signed with a random per-process key, so restarting the back end logs you out; set `SECRET_KEY` to a generated value if that gets annoying.
    Never set `ALLOW_INSECURE_LOCAL_DEV` on a deployed environment - see [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment).
 6. Initialize the database:
@@ -156,8 +156,14 @@ docker run -d \
   ```bash
    npm install
   ```
-3. Configure environment variables:
-  Create or verify `.env` file in `front-end/` directory:
+3. Create the environment file:
+  ```bash
+   cp .env.example .env
+  ```
+   The template builds as it stands, and without it `npm run build` refuses: `vite build` will not produce a bundle with no `VITE_RECAPTCHA_SITE_KEY`, because such a bundle sends a placeholder captcha token that a deployed back end verifies against Google and Google rejects - every organizer signup a 400, on a front end that looks fine.
+   The template works because it sets `VITE_ALLOW_INSECURE_LOCAL_DEV=true`, the front-end half of the back end's `ALLOW_INSECURE_LOCAL_DEV`, and each build it lets through says so in a warning.
+   A bundle built that way only works against a back end that has also been told it is a local development one (`DISABLE_CAPTCHA=true`); never deploy one.
+   Vite reads `front-end/.env` only - it never reads `.env.example` - so a checkout that has not copied it has nothing set.
    Note: The frontend uses Vite's proxy to forward `/api` requests to the backend.
 
 ## Step 4: Running the Application
@@ -329,7 +335,7 @@ A blank secret plus the escape hatch is what boots; a placeholder where a secret
 
 **Backend exits at startup with "Refusing to start: ... are not configured" (naming `SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `SESSION_TYPE`, ...)**:
 
-The five variables the refusal names are boot-time requirements, and nothing in this repository supplies a default for them - a security control keyed on a variable whose default is the insecure value is not a control (see [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment)).
+The six variables the refusal names are boot-time requirements, and nothing in this repository supplies a default for them - a security control keyed on a variable whose default is the insecure value is not a control (see [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment)).
 Running under `docker-compose`, that is already handled: the compose file sets `ALLOW_INSECURE_LOCAL_DEV=true`.
 Running the back end directly, it means the process has no `.env` to read: do step 5 of Backend Setup (`cd back-end && cp .env.example .env`), which sets the same escape hatch.
 
