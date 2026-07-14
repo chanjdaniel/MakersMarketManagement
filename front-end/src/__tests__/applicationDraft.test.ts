@@ -409,6 +409,38 @@ describe('the draft belongs to one market, and to one applicant', () => {
     expect(store.draftFor(MARKET)).toBeNull();
   });
 
+  it('lets an applicant discard their own draft without touching one they have never seen', async () => {
+    // The dashboard's Cancel. It restores an owned draft and nothing else, so that is the only thing
+    // the applicant is deciding about when they press it.
+    signInAs('vendor@example.com');
+    const store = useApplicationStore();
+    await store.verifyKey(MARKET, 'vendor@example.com', '123456');
+    store.rememberDraftAnswers(MARKET, { business_name: 'Acme' });
+
+    store.discardOwnDraftAnswers(MARKET);
+
+    expect(store.draftFor(MARKET)).toBeNull();
+  });
+
+  it('does not let a dashboard Cancel destroy a draft typed before anyone signed in', async () => {
+    // A stranger typed into the apply form on a shared tab, pressed the button that takes them to
+    // sign in, and walked away. The applicant who signs in next lands on the dashboard - which never
+    // puts those answers on screen - clicks Edit, then Cancel. They have said nothing whatever about
+    // answers they have not been shown, and only the person looking at them may throw them away.
+    const store = useApplicationStore();
+    store.rememberDraftAnswers(MARKET, { business_name: 'Stranger Bakery' });
+
+    signInAs('vendor@example.com');
+    await store.verifyKey(MARKET, 'vendor@example.com', '123456');
+    store.discardOwnDraftAnswers(MARKET);
+
+    expect(store.draftFor(MARKET)).toEqual({
+      answers: { business_name: 'Stranger Bakery' },
+      owned: false,
+      contested: false,
+    });
+  });
+
   it('keeps the draft when the save it was waiting for fails', async () => {
     signInAs('vendor@example.com');
     vi.spyOn(applicantApi, 'put').mockRejectedValue(new Error('network down'));

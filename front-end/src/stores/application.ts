@@ -3,7 +3,13 @@ import { ref } from 'vue';
 import type { Application } from '@/assets/types/datatypes';
 import { getApiErrorMessage } from '@/utils/api';
 import { applicantApi, setApplicantToken } from '@/utils/applicantApi';
-import { forgetDraft, forgetForeignDraft, readDraft, rememberDraft } from '@/utils/applicantDraft';
+import {
+  forgetDraft,
+  forgetForeignDraft,
+  forgetOwnedDraft,
+  readDraft,
+  rememberDraft,
+} from '@/utils/applicantDraft';
 import { executeRecaptcha } from '@/utils/captcha';
 
 /** The applicant's application on one market. Both routes name the market they act on. */
@@ -266,13 +272,32 @@ export const useApplicationStore = defineStore('application', () => {
   }
 
   /**
-   * The applicant abandoned the edit those answers belonged to. A draft is what a save or a session
-   * left *unfinished*, so one the applicant has finished with by discarding it must go: kept, it
-   * would be restored over their saved answers the next time they opened the page, which is the
-   * data loss this whole mechanism exists to prevent, pointed the other way.
+   * The person at the screen has looked at these answers and said they are not to be kept - the
+   * application page's "not mine" on a restored unowned draft, or its "keep my saved answers" on a
+   * contested one. That statement covers an unowned draft precisely because the answers were on
+   * screen when it was made, so this deletes whatever is there.
+   *
+   * A view that did *not* show the draft has no such statement to pass on: see
+   * `discardOwnDraftAnswers`.
    */
   function discardDraftAnswers(slug: string): void {
     forgetDraft(slug);
+  }
+
+  /**
+   * The applicant abandoned an edit of their own. A draft is what a save or a session left
+   * *unfinished*, so one they have finished with by cancelling must go: kept, it would be restored
+   * over their saved answers the next time they opened the page, which is the data loss this whole
+   * mechanism exists to prevent, pointed the other way.
+   *
+   * Only *their* draft. Cancel is a sentence about the edit in front of them, and an unowned draft
+   * is not in front of them - the dashboard never restores one - so a Cancel that deleted it would
+   * be this applicant silently discarding answers a stranger typed on a shared tab and has not
+   * decided about. An unowned draft is deleted only by the person at the screen saying it is not
+   * theirs, and only the application page ever puts them in a position to say it.
+   */
+  function discardOwnDraftAnswers(slug: string): void {
+    forgetOwnedDraft(slug, identityFor(slug));
   }
 
   function clearSession() {
@@ -333,6 +358,7 @@ export const useApplicationStore = defineStore('application', () => {
     rememberDraftAnswers,
     draftFor,
     discardDraftAnswers,
+    discardOwnDraftAnswers,
     logout,
     endExpiredSession,
   };

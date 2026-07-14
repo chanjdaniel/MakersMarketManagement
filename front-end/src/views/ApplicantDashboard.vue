@@ -132,10 +132,11 @@ function startEditing() {
 }
 
 function cancelEditing() {
-  // Cancelling is the applicant discarding these answers, so the draft holding them goes too -
-  // otherwise the edit they just abandoned would be restored over their saved answers on the next
-  // visit. See `discardDraftAnswers`; only an unfinished save leaves a draft behind.
-  store.discardDraftAnswers(marketSlug.value);
+  // Cancelling is the applicant discarding the answers in front of them, so the draft holding them
+  // goes too - otherwise the edit they just abandoned would be restored over their saved answers on
+  // the next visit. Theirs only: this view restores an owned draft and nothing else, so an unowned
+  // one was never on screen and Cancel says nothing about it. See `discardOwnDraftAnswers`.
+  store.discardOwnDraftAnswers(marketSlug.value);
   editing.value = false;
   validationErrors.value = {};
 }

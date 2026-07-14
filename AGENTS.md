@@ -367,6 +367,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   successful save (`forgetDraft`), a deliberate sign-out (a shared machine must not prefill the next
   person's form), and Cancel on the dashboard edit. Only `endExpiredSession` deliberately keeps it -
   that is the one moment the applicant most needs their answers to still be there.
+  Cancel clears the applicant's *own* draft and nothing else (`discardOwnDraftAnswers` ->
+  `forgetOwnedDraft`): the dashboard restores an owned draft and no other, so an unowned one was
+  never on that screen, and a Cancel that deleted it would be one applicant silently throwing away
+  answers a stranger typed on a shared tab. The unconditional delete (`discardDraftAnswers` ->
+  `forgetDraft`) is for the callers that *have* a person's statement about the answers in front of
+  them: sign-out, and the application page's "not mine" / "keep my saved answers".
 - **A draft is owned by (market, email), because an application is** - and the email half exists
   because of the rule above it. A tab is not one applicant: expiry leaves the draft in storage on
   purpose, so a laptop at a convention's front desk holds one applicant's unsaved answers while the

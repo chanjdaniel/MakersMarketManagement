@@ -153,6 +153,21 @@ export function forgetForeignDraft(marketSlug: string, email: string): void {
   if (draft.email !== normalizeOwner(email)) forgetDraft(marketSlug);
 }
 
+/**
+ * The applicant has abandoned an edit of *their own*, so the draft holding it goes - and nothing
+ * else does. A caller here is speaking about the answers it put in front of this applicant, which on
+ * the dashboard are only ever the owned ones (`restorePendingEdits`), so an unowned draft it never
+ * showed them is not its to destroy: those answers were typed by whoever was at the keyboard before,
+ * this applicant has never seen them, and only a person looking at answers can say they are not
+ * theirs. `forgetDraft` is the unconditional delete, for the callers entitled to make it - a
+ * deliberate sign-out, and the application page's "not mine" on answers it has actually displayed.
+ */
+export function forgetOwnedDraft(marketSlug: string, email: DraftOwner): void {
+  const draft = loadDraft(marketSlug);
+  if (!draft || draft.email === null) return;
+  if (draft.email === normalizeOwner(email)) forgetDraft(marketSlug);
+}
+
 export function forgetDraft(marketSlug: string): void {
   if (!marketSlug) return;
   try {
