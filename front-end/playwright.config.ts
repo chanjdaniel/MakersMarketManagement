@@ -18,7 +18,9 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   failOnFlakyTests: !!process.env.CI,
   workers: 1,
-  reporter: process.env.CI ? ciReporters : [['list'] as const, ['html', { open: 'never' }] as const],
+  reporter: process.env.CI
+    ? ciReporters
+    : [['list'] as const, ['html', { open: 'never' }] as const],
   use: {
     baseURL: `http://localhost:${BASE_PORT}`,
     ignoreHTTPSErrors: true,
