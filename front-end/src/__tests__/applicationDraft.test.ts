@@ -47,6 +47,20 @@ function mountPage() {
   return mount(ApplicationPage, { global: { plugins: [createPinia()] } });
 }
 
+/**
+ * The back end as sign-in meets it: a token, and the application it was issued for - which carries
+ * the address it belongs to, because an application is identified by (market, email) and the draft
+ * that shadows it has to be reconciled against the same pair.
+ */
+function signInAs(email: string) {
+  vi.spyOn(applicantApi, 'post').mockResolvedValue({
+    data: {
+      token: 'a-token',
+      application: { id: `app-${email}`, applicantEmail: email, formData: {} },
+    },
+  });
+}
+
 /** The answers the applicant typed into the rendered form, entered through the inputs themselves. */
 async function typeAnswers(page: ReturnType<typeof mountPage>) {
   await page.find('[data-testid="apply-input-business_name"]').setValue('Acme Bakery');
@@ -158,22 +172,64 @@ describe('the draft belongs to one market, and to one applicant', () => {
   });
 
   it('keeps the draft when the session merely expires, so signing back in does not cost the answers', async () => {
-    vi.spyOn(applicantApi, 'post').mockResolvedValue({
-      data: { token: 'a-token', application: { id: 'app-1', formData: {} } },
-    });
+    signInAs('vendor@example.com');
     const store = useApplicationStore();
     await store.verifyKey(MARKET, 'vendor@example.com', '123456');
     store.rememberDraftAnswers(MARKET, { business_name: 'Acme' });
 
     store.endExpiredSession();
 
+    // The answers are still in storage, and the applicant they belong to gets them back the moment
+    // they are that applicant again.
+    await store.verifyKey(MARKET, 'vendor@example.com', '123456');
+    expect(store.draftAnswers(MARKET)).toEqual({ business_name: 'Acme' });
+  });
+
+  it('does not hand an expired applicant answers to the next applicant who signs in', async () => {
+    // The shared tab: a laptop at the market's own front desk, or a library terminal. The first
+    // applicant's session expires mid-save - which deliberately leaves their answers in storage -
+    // and somebody else signs in on it.
+    signInAs('first@example.com');
+    const store = useApplicationStore();
+    await store.verifyKey(MARKET, 'first@example.com', '123456');
+    store.rememberDraftAnswers(MARKET, { business_name: 'First Applicant Bakery' });
+    store.endExpiredSession();
+
+    signInAs('second@example.com');
+    await store.verifyKey(MARKET, 'second@example.com', '654321');
+
+    // Their business details are not the second applicant's to read, and - on the application page,
+    // which finishes the save the button promised - not theirs to have written onto their
+    // application either.
+    expect(store.draftAnswers(MARKET)).toBeNull();
+  });
+
+  it('does not show a signed-in applicant answers to a visitor who is not signed in', async () => {
+    signInAs('vendor@example.com');
+    const store = useApplicationStore();
+    await store.verifyKey(MARKET, 'vendor@example.com', '123456');
+    store.rememberDraftAnswers(MARKET, { business_name: 'Acme' });
+
+    store.endExpiredSession();
+
+    // Nobody is signed in, so nobody is known to be the applicant these belong to.
+    expect(store.draftAnswers(MARKET)).toBeNull();
+  });
+
+  it('gives the answers typed before signing in to the applicant who signs in', async () => {
+    const store = useApplicationStore();
+    // Nobody has said who they are yet - that is what the login screen is for - so the draft has no
+    // owner but the person at the keyboard, who is the one who then signs in.
+    store.rememberDraftAnswers(MARKET, { business_name: 'Acme' });
+
+    signInAs('vendor@example.com');
+    await store.verifyKey(MARKET, 'vendor@example.com', '123456');
+
     expect(store.draftAnswers(MARKET)).toEqual({ business_name: 'Acme' });
   });
 
   it('discards the draft on a deliberate sign-out, so a shared machine does not leak it', async () => {
-    vi.spyOn(applicantApi, 'post').mockResolvedValue({
-      data: { token: 'a-token', application: { id: 'app-1', formData: {} } },
-    });
+    signInAs('vendor@example.com');
     const store = useApplicationStore();
     await store.verifyKey(MARKET, 'vendor@example.com', '123456');
     store.rememberDraftAnswers(MARKET, { business_name: 'Acme' });
@@ -184,9 +240,7 @@ describe('the draft belongs to one market, and to one applicant', () => {
   });
 
   it('keeps the draft when the save it was waiting for fails', async () => {
-    vi.spyOn(applicantApi, 'post').mockResolvedValue({
-      data: { token: 'a-token', application: { id: 'app-1', formData: {} } },
-    });
+    signInAs('vendor@example.com');
     vi.spyOn(applicantApi, 'put').mockRejectedValue(new Error('network down'));
     const store = useApplicationStore();
     await store.verifyKey(MARKET, 'vendor@example.com', '123456');

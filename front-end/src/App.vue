@@ -23,6 +23,16 @@ const setUser = (user_data: string | null) => {
 provide("user", user);
 provide("setUser", setUser);
 
+/**
+ * Whether the page being shown is one of the product's public ones: check-in, and every applicant
+ * screen. Read from the same `meta.public` the router guard reads, because two answers to "is this
+ * page public" is one answer too many - the guard would let a visitor in and this would throw them
+ * straight back out.
+ */
+const onPublicRoute = () => router.currentRoute.value.matched.some(
+  (record) => record.meta.public === true,
+);
+
 onMounted(async () => {
   try {
     const response = await axios.get(`${hostname}/check-session`, {
@@ -33,16 +43,27 @@ onMounted(async () => {
       const user_email = response.data.email;
       localStorage.setItem("user", JSON.stringify(user_email));
       setUser(user_email);
-
-    } else {
-      localStorage.clear();
-      router.push("/login");
+      return;
     }
-
   } catch {
-    localStorage.clear();
-    router.push("/login");
+    // No organizer session. Whether that is a problem depends entirely on where we are.
   }
+
+  localStorage.clear();
+
+  // Every route component is lazily imported, so the first navigation is still in flight while this
+  // probe is: asking where we are before it lands asks about no page at all, whose answer to "is it
+  // public" is no. That is a race an applicant loses whenever their chunk is slower than the
+  // session check - on a cold load, most times.
+  await router.isReady();
+
+  // Having no session on a public route is not a problem to fix: those pages are reached by
+  // applicants and by vendors checking in, none of whom have an organizer account at all, so
+  // anonymous is the normal state there. Sending them to the organizer's sign-in page would make
+  // every public page in this product unreachable for precisely the people it exists for.
+  if (onPublicRoute()) return;
+
+  router.push("/login");
 });
 
 watch(isLogin, (newValue) => {

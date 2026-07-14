@@ -63,6 +63,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (`front-end/e2e/helpers/verifiedUser.ts`) in `beforeAll`, which runs that same script inside
   the back-end container; do not hand-roll the user document, and do not switch to
   `/register-user`.
+- **The public applicant flow is drivable for real** (`front-end/e2e/applicant.spec.ts`).
+  `seedApplicationsOpenMarket()` (`e2e/helpers/seedApplicantMarket.ts`) builds the market through the
+  product's own endpoints - form first, because the guard on the edge into `applications_open`
+  demands one - and `readApplicantLoginCode()` reads the six-digit code out of the challenge document
+  in Mongo, which is the only place a test can get it (the stack mails nothing).
+  No captcha keys are needed: the dev stack's `ALLOW_INSECURE_LOCAL_DEV` is what lets an unverifiable
+  token through.
+  The one thing faked is the 30-minute token expiring, which is a routed 401 on the save - the same
+  answer the back end gives, without the 30 minutes.
 - **Run E2E**: `./scripts/seed_fixture.sh` then `cd front-end && npm run test:e2e`.
   Playwright config auto-detects worktree port via `detectFrontendPort()`.
 
@@ -339,6 +348,23 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   successful save (`forgetDraft`), a deliberate sign-out (a shared machine must not prefill the next
   person's form), and Cancel on the dashboard edit. Only `endExpiredSession` deliberately keeps it -
   that is the one moment the applicant most needs their answers to still be there.
+- **A draft is keyed by (market, email), because an application is** - and the email half exists
+  because of the rule above it. A tab is not one applicant: expiry leaves the draft in storage on
+  purpose, so a laptop at a convention's front desk holds one applicant's unsaved answers while the
+  next one signs in on it. Keyed by market alone, those answers were prefilled into the new
+  applicant's form and then *saved onto their application* by `completePendingSave`, with nothing
+  pressed. So the owner is recorded with the answers, only the owner may read them, and signing in
+  as anyone else destroys them (`claimDraft`, called from `verifyKey` - the one place a draft and an
+  identity meet). A draft typed *before* signing in has no email to own it, which is the whole point
+  of it; it is adopted by the first applicant to sign in on that tab, who is the one who typed it.
+- **Every public page must work with no organizer session, and `meta: { public: true }` on the route
+  is the only thing that says so** - `router/index.ts` and `App.vue` both read it, and they must
+  keep reading the same field. `App.vue`'s `/check-session` probe redirects a session-less visitor
+  to `/login`, which for an applicant or a vendor checking in - neither of whom has an account at
+  all - takes the page away from exactly the person it is for. It must also `await router.isReady()`
+  before asking where it is: route components are lazily imported, so on a cold load the probe
+  answers first while `matched` is still empty, and "is this route public" then asks about no route
+  at all. `front-end/e2e/applicant.spec.ts` is what catches this; no unit test can.
 
 ## Market Document Keys (Conventioner sharp edge)
 

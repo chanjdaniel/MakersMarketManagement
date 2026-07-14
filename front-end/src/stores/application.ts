@@ -3,7 +3,7 @@ import { ref } from 'vue';
 import type { Application } from '@/assets/types/datatypes';
 import { getApiErrorMessage } from '@/utils/api';
 import { applicantApi, setApplicantToken } from '@/utils/applicantApi';
-import { forgetDraft, readDraft, rememberDraft } from '@/utils/applicantDraft';
+import { claimDraft, forgetDraft, readDraft, rememberDraft } from '@/utils/applicantDraft';
 import { executeRecaptcha } from '@/utils/captcha';
 
 /** The applicant's application on one market. Both routes name the market they act on. */
@@ -23,6 +23,14 @@ export const useApplicationStore = defineStore('application', () => {
    * inviting the action in the first place.
    */
   const marketSlug = ref<string | null>(null);
+  /**
+   * The address the token was issued to. An application is identified by (market, email), so the
+   * market alone does not say whose answers the session is holding - and a tab is not one applicant:
+   * an expired session leaves its draft behind on purpose, and the next person to sign in on that
+   * machine is not necessarily the one who typed it. This is what tells the two apart. See
+   * `@/utils/applicantDraft`.
+   */
+  const applicantEmail = ref<string | null>(null);
   const application = ref<Application | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
@@ -69,6 +77,12 @@ export const useApplicationStore = defineStore('application', () => {
    * behind a shared address (a hall's wifi, a carrier's CGNAT pool) spends too. A budget a caller
    * can spend without passing the captcha is a budget a script can take away from every real
    * applicant behind that address.
+   *
+   * Signing in is also the moment any draft on this market becomes decidably this applicant's or
+   * somebody else's, so it is where that is settled: they adopt the answers they typed on their way
+   * here, and a draft left by a different address - an applicant whose session expired on this same
+   * tab - is destroyed rather than left for the prefill to layer over their application. See
+   * `claimDraft`.
    */
   async function verifyKey(slug: string, email: string, key: string): Promise<boolean> {
     loading.value = true;
@@ -84,8 +98,12 @@ export const useApplicationStore = defineStore('application', () => {
       if (data.token) {
         token.value = data.token;
         marketSlug.value = slug;
+        // The server's copy is the address the token was actually issued to, which is the identity
+        // the draft has to be reconciled against.
+        applicantEmail.value = data.application?.applicantEmail ?? email;
         application.value = data.application;
         setApplicantToken(data.token);
+        claimDraft(slug, applicantEmail.value as string);
         return true;
       }
       error.value = 'No token returned.';
@@ -140,7 +158,7 @@ export const useApplicationStore = defineStore('application', () => {
       error.value = 'Please sign in to save your application for this market.';
       return false;
     }
-    rememberDraft(slug, formData);
+    rememberDraft(slug, applicantEmail.value, formData);
     loading.value = true;
     error.value = null;
     try {
@@ -166,14 +184,21 @@ export const useApplicationStore = defineStore('application', () => {
    * with it unless something holds them.
    *
    * This is the one save path that never reaches `saveApplication` - there is no session to save
-   * into yet - so it is the one that has to hand its answers over itself.
+   * into yet - so it is the one that has to hand its answers over itself. It writes an *unowned*
+   * draft, because a visitor who has not signed in has not said who they are; the applicant who
+   * signs in next on this tab adopts it, which is the applicant who typed it.
    */
   function rememberDraftAnswers(slug: string, formData: Record<string, unknown>): void {
-    rememberDraft(slug, formData);
+    rememberDraft(slug, applicantEmail.value, formData);
   }
 
+  /**
+   * Answers held for whoever is signed in - and only for them. A draft another applicant left on
+   * this tab is not readable here, so nothing can prefill it into this applicant's form or save it
+   * onto their application.
+   */
   function draftAnswers(slug: string): Record<string, unknown> | null {
-    return readDraft(slug);
+    return readDraft(slug, applicantEmail.value);
   }
 
   /**
@@ -189,6 +214,7 @@ export const useApplicationStore = defineStore('application', () => {
   function clearSession() {
     token.value = null;
     marketSlug.value = null;
+    applicantEmail.value = null;
     application.value = null;
     setApplicantToken(null);
   }
@@ -216,6 +242,12 @@ export const useApplicationStore = defineStore('application', () => {
    * The draft deliberately survives this. The session is short-lived and expiring mid-form is a
    * normal path, not an edge case - it is the one moment the applicant most needs their answers to
    * still be there when they sign back in. Only a deliberate `logout` discards them.
+   *
+   * It survives *owned*, and the identity goes with the session, so nothing can read it again until
+   * the applicant it belongs to signs back in. That is what keeps "the answers are still here" from
+   * meaning "the answers are still here for whoever sits down next": this is exactly the state a
+   * shared machine is left in, so the draft outliving the session and the draft belonging to nobody
+   * cannot both be true. See `claimDraft`.
    */
   function endExpiredSession() {
     clearSession();
@@ -225,6 +257,7 @@ export const useApplicationStore = defineStore('application', () => {
   return {
     token,
     marketSlug,
+    applicantEmail,
     application,
     loading,
     error,

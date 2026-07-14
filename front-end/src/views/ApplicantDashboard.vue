@@ -274,10 +274,19 @@ function getFieldValue(field: FormField): string {
         />
 
         <div class="dash-actions">
-          <button class="dash-btn dash-btn-primary" :disabled="saving" @click="saveEdits">
+          <button
+            class="dash-btn dash-btn-primary"
+            :disabled="saving"
+            @click="saveEdits"
+            data-testid="applicant-dashboard-save-btn"
+          >
             {{ saving ? 'Saving...' : 'Save' }}
           </button>
-          <button class="dash-btn dash-btn-secondary" @click="cancelEditing">
+          <button
+            class="dash-btn dash-btn-secondary"
+            @click="cancelEditing"
+            data-testid="applicant-dashboard-cancel-btn"
+          >
             Cancel
           </button>
         </div>
