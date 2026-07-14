@@ -1,7 +1,7 @@
-import { defineConfig, devices } from '@playwright/test';
-import { stack } from './e2e/helpers/stack';
+import { defineConfig, devices } from '@playwright/test'
+import { stack } from './e2e/helpers/stack'
 
-const BASE_PORT = parseInt(process.env.FRONTEND_PORT ?? '', 10) || stack().frontendPort;
+const BASE_PORT = parseInt(process.env.FRONTEND_PORT ?? '', 10) || stack().frontendPort
 
 export default defineConfig({
   testDir: './e2e',
@@ -30,4 +30,4 @@ export default defineConfig({
     port: BASE_PORT,
     reuseExistingServer: true,
   },
-});
+})

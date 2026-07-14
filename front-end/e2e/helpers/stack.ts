@@ -39,32 +39,32 @@
 
 export interface StackIdentity {
   /** Treehouse slot number, or null for CI. */
-  slot: number | null;
+  slot: number | null
   /** docker compose project name (e.g. "conventioner-2" or "conventioner"). */
-  projectName: string;
+  projectName: string
   /** Host-facing backend port (e.g. 5020). */
-  backendPort: number;
+  backendPort: number
   /** Host-facing frontend port (e.g. 5193). */
-  frontendPort: number;
+  frontendPort: number
   /** Host-facing MongoDB port (e.g. 27037). */
-  mongoPort: number;
+  mongoPort: number
   /** Container name for the backend service. */
-  backendContainerName: string;
+  backendContainerName: string
   /** Container name for the MongoDB service. */
-  mongoContainerName: string;
+  mongoContainerName: string
   /** Full backend URL including scheme and port. */
-  backendURL: string;
+  backendURL: string
 }
 
 function detectSlotFromCwd(): number | null {
-  const cwd = process.cwd();
-  const match = cwd.match(/\.treehouse\/[^/]+\/(\d+)\//);
-  return match ? parseInt(match[1], 10) : null;
+  const cwd = process.cwd()
+  const match = cwd.match(/\.treehouse\/[^/]+\/(\d+)\//)
+  return match ? parseInt(match[1], 10) : null
 }
 
 function worktreeIdentity(slot: number): StackIdentity {
-  const offset = slot * 10;
-  const projectName = `conventioner-${slot}`;
+  const offset = slot * 10
+  const projectName = `conventioner-${slot}`
   return {
     slot,
     projectName,
@@ -74,7 +74,7 @@ function worktreeIdentity(slot: number): StackIdentity {
     backendContainerName: `${projectName}-backend`,
     mongoContainerName: `${projectName}-mongodb`,
     backendURL: `https://localhost:${5000 + offset}`,
-  };
+  }
 }
 
 function ciIdentity(): StackIdentity {
@@ -87,7 +87,7 @@ function ciIdentity(): StackIdentity {
     backendContainerName: 'conventioner_backend',
     mongoContainerName: 'conventioner_mongodb',
     backendURL: 'https://localhost:5000',
-  };
+  }
 }
 
 const FAIL_LOUD_MESSAGE =
@@ -98,20 +98,20 @@ const FAIL_LOUD_MESSAGE =
   'https://localhost:5000) and E2E_BACKEND_CONTAINER /\n' +
   'E2E_MONGO_CONTAINER explicitly.\n' +
   'A silent fallback to the primary stack corrupts shared databases\n' +
-  'and produces meaningless test results.';
+  'and produces meaningless test results.'
 
 export function detectStack(): StackIdentity {
   // 1. th-compose.sh exports are authoritative for worktree stacks.
-  const thBackendPort = process.env.TH_BACKEND_PORT;
-  const composeProject = process.env.COMPOSE_PROJECT_NAME;
+  const thBackendPort = process.env.TH_BACKEND_PORT
+  const composeProject = process.env.COMPOSE_PROJECT_NAME
   if (thBackendPort && composeProject) {
-    const backendPort = parseInt(thBackendPort, 10);
-    const frontendPort = parseInt(process.env.TH_FRONTEND_PORT ?? '', 10) || 0;
-    const mongoPort = parseInt(process.env.TH_MONGO_PORT ?? '', 10) || 0;
-    const slotMatch = composeProject.match(/^conventioner-(\d+)$/);
-    const slot = slotMatch ? parseInt(slotMatch[1], 10) : null;
+    const backendPort = parseInt(thBackendPort, 10)
+    const frontendPort = parseInt(process.env.TH_FRONTEND_PORT ?? '', 10) || 0
+    const mongoPort = parseInt(process.env.TH_MONGO_PORT ?? '', 10) || 0
+    const slotMatch = composeProject.match(/^conventioner-(\d+)$/)
+    const slot = slotMatch ? parseInt(slotMatch[1], 10) : null
     // Derive from the authoritative vars, filling gaps with slot offset.
-    const offset = slot !== null ? slot * 10 : backendPort - 5000;
+    const offset = slot !== null ? slot * 10 : backendPort - 5000
     return {
       slot,
       projectName: composeProject,
@@ -121,30 +121,30 @@ export function detectStack(): StackIdentity {
       backendContainerName: `${composeProject}-backend`,
       mongoContainerName: `${composeProject}-mongodb`,
       backendURL: `https://localhost:${backendPort}`,
-    };
+    }
   }
 
   // 2. Treehouse worktree detected from CWD path.
-  const slot = detectSlotFromCwd();
+  const slot = detectSlotFromCwd()
   if (slot !== null) {
-    return worktreeIdentity(slot);
+    return worktreeIdentity(slot)
   }
 
   // 3. CI is genuinely single-stack.
   if (process.env.CI) {
-    return ciIdentity();
+    return ciIdentity()
   }
 
   // 4. Ambiguous — refuse to guess.
-  throw new Error(FAIL_LOUD_MESSAGE);
+  throw new Error(FAIL_LOUD_MESSAGE)
 }
 
 /** Singleton — compute once per process. */
-let _cached: StackIdentity | null = null;
+let _cached: StackIdentity | null = null
 
 export function stack(): StackIdentity {
   if (!_cached) {
-    _cached = detectStack();
+    _cached = detectStack()
   }
-  return _cached;
+  return _cached
 }

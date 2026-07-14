@@ -289,8 +289,8 @@ helpers skip the actual send and report success. This is also honored only under
 `ALLOW_INSECURE_LOCAL_DEV`, defaults OFF, and is forwarded by
 `docker-compose.yml`; the CI e2e job sets it too. The password-reset E2E test does
 not read the reset link from an email - it reads the token directly from MongoDB
-(via `docker exec` into the container named by `E2E_MONGO_CONTAINER`, default
-`conventioner_mongodb`).
+(via `docker exec` into the container named by `E2E_MONGO_CONTAINER`, derived
+from `stack().mongoContainerName`).
 
 ## CI Pipeline
 
