@@ -94,8 +94,9 @@ const FAIL_LOUD_MESSAGE =
   'E2E stack identity could not be determined — refusing to guess.\n' +
   'In a treehouse worktree, run tests via `scripts/th-compose.sh` which\n' +
   'exports TH_BACKEND_PORT, TH_FRONTEND_PORT, and COMPOSE_PROJECT_NAME.\n' +
-  'Otherwise, set BACKEND_URL (e.g. https://localhost:5000) and\n' +
-  'E2E_BACKEND_CONTAINER / E2E_MONGO_CONTAINER explicitly.\n' +
+  'Otherwise, set FRONTEND_PORT, BACKEND_URL (e.g. https://localhost:5173,\n' +
+  'https://localhost:5000) and E2E_BACKEND_CONTAINER /\n' +
+  'E2E_MONGO_CONTAINER explicitly.\n' +
   'A silent fallback to the primary stack corrupts shared databases\n' +
   'and produces meaningless test results.';
 
