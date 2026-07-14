@@ -67,6 +67,15 @@ test.describe('New market - organization is required', () => {
     await newMarketPage.clickSubmit();
     await newMarketPage.waitForSetupRedirect();
 
+    // CSV must have been parsed — a silent failure is data-loss, not a pass.
+    const uploadData = await page.evaluate(() => {
+      const stored = localStorage.getItem('upload');
+      return stored ? JSON.parse(stored) : null;
+    });
+    expect(uploadData, 'CSV parse result must be stored in localStorage').toBeTruthy();
+    expect(uploadData?.data?.data, 'PapaParse rows must be present').toBeTruthy();
+    expect(uploadData.data.data.length, 'Must have parsed CSV rows').toBeGreaterThan(0);
+
     // The persisted market is stamped with the organization that was chosen.
     const marketsRes = await request.get(`${BACKEND_URL}/markets`, {
       headers: { 'X-Owner-Email': TEST_USER.email },

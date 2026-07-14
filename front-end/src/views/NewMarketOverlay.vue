@@ -164,6 +164,7 @@ h3 {
 }
 
 .window {
+    position: relative;
     width: 25%;
     min-height: 140px;
     padding: 25px;

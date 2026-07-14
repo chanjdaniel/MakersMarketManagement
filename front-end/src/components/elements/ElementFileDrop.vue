@@ -85,6 +85,7 @@ const readCSVFile = (file: File) => {
 
 <style scoped>
 .file-container {
+  position: relative;
   width: 50%;
   height: 50%;
   display: flex;
