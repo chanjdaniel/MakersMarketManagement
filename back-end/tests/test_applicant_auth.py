@@ -6,6 +6,8 @@ that "returns 401" proves nothing about an oracle - the oracle lives in the
 byte for byte, to prove the two paths are indistinguishable.
 """
 import json
+from datetime import datetime, timezone
+
 import pytest
 import time
 from types import SimpleNamespace
@@ -529,7 +531,7 @@ class TestOneAttemptPerCode:
                 "market_id": "test-market-1",
                 "email": "applicant@example.com",
                 "code_hash": code_hash,
-                "expires_at": "2099-01-01T00:00:00Z",
+                "expires_at": datetime(2099, 1, 1, tzinfo=timezone.utc),
                 "consumed": False,
                 "created_at": "2026-01-01T00:00:00Z",
             }},
@@ -701,7 +703,7 @@ class TestSuccessfulVerification:
                 "market_id": "test-market-1",
                 "email": "applicant@example.com",
                 "code_hash": code_hash,
-                "expires_at": "2099-01-01T00:00:00Z",
+                "expires_at": datetime(2099, 1, 1, tzinfo=timezone.utc),
                 "consumed": False,
                 "created_at": "2026-01-01T00:00:00Z",
             }},

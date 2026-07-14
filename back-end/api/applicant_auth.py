@@ -114,9 +114,9 @@ def _generate_code() -> str:
     return "".join(secrets.choice("0123456789") for _ in range(CODE_LENGTH))
 
 
-def _code_expiry() -> str:
-    """ISO timestamp CODE_EXPIRY_MINUTES from now."""
-    return (datetime.now(timezone.utc) + timedelta(minutes=CODE_EXPIRY_MINUTES)).isoformat()
+def _code_expiry() -> datetime:
+    """Naive UTC datetime CODE_EXPIRY_MINUTES from now."""
+    return datetime.now(timezone.utc) + timedelta(minutes=CODE_EXPIRY_MINUTES)
 
 
 def _hash_code(code: str) -> str:
@@ -225,7 +225,7 @@ def _send_code_email(email: str, code: str, market_name: str, market_id: str) ->
 
 # ── Challenge storage ─────────────────────────────────────────────────────
 
-def _store_challenge(market_id: str, email: str, code: str, expires_at: str) -> None:
+def _store_challenge(market_id: str, email: str, code: str, expires_at: datetime) -> None:
     """Store (or overwrite) a login challenge for (market_id, email).
 
     The unique index on (market_id, email) means a new request overwrites any
@@ -276,17 +276,17 @@ def _consume_and_verify(market_id: str, email: str, candidate_code: str) -> bool
         # all" from "already consumed" - both return the same failure.
         return False
 
-    # Check expiry. Expired challenges are already consumed above, which is a
-    # no-op if MongoDB's TTL hasn't cleaned them up yet. Do NOT distinguish
-    # "expired" from "wrong code" - both return the same failure.
-    expires_at = challenge.get(EXPIRES_AT_FIELD, "")
-    try:
-        expiry_time = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-        if expiry_time.tzinfo is None:
-            expiry_time = expiry_time.replace(tzinfo=timezone.utc)
-        if datetime.now(timezone.utc) >= expiry_time:
-            return False
-    except (ValueError, AttributeError):
+    # Check expiry. MongoDB returns datetime objects from the TTL-indexed field,
+    # so compare directly. Do NOT distinguish "expired" from "wrong code" - both
+    # return the same failure.
+    expires_at = challenge.get(EXPIRES_AT_FIELD)
+    if expires_at is None:
+        return False
+    if not isinstance(expires_at, datetime):
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) >= expires_at:
         return False
 
     # Constant-time code comparison. The consumed flag is already set, so a
