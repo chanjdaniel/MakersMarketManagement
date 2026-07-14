@@ -117,7 +117,7 @@ jobs:
         if: always()
         run: docker compose logs
       - uses: actions/upload-artifact@v5
-        if: always()
+        if: failure()
         with:
           name: playwright-artifacts
           path: |
