@@ -48,8 +48,8 @@ This document outlines the complete technology stack used in the Conventioner ap
   - Invisible CAPTCHA verification
   - Score-based verification (minimum 0.5)
   - Used on registration endpoint
-  - Secret key configured via `RECAPTCHA_SECRET_KEY` environment variable
-  - Test-only bypass via `DISABLE_CAPTCHA` (non-production only; see Environment Variables)
+  - Secret key configured via `RECAPTCHA_SECRET_KEY` environment variable, which the app refuses to boot without
+  - Test-only bypass via `DISABLE_CAPTCHA`, honored only under `ALLOW_INSECURE_LOCAL_DEV` (see Environment Variables)
 
 ### Utilities
 - **Cryptography 41.0.0+** - Cryptographic functions
@@ -57,12 +57,14 @@ This document outlines the complete technology stack used in the Conventioner ap
   - Used for email verification and password reset tokens
 - **Requests 2.31.0+** - HTTP library
   - Used for reCAPTCHA verification API calls
+- **python-dotenv 1.0.1** - Reads `back-end/.env` on the first line `app.py` runs
+  - The real environment wins over the file, so nothing exported by hand is shadowed by it
 
 ### Session Management
 - **Flask-Session 0.8.0** - Server-side session storage
-  - Filesystem-based session storage
+  - Session store selected by `SESSION_TYPE`, which has no default: `filesystem` (local disk) on a container or VM, `null` (signed cookie only, no server-side store) on a serverless host
   - Session lifetime: 2 hours (7200 seconds)
-  - Secure cookie configuration for production
+  - The cookie is `SameSite=None`, so it is always `Secure` and `HttpOnly` - not configurable
 
 ### Testing
 - **pytest 8+** - Python test framework
@@ -220,8 +222,9 @@ This document outlines the complete technology stack used in the Conventioner ap
 - **CAPTCHA Protection**: reCAPTCHA v3 on registration
 - **Rate Limiting**: OTP and password reset requests
 - **Token Expiration**: Time-limited tokens for verification and reset
-- **Secure Sessions**: HTTP-only, secure cookies in production
-- **CORS Protection**: Configured for specific origins
+- **Secure Sessions**: HTTP-only, `Secure`, `SameSite=None` cookies, signed with a `SECRET_KEY` that has no fallback
+- **CORS Protection**: An explicit origin allowlist (`CORS_ALLOWED_ORIGINS`); `*` is refused, because the session cookie is credentialed
+- **Boot-Time Defenses**: The app refuses to start unless every variable its public surface rests on is configured (see [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment))
 - **Input Validation**: Pydantic models for type safety
 
 ## Environment Variables

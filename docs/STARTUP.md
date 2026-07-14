@@ -492,7 +492,7 @@ Both keys are configured in `.env` and forwarded to the backend via `docker-comp
 
 - **Backend Config**: `back-end/app.py` (Flask app configuration)
 - **Frontend Config**: `front-end/vite.config.ts` (Vite proxy settings)
-- **Environment**: `front-end/.env` (Frontend environment variables)
+- **Environment**: `back-end/.env` (loaded by `back-end/utils/env_file.py`) and `front-end/.env` (read by Vite); copy each from its `.env.example`
 - **Docker Compose**: `docker-compose.yml` (Service orchestration)
 
 ### CSV Export Location

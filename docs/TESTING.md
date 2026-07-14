@@ -33,7 +33,7 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ```
 
-276 tests covering the assignment algorithm, statistics, Discord webhook, attendance,
+409 tests covering the assignment algorithm, statistics, Discord webhook, attendance,
 column mapping, schema generation, role validation, CAPTCHA verification/bypass, the
 Conventioner data model (market phases, `is_draft` computed strictly from `phase`, application
 form/status models, and backward compatibility with existing market documents), the `phase`
@@ -76,8 +76,19 @@ The market phase lifecycle adds six suites:
   silently archive every legacy draft), the writes are condition-checked so a concurrent
   transition cannot have a stale value written over it, and it is idempotent.
 
+The boot-time defenses add seven suites: one per thing the app refuses to start without
+(`test_secret_key.py`, `test_cors.py`, `test_captcha.py`, `test_email.py`,
+`test_session_storage.py`, `test_proxy.py`), and `test_public_endpoint_defenses.py`, which
+pins the refusal itself: what it names, that `ALLOW_INSECURE_LOCAL_DEV` is the only thing
+that waives it, and that `back-end/.env.example` still boots as it stands. Two more cover the
+machinery underneath: `test_configured_secret.py` (a blank or published placeholder is not a
+configured secret) and `test_env_file.py` (the `.env` loader, and that the real environment
+wins over the file).
+
 Requirements: `pytest` (listed in `requirements-dev.txt`), no database connection needed
-(tests use in-memory fakes). Shared module stubs live in `back-end/tests/conftest.py`.
+(tests use in-memory fakes). Shared module stubs live in `back-end/tests/conftest.py`, which
+also points the `.env` loader at a path that does not exist - the suite reads no `.env`, so a
+stale one on your machine cannot change its result.
 
 ## Front-End Unit Tests
 
