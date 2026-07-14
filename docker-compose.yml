@@ -28,7 +28,9 @@ services:
     restart: unless-stopped
     environment:
       - FLASK_APP=app.py
-      - FLASK_ENV=development
+      # No FLASK_ENV: nothing reads it, and the last two things that did read `development` here on
+      # every deployment built from this image. See back-end/Dockerfile.
+      #
       # This compose file IS the local development stack, so it is where the escape hatch belongs:
       # the back end otherwise refuses to boot without a reCAPTCHA secret and a signing secret,
       # which a developer has no reason to hold. Nothing else in the repo sets this, so a deployment

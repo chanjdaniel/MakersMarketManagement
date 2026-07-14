@@ -225,11 +225,20 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   the permissive branch on every deployment.
 - **There is no fallback signing secret anywhere in this repository** and there must never be one
   again - not even "for dev". A committed fallback is a published key. Deleting one is only half the
-  job, because it stays readable in the history: `PUBLISHED_SECRETS` (`back-end/utils/secret_key.py`)
-  refuses every value this repo has ever printed as a key, on a laptop as on a deployment. An
-  operator meeting the boot refusal has an incentive to paste the old literal back (a fresh key logs
-  every organizer out; the old one does not), and that would clear the refusal while changing nothing.
-  Add any future placeholder to that set, and never let a doc or template print a usable-looking key.
+  job, because it stays readable in the history: `back-end/utils/configured_secret.py` is the single
+  answer to "does this variable hold a secret?", and all three secrets (`SECRET_KEY`,
+  `RECAPTCHA_SECRET_KEY`, `RESEND_API_KEY`) ask it. An operator meeting the boot refusal has an
+  incentive to paste the old literal back (a fresh key logs every organizer out; the old one does
+  not), and that would clear the refusal while changing nothing.
+- **A blank or published value is NOT a configured secret, and a truthy placeholder is worse than a
+  blank.** Both are what a half-copied template looks like, and a check that keys on mere truthiness
+  passes on `re_xxxxx` - so the boot check reported a configured deployment and the failure landed at
+  request time instead (a captcha verified against a key Google never issued, a 500 per signup from
+  Resend). `configured_secret()` therefore strips, and `is_published()` refuses every value this repo
+  has printed where a secret goes plus anything shaped like one (a run of x's, a `your-` prefix), on
+  a laptop as on a deployment. Add any future placeholder to that set; better, never let a doc or a
+  template print a usable-looking key - **every env template in this repo ships blanks** (with
+  `DISABLE_CAPTCHA`/`DISABLE_EMAIL` on) precisely so there is nothing to copy.
 - **`ALLOW_INSECURE_LOCAL_DEV` is the ONLY escape hatch** for the five boot-time requirements
   (`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY`, `SESSION_TYPE`).
   It defaults to OFF - the secure state is the one you get by forgetting. It does *not* excuse a
@@ -240,12 +249,14 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   kept in. Rate limiting and `TRUSTED_PROXY_HOPS` were cut from this PR and land with the applicant
   endpoints they key on: a requirement with nothing behind it teaches operators to work around the
   check.
-- **Nothing reads `FLASK_ENV`.** The Dockerfile sets it to `development`, so anything keyed on it
-  reads the same on a deployment as on a laptop - that is how the CORS hole survived, and how
-  `SESSION_TYPE` came to default to `filesystem` on serverless hosts that have no disk. `SESSION_TYPE`
-  is therefore configuration with no default (`back-end/utils/session_storage.py`), and
-  `SESSION_COOKIE_SECURE` is not configurable at all, because a `SameSite=None` cookie is only
-  accepted by a browser when Secure.
+- **`FLASK_ENV` does not exist in this repository - nothing reads it, and nothing sets it.** It is
+  gone from the Dockerfile, `docker-compose.yml` and the env templates, so the invariant is
+  structural rather than aspirational: a variable nobody sets is a variable nobody can key on. Do not
+  reintroduce it. The image used to export `development`, so anything keyed on it read the same on a
+  deployment as on a laptop - that is how the CORS hole survived, and how `SESSION_TYPE` came to
+  default to `filesystem` on serverless hosts that have no disk. `SESSION_TYPE` is therefore
+  configuration with no default (`back-end/utils/session_storage.py`), and `SESSION_COOKIE_SECURE` is
+  not configurable at all, because a `SameSite=None` cookie is only accepted by a browser when Secure.
 - **`SESSION_TYPE=null` installs no session store.** flask-session has no `null` backend and raises
   on one; Flask's own interface signs the session into the cookie, which is the only store a
   serverless function has. Do not "fix" a `null` deployment by handing it to `Session(app)`.

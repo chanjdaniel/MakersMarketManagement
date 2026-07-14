@@ -20,10 +20,10 @@ from conftest import skip_without_real_dependencies
 skip_without_real_dependencies()
 
 import utils.secret_key as secret_key_module
+from utils.configured_secret import PUBLISHED_VALUES
 from utils.deployment import INSECURE_LOCAL_DEV_VAR
 from utils.secret_key import (
     MINIMUM_SECRET_LENGTH,
-    PUBLISHED_SECRETS,
     SECRET_KEY_VAR,
     SecretKeyNotConfiguredError,
     signing_secret,
@@ -94,11 +94,26 @@ class TestASecretThisRepositoryHasAlreadyPublished:
     clear the boot refusal and leave the vulnerability precisely where it was.
     """
 
-    @pytest.mark.parametrize("published", sorted(PUBLISHED_SECRETS))
+    @pytest.mark.parametrize("published", sorted(PUBLISHED_VALUES))
     def test_every_value_this_repo_ever_shipped_is_refused(
         self, monkeypatch, deployed, published,
     ):
+        """Every value this repo has printed where *any* secret goes, not only the signing key's own
+        placeholders: they are all equally readable, and the variable one was printed under is no
+        part of what makes it public."""
         monkeypatch.setenv(SECRET_KEY_VAR, published)
+
+        with pytest.raises(SecretKeyNotConfiguredError) as exc:
+            signing_secret()
+
+        assert "published" in str(exc.value)
+
+    def test_a_placeholder_nobody_has_listed_yet_is_refused_by_its_shape(
+        self, monkeypatch, deployed,
+    ):
+        """The literal list cannot be complete - the placeholder somebody writes into a template
+        tomorrow is not in it. A run of x's is what every one of them has looked like."""
+        monkeypatch.setenv(SECRET_KEY_VAR, "sk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
 
         with pytest.raises(SecretKeyNotConfiguredError) as exc:
             signing_secret()
@@ -133,7 +148,7 @@ class TestASecretTooShortToStayOne:
     def test_a_short_key_is_refused(self, monkeypatch, deployed):
         """It signs the cookie the organizer API authenticates every request with, and it is
         brute-forced offline from a single one of those cookies."""
-        monkeypatch.setenv(SECRET_KEY_VAR, "x" * (MINIMUM_SECRET_LENGTH - 1))
+        monkeypatch.setenv(SECRET_KEY_VAR, "a" * (MINIMUM_SECRET_LENGTH - 1))
 
         with pytest.raises(SecretKeyNotConfiguredError) as exc:
             signing_secret()

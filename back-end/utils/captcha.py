@@ -19,14 +19,15 @@ import os
 import requests
 from typing import Tuple, Optional
 
+from utils.configured_secret import is_published
 from utils.deployment import (
     INSECURE_LOCAL_DEV_VAR,
     insecure_local_dev,
     warn_insecure_local_dev,
 )
 
-RECAPTCHA_SECRET_KEY = os.getenv("RECAPTCHA_SECRET_KEY")
 RECAPTCHA_SECRET_KEY_VAR = "RECAPTCHA_SECRET_KEY"
+RECAPTCHA_SECRET_KEY = os.getenv(RECAPTCHA_SECRET_KEY_VAR, "").strip()
 RECAPTCHA_VERIFY_URL = "https://www.google.com/recaptcha/api/siteverify"
 MIN_SCORE = 0.5  # Minimum score threshold for reCAPTCHA v3
 
@@ -35,14 +36,44 @@ class CaptchaNotConfiguredError(RuntimeError):
     """There is no reCAPTCHA secret, so the captcha gate would be a no-op."""
 
 
+def verifiable_secret() -> str:
+    """The secret a token can actually be checked against, or ``""`` when there is not one.
+
+    A blank value is not a secret, and neither is a placeholder this repository has published: a
+    token verified against ``6Lcxxxx...`` is verified against a key Google never issued, which fails
+    every signup while looking - to a check that asks only whether the variable is set - exactly like
+    a configured deployment. Boot and request time both ask this one question, so the check cannot
+    pass on a value the request path then chokes on.
+    """
+    secret = (RECAPTCHA_SECRET_KEY or "").strip()
+    if not secret or is_published(secret):
+        return ""
+    return secret
+
+
 def assert_captcha_configured() -> None:
     """Refuse to serve the captcha-gated public endpoints without a secret to verify against.
 
     Raises:
         CaptchaNotConfiguredError: when no secret is configured and this is not an opted-in
-            local development process.
+            local development process, or when the configured value is a placeholder this
+            repository has published - which holds everywhere, escape hatch or not, the same way
+            it does for the signing key.
     """
-    if RECAPTCHA_SECRET_KEY:
+    configured = (RECAPTCHA_SECRET_KEY or "").strip()
+    if is_published(configured):
+        raise CaptchaNotConfiguredError(
+            f"{RECAPTCHA_SECRET_KEY_VAR} is set to a placeholder this repository has printed, not "
+            f"to a secret. Google never issued it, so every signup token would be verified against "
+            f"a key that cannot verify anything: the gate this variable exists to hold up fails "
+            f"every caller, and it does so at request time, in a 400 that names none of this. A "
+            f"truthy placeholder is worse than a blank, because a check that asks only whether the "
+            f"variable is set takes it for a configured secret. Set a real secret "
+            f"(https://www.google.com/recaptcha/admin), or clear the variable and set "
+            f"{INSECURE_LOCAL_DEV_VAR}=true (with DISABLE_CAPTCHA=true) if this is a local "
+            f"development machine."
+        )
+    if configured:
         return
     if insecure_local_dev():
         warn_insecure_local_dev("reCAPTCHA verification")
@@ -76,21 +107,22 @@ def verify_recaptcha(token: str, ip_address: Optional[str] = None) -> Tuple[bool
         warn_insecure_local_dev("reCAPTCHA verification (DISABLE_CAPTCHA)")
         return True, 1.0
 
-    if not RECAPTCHA_SECRET_KEY:
+    secret = verifiable_secret()
+    if not secret:
         if not insecure_local_dev():
             # Unreachable through app.py, which refuses to boot in this state. Reached only by an
             # entrypoint that skipped that check, and an unverifiable token is not a verified one.
-            print(f"Error: {RECAPTCHA_SECRET_KEY_VAR} is not set, refusing the request")
+            print(f"Error: {RECAPTCHA_SECRET_KEY_VAR} is not a usable secret, refusing the request")
             return False, 0.0
         warn_insecure_local_dev("reCAPTCHA verification (no secret configured)")
         return True, 1.0
 
     if not token:
         return False, 0.0
-    
+
     try:
         data = {
-            "secret": RECAPTCHA_SECRET_KEY,
+            "secret": secret,
             "response": token,
         }
         

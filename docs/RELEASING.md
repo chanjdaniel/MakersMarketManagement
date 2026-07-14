@@ -68,6 +68,17 @@ The back end **refuses to start** unless all five of these are set, and it fails
 Set them in the hosting environment **before** promoting `dev` → `main`.
 The startup log names every variable that is missing, all of them at once.
 
+Two consequences of that are worth knowing before you promote, because both are easier to meet head-on than to be ambushed by:
+
+1. **The app does not degrade without these - it does not boot.**
+   The check runs at import, which on a serverless host (Vercel) means on *every cold start*.
+   A promotion that lands before the variables are set takes the deployment down rather than serving a weakened version of it.
+   That is deliberate: each of these fails silently or unhelpfully when unset, and a deployment that half-works with its defenses off is the thing this check exists to prevent.
+2. **The first deploy necessarily signs with a new `SECRET_KEY`, which ends every organizer session that exists today.**
+   There is no fallback key any more, and the old committed one is refused by name, so the key cannot be the one production is signing with right now.
+   Organizers are asked to log in again, once.
+   That is the price of the key not being public, and reaching for the old value to avoid it is reaching for the vulnerability.
+
 Three of them are defenses, and each fails *silently* when unset - it stops defending and says nothing.
 The other two are required for the opposite reason: unset, the mail key breaks every route into an organizer account one 500 at a time, and the session backend sends a serverless deployment looking for a disk it does not have - and neither of those failures names the variable behind it.
 
@@ -82,8 +93,14 @@ The other two are required for the opposite reason: unset, the mail key breaks e
 There is deliberately **no default** for any of them.
 A default that quietly becomes the production value is the failure each of these checks exists to prevent - the signing key was such a default, and it was a literal committed to this repository.
 
-For the same reason, **`SECRET_KEY` refuses the values this repository has published**, including the old `TEMP_KEY_CHANGE_IN_PRODUCTION` fallback and the placeholders the env template and this guide once carried.
+For the same reason, **every value this repository has printed where a secret goes is refused by name** - by all three of `SECRET_KEY`, `RECAPTCHA_SECRET_KEY` and `RESEND_API_KEY`, and on a laptop as on a deployment (`back-end/utils/configured_secret.py`).
+That covers the old `TEMP_KEY_CHANGE_IN_PRODUCTION` fallback, the `re_xxxxx` and `6Lcxxxxx` placeholders the env templates and this guide once carried, and anything shaped like them (a run of x's, a `your-` prefix).
 They are all one `git log` away from anybody, so setting one back would clear the boot refusal and leave the vulnerability exactly where it was.
+
+A placeholder is refused rather than accepted because it is **truthy**, which is the whole problem: a check that asks only whether a variable is set passes on `re_xxxxx`, and the deployment then fails at request time instead - reCAPTCHA verifying signups against a key Google never issued, Resend rejecting every verification mail behind a 500.
+A check that can be satisfied with garbage is not a check.
+A blank value is refused for the same reason and reported differently, because `FOO=` is what a forgotten variable looks like, not a filled-in one.
+
 Note that **setting `SECRET_KEY` for the first time, or rotating it, ends every session signed with the old key**: organizers are asked to log in again, once.
 That is the price of the key not being public, and it is not a reason to reach for the old one.
 

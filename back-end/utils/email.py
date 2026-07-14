@@ -6,6 +6,7 @@ import os
 import logging
 import resend
 
+from utils.configured_secret import is_published
 from utils.deployment import (
     INSECURE_LOCAL_DEV_VAR,
     insecure_local_dev,
@@ -17,13 +18,34 @@ logger = logging.getLogger(__name__)
 
 RESEND_API_KEY_VAR = "RESEND_API_KEY"
 
+
+def sendable_key(api_key: str) -> str:
+    """The key Resend can actually send with, or ``""`` when there is not one.
+
+    A blank value is not a key, and neither is a placeholder this repository has published:
+    ``re_xxxxx`` is *truthy*, so initializing the client on it would report a configured mailer to
+    the boot check and then have Resend reject every send - one 500 per signup, with the new account
+    rolled back behind it and nothing naming the variable. The check and the client ask this one
+    question, so a deployment cannot pass the first and fail the second.
+    """
+    key = (api_key or "").strip()
+    if not key or is_published(key):
+        return ""
+    return key
+
+
 # Initialize Resend client
-resend_api_key = os.getenv(RESEND_API_KEY_VAR)
-resend_initialized = False
-if resend_api_key:
+resend_api_key = os.getenv(RESEND_API_KEY_VAR, "").strip()
+resend_initialized = bool(sendable_key(resend_api_key))
+if resend_initialized:
     resend.api_key = resend_api_key
-    resend_initialized = True
     logger.info("Resend API initialized successfully")
+elif is_published(resend_api_key):
+    logger.warning(
+        "%s is set to a placeholder this repository has published, which is not a key anything can "
+        "be sent with - treating it as unset",
+        RESEND_API_KEY_VAR,
+    )
 else:
     logger.warning("RESEND_API_KEY not set - email sending will be disabled")
 
@@ -47,8 +69,22 @@ def assert_mailer_configured() -> None:
 
     Raises:
         MailerNotConfiguredError: when no key is configured and this is not an opted-in local
-            development process.
+            development process, or when the configured value is a placeholder this repository has
+            published - which holds everywhere, escape hatch or not, the same way it does for the
+            signing key.
     """
+    if is_published(resend_api_key):
+        raise MailerNotConfiguredError(
+            f"{RESEND_API_KEY_VAR} is set to a placeholder this repository has printed, not to a "
+            f"key. Resend rejects it, so every verification link, reset link and OTP this product "
+            f"owes is a 500 with the account rolled back behind it - the same deployment that "
+            f"cannot onboard anybody, arrived at by way of a check that passed. A truthy "
+            f"placeholder is worse than a blank, because a check that asks only whether the "
+            f"variable is set takes it for a configured secret. Set a real key "
+            f"(https://resend.com/api-keys), or clear the variable and set "
+            f"{INSECURE_LOCAL_DEV_VAR}=true (with DISABLE_EMAIL=true) if this is a local "
+            f"development machine."
+        )
     if resend_initialized:
         return
     if insecure_local_dev():

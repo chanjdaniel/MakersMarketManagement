@@ -32,6 +32,7 @@ import logging
 import os
 import secrets
 
+from utils.configured_secret import is_published
 from utils.deployment import (
     INSECURE_LOCAL_DEV_VAR,
     insecure_local_dev,
@@ -43,17 +44,6 @@ logger = logging.getLogger(__name__)
 SECRET_KEY_VAR = "SECRET_KEY"
 
 MINIMUM_SECRET_LENGTH = 32
-
-# Every value this repository has ever shipped as a signing key: the fallback that used to live in
-# this module, and the placeholders in the env template and the deploy guide. Each is one `git log`
-# away from anybody, so each is a key that is already published - and a published key is exactly
-# what a deployment reaching for the lowest-friction way past the boot refusal would reach for.
-PUBLISHED_SECRETS = frozenset({
-    "temp_key_change_in_production",
-    "your-secret-key-here-change-in-production",
-    "your-strong-secret-key-here",
-    "your-secret-key-here",
-})
 
 _ephemeral_secret = None
 
@@ -100,7 +90,7 @@ def _reject_a_secret_that_is_not_one(configured: str) -> None:
     Raises:
         SecretKeyNotConfiguredError: what a published or too-short key amounts to.
     """
-    if configured.lower() in PUBLISHED_SECRETS:
+    if is_published(configured):
         raise SecretKeyNotConfiguredError(
             f"{SECRET_KEY_VAR} is set to a value this repository has published. It appears in the "
             f"source history, the env template or the deploy guide, so it is readable by anyone who "

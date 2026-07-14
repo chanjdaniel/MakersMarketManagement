@@ -169,3 +169,66 @@ class TestAnUnconfiguredCaptchaFailsClosed:
 
         assert success is False
         assert score == 0.0
+
+    def test_a_blank_secret_is_no_secret(self, monkeypatch, deployed):
+        """`RECAPTCHA_SECRET_KEY=" "` is the shape a half-edited .env line takes. Read raw, it is
+        truthy, so the boot check passed and the 500 it exists to pre-empt arrived at request time
+        instead."""
+        import utils.captcha as captcha_mod
+        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", "   ")
+
+        with pytest.raises(CaptchaNotConfiguredError):
+            assert_captcha_configured()
+
+
+class TestAPlaceholderIsNotASecret:
+    """A check that can be satisfied with garbage is not a check.
+
+    The env template used to ship `RECAPTCHA_SECRET_KEY=6Lcxxxxx...`, which is *truthy*: a copied
+    template passed the boot check with a secret Google never issued, and every signup token was then
+    verified against a key that cannot verify anything - a 400 at request time, naming none of this.
+    A truthy placeholder is worse than a blank, so it is refused by name, and the templates ship
+    blanks.
+    """
+
+    PUBLISHED_PLACEHOLDER = "6Lcxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+    def test_boot_refuses_the_placeholder_this_repo_published(self, monkeypatch, deployed):
+        import utils.captcha as captcha_mod
+        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", self.PUBLISHED_PLACEHOLDER)
+
+        with pytest.raises(CaptchaNotConfiguredError) as exc:
+            assert_captcha_configured()
+
+        assert RECAPTCHA_SECRET_KEY_VAR in str(exc.value)
+        assert "placeholder" in str(exc.value)
+
+    def test_a_local_dev_machine_is_refused_it_too(self, monkeypatch, local_dev):
+        """The escape hatch lets a process boot with *no* secret. It is not a licence to boot with
+        one that cannot verify anything - and the `.env` carrying that placeholder is exactly the
+        file that gets copied onto a deployment."""
+        import utils.captcha as captcha_mod
+        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", self.PUBLISHED_PLACEHOLDER)
+
+        with pytest.raises(CaptchaNotConfiguredError):
+            assert_captcha_configured()
+
+    def test_no_token_is_ever_verified_against_it(self, monkeypatch, deployed):
+        """Boot already refused, so this is the entrypoint that skipped the check. The request path
+        has to agree with the boot check about what a usable secret is, or the two disagree about
+        whether this deployment is configured."""
+        posted = []
+
+        def fake_post(url, data, timeout):
+            posted.append(data)
+            raise AssertionError("a placeholder secret must never be sent to Google")
+
+        monkeypatch.setattr("utils.captcha.requests.post", fake_post)
+        import utils.captcha as captcha_mod
+        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", self.PUBLISHED_PLACEHOLDER)
+
+        success, score = verify_recaptcha("any-token")
+
+        assert success is False
+        assert score == 0.0
+        assert posted == []
