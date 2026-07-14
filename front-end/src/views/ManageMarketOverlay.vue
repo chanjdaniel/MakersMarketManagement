@@ -359,10 +359,7 @@ function handleClose() {
           </div>
           <button
             class="add-user-button"
-            @click="
-              showAddOrgForm = !showAddOrgForm
-              if (showAddOrgForm) fetchUserOrgs()
-            "
+            @click="(showAddOrgForm = !showAddOrgForm) && fetchUserOrgs()"
             data-testid="manage-market-add-org-button"
           >
             {{ showAddOrgForm ? 'Cancel' : 'Add organization' }}
