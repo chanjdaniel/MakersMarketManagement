@@ -80,16 +80,21 @@ async function loadAll() {
  * button that promised to sign them in *and* save, an edit here is theirs to finish. The answers are
  * in front of them and Save is one press away.
  *
+ * Only an *owned* draft is restored - one written under a verified session, so the product knows it
+ * is this applicant's. Answers typed before anyone signed in belong to whoever was at the keyboard
+ * then, who on a shared device is not whoever is signed in now; they stay where they were typed, and
+ * the application page offers them back on sight rather than laying them over an application here.
+ *
  * Only while the market is still open, because that is the only time an edit could be saved at all -
  * and the edit form is not reachable otherwise.
  */
 function restorePendingEdits() {
   if (!isOpen.value || !store.application) return;
 
-  const draft = store.draftAnswers(marketSlug.value);
-  if (!draft || Object.keys(draft).length === 0) return;
+  const draft = store.draftFor(marketSlug.value);
+  if (!draft?.owned) return;
 
-  formData.value = { ...(store.application.formData || {}), ...draft };
+  formData.value = { ...(store.application.formData || {}), ...draft.answers };
   editing.value = true;
 }
 

@@ -19,25 +19,32 @@
  * markets' forms can share field keys, so a market-less draft is one market's answers waiting to be
  * prefilled into another's.
  *
- * The email half is why a draft has an owner. A tab is not one applicant: a session that expires
- * deliberately leaves its draft behind (that is the moment the answers are most needed), so a laptop
- * at a convention's own front desk can have one applicant's unsaved answers in storage while the
- * next applicant signs in on it. Owned by nobody, those answers would be prefilled into the new
- * applicant's form and - on the application page, which finishes the save the button promised -
- * written onto their application, with nothing pressed and nothing to warn either of them.
+ * The email half is why a draft has an owner, and why the owner is either a verified address or
+ * *nobody*. A tab is not one applicant: a session that expires deliberately leaves its draft behind
+ * (that is the moment the answers are most needed), so a laptop at a convention's own front desk can
+ * hold one applicant's unsaved answers while the next applicant signs in on it.
  *
- * So an owned draft is readable only by the applicant who wrote it, and signing in as anyone else
- * destroys it (`claimDraft`). A draft typed before signing in has no email to own it - that is the
- * design, and the whole reason it exists - so it stays unowned and is adopted by the first applicant
- * to sign in on that tab, which is the applicant who typed it.
+ * An **owned** draft was written while a verified session was live, so the product knows whose
+ * answers those are: only that address can read them back, and signing in as anybody else destroys
+ * them (`forgetForeignDraft`). Restoring them, and finishing the save they were interrupted by, is
+ * done on that applicant's behalf, because the identity behind them was proved by a mailed code.
+ *
+ * An **unowned** draft was typed before anyone signed in, which is the whole reason it exists - and
+ * the product has *no* evidence about who typed it. The only thing it knows is that the answers were
+ * entered in this tab, and a tab at a shared desk outlives the person who used it: an applicant can
+ * type, press "Save & Continue", and walk away from the login screen before the next person sits
+ * down. So an unowned draft is never adopted by whoever signs in next, never prefilled on its own,
+ * and above all never *saved* on anyone's behalf - it is offered back, visibly, for a person to
+ * accept or discard. Answers shown to the wrong person can be cleared; answers written onto the
+ * wrong person's application cannot.
  */
 
 const DRAFT_KEY_PREFIX = 'applicant-draft:';
 
 /** The applicant a draft belongs to, or `null` for answers typed before there was one. */
-type DraftOwner = string | null;
+export type DraftOwner = string | null;
 
-interface StoredDraft {
+export interface StoredDraft {
   email: DraftOwner;
   answers: Record<string, unknown>;
 }
@@ -65,8 +72,6 @@ function loadDraft(marketSlug: string): StoredDraft | null {
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
     const { email, answers } = parsed as Partial<StoredDraft>;
-    // A draft with no owner recorded at all is not one this build wrote. Treating it as unowned
-    // would hand it to whoever signs in next, which is the exposure the owner exists to close.
     if (!answers || typeof answers !== 'object' || Array.isArray(answers)) return null;
     if (email !== null && typeof email !== 'string') return null;
     return { email: normalizeOwner(email), answers: answers as Record<string, unknown> };
@@ -84,7 +89,8 @@ function storeDraft(marketSlug: string, draft: StoredDraft): void {
 }
 
 /**
- * Hold these answers for `email`, who is `null` when they have not signed in yet. The owner is
+ * Hold these answers for `email`, who is `null` when nobody is signed in on this market - which is
+ * the only honest owner for answers typed by a person who has not said who they are. The owner is
  * recorded with the answers rather than folded into the storage key so that a draft belonging to
  * somebody else is *found* and destroyed on the next sign-in, instead of sitting in storage waiting
  * for its owner to come back to a machine they have walked away from.
@@ -99,38 +105,39 @@ export function rememberDraft(
 }
 
 /**
- * The draft `email` is entitled to read, if there is one. `email` is `null` for a visitor who is not
- * signed in, and they are entitled to the unowned draft only: an owned one is a signed-in
- * applicant's unsaved answers, and a signed-out visitor is not known to be them.
+ * The draft `email` is entitled to see, if there is one - answers *and* the owner that decides what
+ * may be done with them. `email` is `null` for a visitor who is not signed in, and they are entitled
+ * to the unowned draft only: an owned one is a signed-in applicant's unsaved answers, and a
+ * signed-out visitor is not known to be them.
+ *
+ * The owner is handed back rather than stripped off here on purpose. A caller that receives bare
+ * answers cannot tell whether the product knows who typed them, and the only safe default for that
+ * caller - never restore, never save - would throw away the interrupted save this exists to finish.
+ * So the distinction travels with the answers, and every caller has to decide about it.
  */
-export function readDraft(
-  marketSlug: string,
-  email: DraftOwner,
-): Record<string, unknown> | null {
+export function readDraft(marketSlug: string, email: DraftOwner): StoredDraft | null {
   const draft = loadDraft(marketSlug);
   if (!draft) return null;
   if (draft.email !== null && draft.email !== normalizeOwner(email)) return null;
-  return draft.answers;
+  return draft;
 }
 
 /**
- * An applicant just signed in. Any draft on this market is now decidably theirs or not: an unowned
- * one is the one they typed on their way to the login screen, and they take ownership of it; one
- * owned by another address belongs to somebody who is no longer signed in on this tab, and it is
- * destroyed rather than left for the prefill to find. This is the single point where a draft and an
- * identity are reconciled - doing it at each read would leave the stale answers in storage for the
- * next reader that forgot to check.
+ * An applicant just signed in, and a draft owned by a *different* address is somebody else's
+ * unsaved answers on a machine they are no longer signed in on. It is destroyed here rather than
+ * left for a prefill to find: this is the single point where a draft and a proved identity meet, and
+ * a check done at each read instead would leave the stale answers in storage for the next reader
+ * that forgot to make it.
+ *
+ * An unowned draft is deliberately left as it is. Signing in proves who *this* applicant is; it
+ * proves nothing about who typed answers before anyone was signed in, so the sign-in is not licence
+ * to adopt them. They stay unowned, and the application page offers them back for a person to accept
+ * on sight.
  */
-export function claimDraft(marketSlug: string, email: string): void {
+export function forgetForeignDraft(marketSlug: string, email: string): void {
   const draft = loadDraft(marketSlug);
-  if (!draft) return;
-
-  const owner = normalizeOwner(email);
-  if (draft.email === null) {
-    storeDraft(marketSlug, { email: owner, answers: draft.answers });
-    return;
-  }
-  if (draft.email !== owner) forgetDraft(marketSlug);
+  if (!draft || draft.email === null) return;
+  if (draft.email !== normalizeOwner(email)) forgetDraft(marketSlug);
 }
 
 export function forgetDraft(marketSlug: string): void {

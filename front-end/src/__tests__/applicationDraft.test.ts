@@ -14,6 +14,13 @@ import { fetchPublicApplicationForm } from '@/utils/publicApplicationForm';
  * that redirect unmounts the form. The answers have to survive it, or the primary path of this whole
  * feature is a button labelled "Save" that throws away everything a first-time applicant typed.
  *
+ * They survive as an *unowned* draft, and what may be done with one is the other half of these
+ * tests. Nobody signed in when they were typed, so the product knows only that they were entered in
+ * this tab - and a tab at a shared desk outlives the person who used it. So they are offered back to
+ * be accepted on sight, and never written onto an application by the page itself. Answers shown to
+ * the wrong person are cleared by that person; answers saved onto the wrong person's application are
+ * not.
+ *
  * These tests drive the real round-trip: fill in the form, press the button while signed out, then
  * mount the page again the way the router does when the applicant comes back holding a session.
  */
@@ -68,6 +75,16 @@ async function typeAnswers(page: ReturnType<typeof mountPage>) {
   await page.find('[data-testid="apply-input-agree"]').setValue(true);
 }
 
+/** Type the form and press "Save & Continue" while signed out, which is what leaves the draft. */
+async function typeAndLeaveForTheLoginScreen() {
+  const page = mountPage();
+  await flushPromises();
+  await typeAnswers(page);
+  await page.find('[data-testid="apply-form"]').trigger('submit');
+  await flushPromises();
+  page.unmount();
+}
+
 describe('answers typed before signing in survive the login redirect', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -92,27 +109,25 @@ describe('answers typed before signing in survive the login redirect', () => {
     expect(push).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'applicant-login', query: { redirect: 'apply' } }),
     );
-    expect(useApplicationStore().draftAnswers(MARKET)).toEqual(TYPED_ANSWERS);
+    // Nobody had said who they were, so the draft is owned by nobody - which is what decides
+    // everything the page is then allowed to do with it.
+    expect(useApplicationStore().draftFor(MARKET)).toEqual({
+      answers: TYPED_ANSWERS,
+      owned: false,
+    });
   });
 
-  it('restores them into the form when the applicant comes back signed in', async () => {
-    const first = mountPage();
-    await flushPromises();
-    await typeAnswers(first);
-    await first.find('[data-testid="apply-form"]').trigger('submit');
-    await flushPromises();
-    first.unmount();
+  it('offers the answers back to the applicant who comes back signed in, and saves nothing until they accept', async () => {
+    await typeAndLeaveForTheLoginScreen();
 
     // The applicant verified their code. The back end hands back the application it created for
     // them when they asked for one, which for a first-time applicant is an empty form - so the
     // answers can only come from the draft.
     const pinia = createPinia();
     setActivePinia(pinia);
-    vi.spyOn(applicantApi, 'post').mockResolvedValue({
-      data: { token: 'a-token', application: { id: 'app-1', formData: {} } },
-    });
+    signInAs('vendor@example.com');
     const put = vi.spyOn(applicantApi, 'put').mockResolvedValue({
-      data: { data: {}, application: { id: 'app-1', formData: {} } },
+      data: { application: { id: 'app-1', formData: TYPED_ANSWERS } },
     } as never);
     const store = useApplicationStore();
     await store.verifyKey(MARKET, 'vendor@example.com', '123456');
@@ -120,6 +135,18 @@ describe('answers typed before signing in survive the login redirect', () => {
     const back = mount(ApplicationPage, { global: { plugins: [pinia] } });
     await flushPromises();
 
+    // Signing in proves who this applicant is. It proves nothing about who typed answers into this
+    // tab before anyone was signed in, so nothing is put into the form and nothing is sent.
+    expect(back.find('[data-testid="apply-draft-offer"]').exists()).toBe(true);
+    expect(
+      (back.find('[data-testid="apply-input-business_name"]').element as HTMLInputElement).value,
+    ).toBe('');
+    expect(put).not.toHaveBeenCalled();
+    expect(back.find('[data-testid="apply-saved"]').exists()).toBe(false);
+
+    // The person at the screen says the answers are theirs, and now they are on screen - all of
+    // them, including the ones that are not strings.
+    await back.find('[data-testid="apply-draft-restore-button"]').trigger('click');
     expect(
       (back.find('[data-testid="apply-input-business_name"]').element as HTMLInputElement).value,
     ).toBe('Acme Bakery');
@@ -129,26 +156,44 @@ describe('answers typed before signing in survive the login redirect', () => {
     expect(
       (back.find('[data-testid="apply-input-agree"]').element as HTMLInputElement).checked,
     ).toBe(true);
+    expect(back.find('[data-testid="apply-draft-offer"]').exists()).toBe(false);
 
-    // "Save & Continue" promised a save, and coming back with a session is what it was waiting for.
+    // And the save is theirs to press, having read what they are about to submit.
+    await back.find('[data-testid="apply-form"]').trigger('submit');
+    await flushPromises();
+
     expect(put).toHaveBeenCalledWith('/public/markets/summer-market/applicant/application', {
       formData: TYPED_ANSWERS,
     });
     expect(back.find('[data-testid="apply-saved"]').exists()).toBe(true);
-    expect(store.draftAnswers(MARKET)).toBeNull();
+    expect(store.draftFor(MARKET)).toBeNull();
+  });
+
+  it('discards the offered answers when the person at the screen says they are not theirs', async () => {
+    await typeAndLeaveForTheLoginScreen();
+
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    signInAs('someone-else@example.com');
+    const store = useApplicationStore();
+    await store.verifyKey(MARKET, 'someone-else@example.com', '123456');
+
+    const back = mount(ApplicationPage, { global: { plugins: [pinia] } });
+    await flushPromises();
+    await back.find('[data-testid="apply-draft-discard-button"]').trigger('click');
+
+    // A shared tab must not go on offering one person's answers to everybody who sits down at it.
+    expect(back.find('[data-testid="apply-draft-offer"]').exists()).toBe(false);
+    expect(store.draftFor(MARKET)).toBeNull();
   });
 
   it('keeps the answers when a visitor backs out of the login screen without verifying', async () => {
-    const first = mountPage();
-    await flushPromises();
-    await typeAnswers(first);
-    await first.find('[data-testid="apply-form"]').trigger('submit');
-    await flushPromises();
-    first.unmount();
+    await typeAndLeaveForTheLoginScreen();
 
     setActivePinia(createPinia());
     const back = mountPage();
     await flushPromises();
+    await back.find('[data-testid="apply-draft-restore-button"]').trigger('click');
 
     expect(
       (back.find('[data-testid="apply-input-business_name"]').element as HTMLInputElement).value,
@@ -168,7 +213,25 @@ describe('the draft belongs to one market, and to one applicant', () => {
 
     store.rememberDraftAnswers('market-a', { business_name: 'Acme' });
 
-    expect(store.draftAnswers('market-b')).toBeNull();
+    expect(store.draftFor('market-b')).toBeNull();
+  });
+
+  it('does not stamp answers typed on one market with the address a session on another market was issued to', async () => {
+    // A vendor signed in to one market opens another market's application URL. The session names
+    // them to the market it was issued for and to no other, so it cannot say whose these answers
+    // are - and an owner recorded wrongly here is answers destroyed on the next sign-in.
+    signInAs('vendor@example.com');
+    const store = useApplicationStore();
+    await store.verifyKey('market-a', 'vendor@example.com', '123456');
+
+    store.rememberDraftAnswers('market-b', { business_name: 'Acme' });
+    signInAs('their-other-address@example.com');
+    await store.verifyKey('market-b', 'their-other-address@example.com', '654321');
+
+    expect(store.draftFor('market-b')).toEqual({
+      answers: { business_name: 'Acme' },
+      owned: false,
+    });
   });
 
   it('keeps the draft when the session merely expires, so signing back in does not cost the answers', async () => {
@@ -180,9 +243,12 @@ describe('the draft belongs to one market, and to one applicant', () => {
     store.endExpiredSession();
 
     // The answers are still in storage, and the applicant they belong to gets them back the moment
-    // they are that applicant again.
+    // they are that applicant again - owned, because a verified session is what wrote them.
     await store.verifyKey(MARKET, 'vendor@example.com', '123456');
-    expect(store.draftAnswers(MARKET)).toEqual({ business_name: 'Acme' });
+    expect(store.draftFor(MARKET)).toEqual({
+      answers: { business_name: 'Acme' },
+      owned: true,
+    });
   });
 
   it('does not hand an expired applicant answers to the next applicant who signs in', async () => {
@@ -201,7 +267,7 @@ describe('the draft belongs to one market, and to one applicant', () => {
     // Their business details are not the second applicant's to read, and - on the application page,
     // which finishes the save the button promised - not theirs to have written onto their
     // application either.
-    expect(store.draftAnswers(MARKET)).toBeNull();
+    expect(store.draftFor(MARKET)).toBeNull();
   });
 
   it('does not show a signed-in applicant answers to a visitor who is not signed in', async () => {
@@ -213,19 +279,24 @@ describe('the draft belongs to one market, and to one applicant', () => {
     store.endExpiredSession();
 
     // Nobody is signed in, so nobody is known to be the applicant these belong to.
-    expect(store.draftAnswers(MARKET)).toBeNull();
+    expect(store.draftFor(MARKET)).toBeNull();
   });
 
-  it('gives the answers typed before signing in to the applicant who signs in', async () => {
+  it('does not make answers typed before sign-in the property of whoever signs in next', async () => {
     const store = useApplicationStore();
-    // Nobody has said who they are yet - that is what the login screen is for - so the draft has no
-    // owner but the person at the keyboard, who is the one who then signs in.
+    // Nobody has said who they are yet - that is what the login screen is for - and the applicant
+    // who typed these can walk away from that screen before the next person sits down at it.
     store.rememberDraftAnswers(MARKET, { business_name: 'Acme' });
 
     signInAs('vendor@example.com');
     await store.verifyKey(MARKET, 'vendor@example.com', '123456');
 
-    expect(store.draftAnswers(MARKET)).toEqual({ business_name: 'Acme' });
+    // Still nobody's: readable, so the page can offer them back, and unowned, so no page may
+    // restore them by itself or save them onto this applicant's application.
+    expect(store.draftFor(MARKET)).toEqual({
+      answers: { business_name: 'Acme' },
+      owned: false,
+    });
   });
 
   it('discards the draft on a deliberate sign-out, so a shared machine does not leak it', async () => {
@@ -236,7 +307,7 @@ describe('the draft belongs to one market, and to one applicant', () => {
 
     store.logout();
 
-    expect(store.draftAnswers(MARKET)).toBeNull();
+    expect(store.draftFor(MARKET)).toBeNull();
   });
 
   it('keeps the draft when the save it was waiting for fails', async () => {
@@ -244,11 +315,13 @@ describe('the draft belongs to one market, and to one applicant', () => {
     vi.spyOn(applicantApi, 'put').mockRejectedValue(new Error('network down'));
     const store = useApplicationStore();
     await store.verifyKey(MARKET, 'vendor@example.com', '123456');
-    store.rememberDraftAnswers(MARKET, { business_name: 'Acme' });
 
     const ok = await store.saveApplication(MARKET, { business_name: 'Acme' });
 
     expect(ok).toBe(false);
-    expect(store.draftAnswers(MARKET)).toEqual({ business_name: 'Acme' });
+    expect(store.draftFor(MARKET)).toEqual({
+      answers: { business_name: 'Acme' },
+      owned: true,
+    });
   });
 });

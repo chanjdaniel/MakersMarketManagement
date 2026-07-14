@@ -108,7 +108,7 @@ describe('a session that expires mid-save does not cost the applicant their answ
     const store = await signIn();
     let draftWhenTheRequestWasMade: Record<string, unknown> | null = null;
     applicantApi.defaults.adapter = ((config: AxiosRequestConfig) => {
-      draftWhenTheRequestWasMade = store.draftAnswers(MARKET);
+      draftWhenTheRequestWasMade = store.draftFor(MARKET)?.answers ?? null;
       return reply(config, 401, { error: 'expired' });
     }) as never;
 
@@ -118,7 +118,7 @@ describe('a session that expires mid-save does not cost the applicant their answ
     // Nothing that runs after this request returns is still on the page that holds these answers:
     // the 401 unmounts it. A draft written in the failure handler is a draft written too late.
     expect(draftWhenTheRequestWasMade).toEqual(EDITED);
-    expect(store.draftAnswers(MARKET)).toEqual(EDITED);
+    expect(store.draftFor(MARKET)?.answers).toEqual(EDITED);
   });
 
   it('ends the session and returns the applicant to the page they were on', async () => {
@@ -182,7 +182,9 @@ describe('a session that expires mid-save does not cost the applicant their answ
         .find('[data-testid="applicant-dashboard-edit-input-business_name"]')
         .element as HTMLInputElement).value,
     ).toBe('Acme Bakery & Cafe');
-    expect(store.draftAnswers(MARKET)).toEqual(EDITED);
+    // Written under a verified session, so it is decidably this applicant's: the dashboard is
+    // allowed to put it back in front of them without asking whose it is.
+    expect(store.draftFor(MARKET)).toEqual({ answers: EDITED, owned: true });
   });
 
   it('drops the draft once the applicant cancels the edit it belonged to', async () => {
@@ -204,6 +206,6 @@ describe('a session that expires mid-save does not cost the applicant their answ
 
     // Cancelling is the applicant discarding the edit. Kept, the draft would be restored over their
     // saved answers on the next visit - the same data loss, running backwards.
-    expect(store.draftAnswers(MARKET)).toBeNull();
+    expect(store.draftFor(MARKET)).toBeNull();
   });
 });

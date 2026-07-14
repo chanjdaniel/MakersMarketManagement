@@ -33,6 +33,19 @@ const onPublicRoute = () => router.currentRoute.value.matched.some(
   (record) => record.meta.public === true,
 );
 
+/**
+ * The same question, asked of the page currently on screen, for layout rather than for auth.
+ *
+ * The organizer's shell is 1000px wide at its narrowest: its views are tables, floorplans and market
+ * setup, and squeezing those onto a phone is not what this class is for. The public pages are the
+ * opposite - an applicant reaches the application form from a link, with no account, most often on a
+ * phone - and inheriting that floor renders every one of them zoomed out and scrolled sideways. So
+ * the floor belongs to the organizer shell, not to the app.
+ */
+const isPublicPage = computed(() =>
+  route.matched.some((record) => record.meta.public === true),
+);
+
 onMounted(async () => {
   try {
     const response = await axios.get(`${hostname}/check-session`, {
@@ -75,7 +88,7 @@ watch(isLogin, (newValue) => {
 </script>
 
 <template>
-  <div class="app-container">
+  <div class="app-container" :class="{ 'public-shell': isPublicPage }">
     <header>
       <ElementBanner @menuOpen="navOpen = true" :isLogin="isLogin"/>
     </header>
@@ -162,5 +175,13 @@ header {
   flex: 1;
   min-height: 0;
   min-width: 1000px;
+}
+
+/* A public page is the only page in this product a phone is likely to open, and the width floor
+   above is the organizer shell's, not the app's. Dropped on both boxes, because either one left at
+   1000px is enough to push the page sideways on its own. */
+.app-container.public-shell,
+.public-shell .router-view {
+  min-width: 0;
 }
 </style>

@@ -3,12 +3,26 @@ import { ref } from 'vue';
 import type { Application } from '@/assets/types/datatypes';
 import { getApiErrorMessage } from '@/utils/api';
 import { applicantApi, setApplicantToken } from '@/utils/applicantApi';
-import { claimDraft, forgetDraft, readDraft, rememberDraft } from '@/utils/applicantDraft';
+import { forgetDraft, forgetForeignDraft, readDraft, rememberDraft } from '@/utils/applicantDraft';
 import { executeRecaptcha } from '@/utils/captcha';
 
 /** The applicant's application on one market. Both routes name the market they act on. */
 function applicationUrl(marketSlug: string): string {
   return `/public/markets/${marketSlug}/applicant/application`;
+}
+
+/**
+ * Unsaved answers to one market's form, and whether the product knows whose they are.
+ *
+ * `owned` is what a view is allowed to act on. Answers written under a verified session belong to
+ * that applicant and may be restored, and the save they were interrupted by finished, without asking
+ * again. Answers typed before anyone signed in belong to whoever was at the keyboard, which is not
+ * necessarily whoever is at it now - they may only be offered back, on screen, to be accepted.
+ * See `@/utils/applicantDraft`.
+ */
+export interface ApplicantDraft {
+  answers: Record<string, unknown>;
+  owned: boolean;
 }
 
 export const useApplicationStore = defineStore('application', () => {
@@ -45,6 +59,18 @@ export const useApplicationStore = defineStore('application', () => {
   }
 
   /**
+   * Who this applicant is *on `slug`* - `null` when nobody is signed in there, which is what a
+   * visitor holding a session on some other market is. Every draft call goes through this rather
+   * than reading `applicantEmail` directly, because a draft is owned by (market, email) and the
+   * session is only an identity for the one market it was issued for: a vendor signed in to market A
+   * who opens market B's application URL would otherwise stamp B's draft with the address A knows
+   * them by, and be unable to read their own answers back after signing in to B as anyone else.
+   */
+  function identityFor(slug: string): string | null {
+    return isAuthenticatedFor(slug) ? applicantEmail.value : null;
+  }
+
+  /**
    * The back end refuses this request without a captcha token: it is public, unauthenticated, and
    * it sends mail to whatever address it is handed, so it carries the same gate the organizer-side
    * signup does. A captcha that cannot be obtained is not a reason to skip the call - the token is
@@ -78,11 +104,11 @@ export const useApplicationStore = defineStore('application', () => {
    * can spend without passing the captcha is a budget a script can take away from every real
    * applicant behind that address.
    *
-   * Signing in is also the moment any draft on this market becomes decidably this applicant's or
-   * somebody else's, so it is where that is settled: they adopt the answers they typed on their way
-   * here, and a draft left by a different address - an applicant whose session expired on this same
-   * tab - is destroyed rather than left for the prefill to layer over their application. See
-   * `claimDraft`.
+   * Signing in is also the one moment a draft meets a proved identity, so it is where a draft left
+   * by a *different* address - an applicant whose session expired on this same tab - is destroyed,
+   * rather than left for a prefill to layer over this applicant's application. A draft typed before
+   * anyone signed in is not adopted here: this sign-in says who *this* applicant is and nothing
+   * about who typed those. See `forgetForeignDraft`.
    */
   async function verifyKey(slug: string, email: string, key: string): Promise<boolean> {
     loading.value = true;
@@ -103,7 +129,7 @@ export const useApplicationStore = defineStore('application', () => {
         applicantEmail.value = data.application?.applicantEmail ?? email;
         application.value = data.application;
         setApplicantToken(data.token);
-        claimDraft(slug, applicantEmail.value as string);
+        forgetForeignDraft(slug, applicantEmail.value as string);
         return true;
       }
       error.value = 'No token returned.';
@@ -158,7 +184,7 @@ export const useApplicationStore = defineStore('application', () => {
       error.value = 'Please sign in to save your application for this market.';
       return false;
     }
-    rememberDraft(slug, applicantEmail.value, formData);
+    rememberDraft(slug, identityFor(slug), formData);
     loading.value = true;
     error.value = null;
     try {
@@ -185,20 +211,25 @@ export const useApplicationStore = defineStore('application', () => {
    *
    * This is the one save path that never reaches `saveApplication` - there is no session to save
    * into yet - so it is the one that has to hand its answers over itself. It writes an *unowned*
-   * draft, because a visitor who has not signed in has not said who they are; the applicant who
-   * signs in next on this tab adopts it, which is the applicant who typed it.
+   * draft, because a visitor who has not signed in on this market has not said who they are: a token
+   * held for some other market names them to that market, not to this form, so `identityFor` is what
+   * decides the owner and not the bare address on the session. Nobody may save an unowned draft on
+   * anyone's behalf; it is offered back to be accepted. See `@/utils/applicantDraft`.
    */
   function rememberDraftAnswers(slug: string, formData: Record<string, unknown>): void {
-    rememberDraft(slug, applicantEmail.value, formData);
+    rememberDraft(slug, identityFor(slug), formData);
   }
 
   /**
-   * Answers held for whoever is signed in - and only for them. A draft another applicant left on
-   * this tab is not readable here, so nothing can prefill it into this applicant's form or save it
-   * onto their application.
+   * The unsaved answers this market's pages may act on, and whether the product knows whose they
+   * are. A draft another applicant left on this tab is not readable here at all; one typed before
+   * anyone signed in comes back marked unowned, which is what stops a view restoring or saving it as
+   * though its author were the person now looking at the screen.
    */
-  function draftAnswers(slug: string): Record<string, unknown> | null {
-    return readDraft(slug, applicantEmail.value);
+  function draftFor(slug: string): ApplicantDraft | null {
+    const draft = readDraft(slug, identityFor(slug));
+    if (!draft || Object.keys(draft.answers).length === 0) return null;
+    return { answers: draft.answers, owned: draft.email !== null };
   }
 
   /**
@@ -247,7 +278,7 @@ export const useApplicationStore = defineStore('application', () => {
    * the applicant it belongs to signs back in. That is what keeps "the answers are still here" from
    * meaning "the answers are still here for whoever sits down next": this is exactly the state a
    * shared machine is left in, so the draft outliving the session and the draft belonging to nobody
-   * cannot both be true. See `claimDraft`.
+   * cannot both be true. See `forgetForeignDraft`.
    */
   function endExpiredSession() {
     clearSession();
@@ -267,7 +298,7 @@ export const useApplicationStore = defineStore('application', () => {
     fetchApplication,
     saveApplication,
     rememberDraftAnswers,
-    draftAnswers,
+    draftFor,
     discardDraftAnswers,
     logout,
     endExpiredSession,

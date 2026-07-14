@@ -41,4 +41,20 @@ export class ApplyPage {
   get savedBanner(): Locator {
     return this.page.getByTestId('apply-saved');
   }
+
+  /**
+   * Answers typed in this browser before anyone signed in. The page will not put them into the form
+   * or save them by itself - it cannot know who typed them - so it offers them, and a person says.
+   */
+  get draftOffer(): Locator {
+    return this.page.getByTestId('apply-draft-offer');
+  }
+
+  async restoreOfferedDraft() {
+    await this.page.getByTestId('apply-draft-restore-button').click();
+  }
+
+  async discardOfferedDraft() {
+    await this.page.getByTestId('apply-draft-discard-button').click();
+  }
 }

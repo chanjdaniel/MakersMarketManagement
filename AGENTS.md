@@ -348,15 +348,29 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   successful save (`forgetDraft`), a deliberate sign-out (a shared machine must not prefill the next
   person's form), and Cancel on the dashboard edit. Only `endExpiredSession` deliberately keeps it -
   that is the one moment the applicant most needs their answers to still be there.
-- **A draft is keyed by (market, email), because an application is** - and the email half exists
+- **A draft is owned by (market, email), because an application is** - and the email half exists
   because of the rule above it. A tab is not one applicant: expiry leaves the draft in storage on
   purpose, so a laptop at a convention's front desk holds one applicant's unsaved answers while the
-  next one signs in on it. Keyed by market alone, those answers were prefilled into the new
-  applicant's form and then *saved onto their application* by `completePendingSave`, with nothing
-  pressed. So the owner is recorded with the answers, only the owner may read them, and signing in
-  as anyone else destroys them (`claimDraft`, called from `verifyKey` - the one place a draft and an
-  identity meet). A draft typed *before* signing in has no email to own it, which is the whole point
-  of it; it is adopted by the first applicant to sign in on that tab, who is the one who typed it.
+  next one signs in on it. Owned by nobody, those answers were prefilled into the new applicant's
+  form and then *saved onto their application* by `completePendingSave`, with nothing pressed. So the
+  owner is recorded with the answers, only the owner may read them, and signing in as anyone else
+  destroys them (`forgetForeignDraft`, called from `verifyKey` - the one place a draft and a proved
+  identity meet). The owner comes from `identityFor(slug)`, never from the bare session address: a
+  session names an applicant to *the one market it was issued for*, so a vendor signed in to market A
+  who types into market B's form must not have B's draft stamped with the address A knows them by -
+  they would be unable to read their own answers back after signing in to B as anyone else.
+- **An unowned draft is offered, never adopted and never saved on anyone's behalf.** Answers typed
+  before any sign-in are the whole reason the draft exists, and the product holds no evidence about
+  who typed them - only that this tab did. Signing in proves who *that* applicant is; it proves
+  nothing about whoever used the tab before them, and an applicant can press "Save & Continue" and
+  walk away from the login screen before the next one sits down at it. So an unowned draft is not
+  claimed by the next sign-in, not laid into the form by itself, and above all not written onto an
+  application by `completePendingSave` - which runs for an *owned* draft and nothing else.
+  `ApplicationPage` offers it instead (`apply-draft-offer`) and a person says whether it is theirs.
+  Answers put in front of the wrong person are cleared by that person; answers saved onto the wrong
+  person's application are not, so the recoverable failure is the one to choose. Both shared-tab
+  paths - the expired session's owned draft and the walk-away unowned one - are pinned in
+  `front-end/e2e/applicant.spec.ts`, and no unit test can reach either.
 - **Every public page must work with no organizer session, and `meta: { public: true }` on the route
   is the only thing that says so** - `router/index.ts` and `App.vue` both read it, and they must
   keep reading the same field. `App.vue`'s `/check-session` probe redirects a session-less visitor
@@ -365,6 +379,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   before asking where it is: route components are lazily imported, so on a cold load the probe
   answers first while `matched` is still empty, and "is this route public" then asks about no route
   at all. `front-end/e2e/applicant.spec.ts` is what catches this; no unit test can.
+- **The organizer shell's 1000px width floor is the organizer's, not the app's**, and `meta.public`
+  is what says which is which (`App.vue`'s `public-shell` class). The organizer's views are tables,
+  floorplans and market setup, and they are entitled to that floor; the public pages are the only
+  ones a phone opens - an applicant reaches the application form from a link, with no account - and
+  inheriting it rendered every one of them zoomed out and scrolled sideways. Both boxes carry it
+  (`.app-container` and `.router-view`), so both drop it.
 
 ## Market Document Keys (Conventioner sharp edge)
 

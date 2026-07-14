@@ -6,7 +6,7 @@ import ApplicationFormFields from '@/components/application/ApplicationFormField
 import { getApiErrorMessage } from '@/utils/api';
 import { formValidationErrors, sortedFormFields } from '@/utils/applicationForm';
 import { fetchPublicApplicationForm } from '@/utils/publicApplicationForm';
-import { useApplicationStore } from '@/stores/application';
+import { useApplicationStore, type ApplicantDraft } from '@/stores/application';
 
 const route = useRoute();
 const router = useRouter();
@@ -48,7 +48,26 @@ onMounted(async () => {
   await completePendingSave();
 });
 
-// Prefill from what the applicant has already put into this market's form, from either of the two
+/**
+ * The unsaved answers this page may put back, as the store last read them out of storage. Held in a
+ * ref because storage is not reactive and this page changes it: a save clears it, and restoring or
+ * discarding the offer below settles it.
+ */
+const draft = ref<ApplicantDraft | null>(null);
+
+/**
+ * Answers this page will not put back by itself: they were typed before anyone signed in, so the
+ * only thing known about their author is that they used this tab - and a tab at a shared desk is not
+ * a person. They are offered instead, and the applicant looking at the screen says whether they are
+ * theirs. See `@/utils/applicantDraft`.
+ */
+const offeredDraft = computed(() => (draft.value && !draft.value.owned ? draft.value : null));
+
+function readDraft() {
+  draft.value = store.draftFor(marketSlug.value);
+}
+
+// Prefill from what this applicant has already put into this market's form, from either of the two
 // places it can be.
 //
 // The store's `application` is the server's copy. It belongs to the market its session was issued
@@ -56,17 +75,17 @@ onMounted(async () => {
 // any other condition is another market's answers, copied into this form wherever the two forms
 // share a field key.
 //
-// The draft is answers typed on this page and not yet saved - which, for a first-time applicant, is
-// all of them: "Save & Continue" cannot save anything before they have a session, so it sends them
-// to sign in first, and this page unmounts. It is layered *over* the saved answers because it is the
-// more recent typing, and it is read whether or not they are signed in: a visitor who backs out of
-// the login screen lands right back here, and their answers are still theirs.
+// The draft is answers typed on this page and not yet saved. Only an *owned* one is prefilled: it
+// was written under a verified session, so the product knows it is this applicant's - the save that
+// was interrupted by the token expiring is theirs to have back. An unowned draft is offered rather
+// than prefilled, which is `offeredDraft` above.
 watch(
   () => (signedIn.value ? store.application : null),
   (app) => {
+    readDraft();
     const merged = {
       ...(app?.formData ?? {}),
-      ...(store.draftAnswers(marketSlug.value) ?? {}),
+      ...(draft.value?.owned ? draft.value.answers : {}),
     };
     if (Object.keys(merged).length > 0) {
       formData.value = merged;
@@ -76,19 +95,23 @@ watch(
 );
 
 /**
- * The applicant pressed "Save & Continue", got sent to sign in, and has come back holding a session.
- * The save they asked for is still owed to them: the watcher above has already put their answers
- * back into the form, and this is what finishes the sentence the button started. Leaving it for them
- * to press a second time is the same broken promise, one step further along.
+ * The applicant pressed Save while signed in, the request 401'd on an expired token, and they signed
+ * back in as the same address and were sent here. The save is still owed to them: the watcher above
+ * has already put their answers back into the form, and this finishes the sentence the button
+ * started, because a mailed code proved the draft in storage is theirs.
+ *
+ * It runs for an owned draft and nothing else. An unowned one was typed by whoever was at this
+ * keyboard before any sign-in, and the applicant now signed in is not known to be that person - so
+ * saving it here would write a stranger's answers onto their application with nothing pressed. That
+ * is the one thing that cannot be undone by the person who sees it happen, so it is the one thing
+ * this page will not do: those answers get `offeredDraft`, and a button.
  *
  * A save that fails leaves the draft alone (see `saveApplication`), so nothing is lost by trying:
  * the answers stay on screen, the error says why, and the button is there to try again.
  */
 async function completePendingSave() {
   if (!signedIn.value || !isOpen.value) return;
-
-  const draft = store.draftAnswers(marketSlug.value);
-  if (!draft || Object.keys(draft).length === 0) return;
+  if (!draft.value?.owned) return;
 
   if (!validateAll()) return;
 
@@ -98,7 +121,27 @@ async function completePendingSave() {
     if (ok) saved.value = true;
   } finally {
     saving.value = false;
+    readDraft();
   }
+}
+
+/**
+ * The person at the screen says the offered answers are theirs. They go into the form and no
+ * further: the save stays where it belongs, behind the button they press themselves, having read
+ * what they are about to submit. Nothing here writes to the server.
+ */
+function restoreOfferedDraft() {
+  const offered = offeredDraft.value;
+  if (!offered) return;
+  formData.value = { ...formData.value, ...offered.answers };
+  validationErrors.value = {};
+  draft.value = null;
+}
+
+/** They are not theirs. A shared tab must not keep offering them to everyone who sits down at it. */
+function discardOfferedDraft() {
+  store.discardDraftAnswers(marketSlug.value);
+  draft.value = null;
 }
 
 function validateAll(): boolean {
@@ -121,6 +164,7 @@ async function submitForm() {
     if (signedIn.value) {
       const ok = await store.saveApplication(marketSlug.value, formData.value);
       if (ok) saved.value = true;
+      readDraft();
     } else {
       // Signing in is a redirect, and a redirect unmounts this form. The answers are handed to the
       // store *before* that happens, or the button labelled "Save" is the one that loses them.
@@ -185,6 +229,34 @@ function goToLogin() {
           <div v-if="saved" class="apply-saved" data-testid="apply-saved">
             Your application has been saved. You can return to
             <a href="#" @click.prevent="goToLogin">view or edit it</a> at any time.
+          </div>
+
+          <!-- Answers typed in this browser before anyone signed in. They are shown to nobody and
+               saved for nobody until a person says they are theirs: this device may be shared, and
+               the applicant who typed them may have walked away from it. -->
+          <div v-if="offeredDraft" class="apply-draft-offer" data-testid="apply-draft-offer">
+            <p class="apply-draft-offer-text">
+              Unsaved answers were entered on this device before signing in. If you entered them,
+              you can put them back into the form.
+            </p>
+            <div class="apply-draft-offer-actions">
+              <button
+                type="button"
+                class="apply-draft-restore-btn"
+                @click="restoreOfferedDraft"
+                data-testid="apply-draft-restore-button"
+              >
+                They're mine - restore them
+              </button>
+              <button
+                type="button"
+                class="apply-draft-discard-btn"
+                @click="discardOfferedDraft"
+                data-testid="apply-draft-discard-button"
+              >
+                Discard them
+              </button>
+            </div>
           </div>
 
           <ApplicationFormFields
@@ -316,6 +388,51 @@ function goToLogin() {
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.apply-draft-offer {
+  background: #e7f1ff;
+  border: 1px solid #86b7fe;
+  border-radius: 6px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.apply-draft-offer-text {
+  margin: 0;
+  font-family: 'Outfit Regular';
+  font-size: 14px;
+  line-height: 1.5;
+  color: #084298;
+}
+
+.apply-draft-offer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.apply-draft-restore-btn,
+.apply-draft-discard-btn {
+  border-radius: 5px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-family: 'Merge One';
+  font-size: 14px;
+}
+
+.apply-draft-restore-btn {
+  background: var(--mm-green);
+  color: white;
+  border: none;
+}
+
+.apply-draft-discard-btn {
+  background: transparent;
+  color: #084298;
+  border: 1px solid #86b7fe;
 }
 
 .apply-server-error {
