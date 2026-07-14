@@ -4,9 +4,9 @@ import { stack } from './e2e/helpers/stack'
 const BASE_PORT = parseInt(process.env.FRONTEND_PORT ?? '', 10) || stack().frontendPort
 
 const ciReporters = [
-  ['list'],
-  ['html', { open: 'never' }],
-  ['json', { outputFile: 'test-results/results.json' }],
+  ['list'] as const,
+  ['html', { open: 'never' }] as const,
+  ['json', { outputFile: 'test-results/results.json' }] as const,
 ]
 
 export default defineConfig({
@@ -18,7 +18,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   failOnFlakyTests: !!process.env.CI,
   workers: 1,
-  reporter: process.env.CI ? ciReporters : [['list']],
+  reporter: process.env.CI ? ciReporters : [['list'] as const],
   use: {
     baseURL: `http://localhost:${BASE_PORT}`,
     ignoreHTTPSErrors: true,

@@ -84,7 +84,6 @@ jobs:
       - run: docker compose up -d
       - run: ./scripts/seed_fixture.sh
       - name: Run Playwright tests
-        id: playwright
         working-directory: front-end
         run: npx playwright test
       - name: Report flaky tests
