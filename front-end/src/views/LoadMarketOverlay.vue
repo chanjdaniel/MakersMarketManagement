@@ -104,6 +104,7 @@ const formatDate = (dateString: string) => {
 }
 
 .window {
+    position: relative;
     width: 70%;
     max-width: 900px;
     height: 85%;

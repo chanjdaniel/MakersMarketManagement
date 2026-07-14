@@ -419,6 +419,7 @@ function handleClose() {
 }
 
 .window {
+    position: relative;
     width: 70%;
     max-width: 600px;
     max-height: 85%;
