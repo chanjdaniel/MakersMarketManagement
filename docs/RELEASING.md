@@ -110,6 +110,21 @@ It must never be set on a deployed environment.
 A deployment that terminates TLS at a proxy in front of Flask needs nothing here today: no code on this branch keys anything on the caller's IP address except the optional `remoteip` hint passed to reCAPTCHA.
 The trusted-hop configuration lands with the applicant endpoints and the rate limits that will key on that address.
 
+### The front end has one requirement too, and it is the other half of the reCAPTCHA pair
+
+| Variable | Where it is set | What an unset value would do |
+|----------|-----------------|------------------------------|
+| `VITE_RECAPTCHA_SITE_KEY` | The **front end's build environment** (Vercel: the front-end project's environment variables). The site key of the *same* reCAPTCHA property as the back end's `RECAPTCHA_SECRET_KEY` - the two are a matched pair, and a key from another property fails exactly as an absent one does. | The bundle would carry no site key, so it has no captcha to solve and sends a placeholder token instead. The back end verifies that token against Google, Google never issued it, and `POST /register` answers 400 - every organizer signup, on a deployment that looks healthy and logs nothing about it. |
+
+Making `RECAPTCHA_SECRET_KEY` a boot requirement is what makes this one load-bearing.
+Before, a back end with no secret took its dev-bypass path and waved the placeholder token through, so a front end with no site key worked.
+It cannot now: the back end refuses to boot without a real secret, and a real secret rejects a token Google did not issue.
+
+It is a **build-time** variable, not a runtime one - Vite bakes it into the bundle - so setting it after the fact does nothing until the front end is rebuilt.
+`vite build` refuses to produce a bundle without it (`front-end/vite.config.ts`), for the same reason the back end refuses to boot without its half: the alternative is a deployment that ships, looks fine, and cannot register a single organizer.
+The one exemption is `VITE_ALLOW_INSECURE_LOCAL_DEV=true`, which `front-end/.env.example` and `docker-compose.yml` set and which warns on every build it lets through.
+It must never be set on a deployed build.
+
 ## Pre-Deploy: Database Migrations
 
 Migrations are never run automatically - rewriting stored documents is a deliberate operator action.

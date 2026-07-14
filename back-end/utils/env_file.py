@@ -15,19 +15,32 @@ The real environment wins (``override=False``). A deployment's variables are set
 the container - must never be able to quietly replace them. The path is anchored to this file rather
 than searched from the working directory, so ``flask run`` from ``back-end/`` and ``python app.py``
 from anywhere read the same file.
+
+``ENV_FILE`` is read on every call rather than bound as a default argument, so a process that must
+not read a developer's file can say so by pointing it elsewhere. The test suite does exactly that
+(``tests/conftest.py``): a suite whose result depends on an untracked file on the machine running it
+is a suite that is green in CI and red on a laptop, and the ``.env`` a developer holds today is the
+one the *old* template wrote - three published placeholders, every one of them now refused by name.
 """
 
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
-ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+BACK_END_DIR = Path(__file__).resolve().parent.parent
+
+DEFAULT_ENV_FILE = BACK_END_DIR / ".env"
+
+# The file this process reads. Rebindable, and read on every call, so a process that must not read a
+# developer's file can say so by pointing it somewhere else.
+ENV_FILE = DEFAULT_ENV_FILE
 
 
-def load_env_file(path: Path = ENV_FILE) -> None:
-    """Load ``path`` into the environment, leaving anything already set alone.
+def load_env_file(path: Optional[Path] = None) -> None:
+    """Load ``path`` (``ENV_FILE`` by default) into the environment, leaving anything set alone.
 
     A missing file is not an error: the Docker stack and every deployment pass their configuration
     in directly, and a process with a fully configured environment has nothing to read.
     """
-    load_dotenv(path, override=False)
+    load_dotenv(path or ENV_FILE, override=False)

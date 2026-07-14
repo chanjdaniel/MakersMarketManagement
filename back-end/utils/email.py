@@ -1,5 +1,13 @@
 """
 Email service integration using Resend for sending verification emails, password reset emails, and OTP emails.
+
+Every value this module needs is read from the environment when it is used, never captured into a
+module global on the way up. The key used to be read at import and the client initialized there, and
+that made this module's answer a function of *when it was imported* rather than of the environment:
+the boot check could not be asked a question without knowing the import order, a ``.env`` loaded
+afterwards was a ``.env`` nobody saw, and a test that cleared ``RESEND_API_KEY`` cleared nothing -
+it had to know to patch a module attribute instead, which is a test passing for a reason unrelated
+to what it claims. ``utils.secret_key`` and ``utils.captcha`` read on call for the same reason.
 """
 
 import os
@@ -18,8 +26,16 @@ logger = logging.getLogger(__name__)
 
 RESEND_API_KEY_VAR = "RESEND_API_KEY"
 
+DEFAULT_FRONTEND_URL = "http://localhost:5173"
+DEFAULT_FROM_EMAIL = "onboarding@resend.dev"  # Default Resend email
 
-def sendable_key(api_key: str) -> str:
+
+def configured_value() -> str:
+    """What ``RESEND_API_KEY`` holds right now, whatever it holds."""
+    return os.getenv(RESEND_API_KEY_VAR, "")
+
+
+def sendable_key() -> str:
     """The key Resend can actually send with, or ``""`` when there is not one.
 
     A blank value is not a key, and neither is a placeholder this repository has published:
@@ -28,24 +44,30 @@ def sendable_key(api_key: str) -> str:
     rolled back behind it and nothing naming the variable. The check and the client ask this one
     question, so a deployment cannot pass the first and fail the second.
     """
-    return configured_secret(api_key)
+    return configured_secret(configured_value())
 
 
-# Initialize Resend client
-resend_api_key = os.getenv(RESEND_API_KEY_VAR, "")
-_resend_key = sendable_key(resend_api_key)
-resend_initialized = bool(_resend_key)
-if resend_initialized:
-    resend.api_key = _resend_key
-    logger.info("Resend API initialized successfully")
-elif is_published(resend_api_key):
-    logger.warning(
-        "%s is set to a placeholder this repository has published, which is not a key anything can "
-        "be sent with - treating it as unset",
-        RESEND_API_KEY_VAR,
-    )
-else:
-    logger.warning("RESEND_API_KEY not set - email sending will be disabled")
+def frontend_url() -> str:
+    """The origin the verification and reset links this module sends point back at."""
+    return os.getenv("FRONTEND_URL") or DEFAULT_FRONTEND_URL
+
+
+def from_email() -> str:
+    """The address this product's mail is sent from."""
+    return os.getenv("FROM_EMAIL") or DEFAULT_FROM_EMAIL
+
+
+def ready_mailer() -> bool:
+    """Point the Resend client at this process's key, and say whether there was one to point it at.
+
+    Called on the way into every send rather than once at import, so the key a send uses is the key
+    the boot check passed on.
+    """
+    key = sendable_key()
+    if not key:
+        return False
+    resend.api_key = key
+    return True
 
 
 class MailerNotConfiguredError(RuntimeError):
@@ -71,7 +93,7 @@ def assert_mailer_configured() -> None:
             published - which holds everywhere, escape hatch or not, the same way it does for the
             signing key.
     """
-    if is_published(resend_api_key):
+    if is_published(configured_value()):
         raise MailerNotConfiguredError(
             f"{RESEND_API_KEY_VAR} is set to a placeholder this repository has printed, not to a "
             f"key. Resend rejects it, so every verification link, reset link and OTP this product "
@@ -83,7 +105,7 @@ def assert_mailer_configured() -> None:
             f"{INSECURE_LOCAL_DEV_VAR}=true (with DISABLE_EMAIL=true) if this is a local "
             f"development machine."
         )
-    if resend_initialized:
+    if sendable_key():
         return
     if insecure_local_dev():
         warn_insecure_local_dev(f"outbound email ({RESEND_API_KEY_VAR})")
@@ -96,13 +118,6 @@ def assert_mailer_configured() -> None:
         f"that cannot onboard anybody. Set {RESEND_API_KEY_VAR} (https://resend.com/api-keys), or "
         f"set {INSECURE_LOCAL_DEV_VAR}=true if this really is a local development machine."
     )
-
-# Get frontend URL from environment
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
-FROM_EMAIL = os.getenv("FROM_EMAIL", "onboarding@resend.dev")  # Default Resend email
-
-logger.info(f"Email configuration: FROM_EMAIL={FROM_EMAIL}, FRONTEND_URL={FRONTEND_URL}")
-
 
 def _email_disabled() -> bool:
     """Return True when email sending is explicitly disabled for testing.
@@ -128,7 +143,7 @@ def send_verification_email(email: str, token: str) -> bool:
     Returns:
         True if email sent successfully, False otherwise
     """
-    verification_url = f"{FRONTEND_URL}/verify-email?token={token}"
+    verification_url = f"{frontend_url()}/verify-email?token={token}"
     
     html_content = f"""
     <!DOCTYPE html>
@@ -168,13 +183,13 @@ def send_verification_email(email: str, token: str) -> bool:
         logger.info("DISABLE_EMAIL is enabled - skipping verification email")
         return True
 
-    if not resend_initialized:
+    if not ready_mailer():
         logger.error("Cannot send verification email: RESEND_API_KEY not set")
         return False
-    
+
     try:
         response = resend.Emails.send({
-            "from": FROM_EMAIL,
+            "from": from_email(),
             "to": [email],
             "subject": "Verify Your Email Address",
             "html": html_content,
@@ -216,7 +231,7 @@ def send_password_reset_email(email: str, token: str) -> bool:
     Returns:
         True if email sent successfully, False otherwise
     """
-    reset_url = f"{FRONTEND_URL}/reset-password?token={token}"
+    reset_url = f"{frontend_url()}/reset-password?token={token}"
     
     html_content = f"""
     <!DOCTYPE html>
@@ -256,13 +271,13 @@ def send_password_reset_email(email: str, token: str) -> bool:
         logger.info("DISABLE_EMAIL is enabled - skipping password reset email")
         return True
 
-    if not resend_initialized:
+    if not ready_mailer():
         logger.error("Cannot send password reset email: RESEND_API_KEY not set")
         return False
-    
+
     try:
         response = resend.Emails.send({
-            "from": FROM_EMAIL,
+            "from": from_email(),
             "to": [email],
             "subject": "Reset Your Password",
             "html": html_content,
@@ -340,13 +355,13 @@ def send_otp_email(email: str, otp: str) -> bool:
         logger.info("DISABLE_EMAIL is enabled - skipping OTP email")
         return True
 
-    if not resend_initialized:
+    if not ready_mailer():
         logger.error("Cannot send OTP email: RESEND_API_KEY not set")
         return False
-    
+
     try:
         response = resend.Emails.send({
-            "from": FROM_EMAIL,
+            "from": from_email(),
             "to": [email],
             "subject": "Your Login Code",
             "html": html_content,

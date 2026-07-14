@@ -96,15 +96,22 @@ class TestEverySecretAsksThisModule:
     def test_it_is_the_one_that_decides(self, reads_the_secret):
         assert "configured_secret" in inspect.getsource(reads_the_secret)
 
-    def test_the_captcha_secret_comes_through_it(self, monkeypatch):
-        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", f"  {A_GENERATED_KEY}  ")
+    @pytest.mark.parametrize("variable, reads_the_secret", [
+        (secret_key_mod.SECRET_KEY_VAR, secret_key_mod.signing_secret),
+        (captcha_mod.RECAPTCHA_SECRET_KEY_VAR, captcha_mod.verifiable_secret),
+        (email_mod.RESEND_API_KEY_VAR, email_mod.sendable_key),
+    ])
+    def test_each_one_reads_its_variable_when_it_is_asked(
+        self, monkeypatch, variable, reads_the_secret,
+    ):
+        """Not once at import, which is the same rule seen from the other side.
 
-        assert captcha_mod.verifiable_secret() == A_GENERATED_KEY
+        Two of the three used to capture their key into a module global on the way up. That made the
+        boot check a function of import order rather than of the environment: a ``.env`` loaded after
+        them was a ``.env`` nobody saw, and a test that cleared the variable cleared nothing - it had
+        to know which module attribute to patch instead, and passed for a reason unrelated to what it
+        claimed. Setting the variable is now the only thing any of them needs to hear.
+        """
+        monkeypatch.setenv(variable, f"  {A_GENERATED_KEY}  ")
 
-    def test_the_mail_key_comes_through_it(self):
-        assert email_mod.sendable_key(f"  {A_GENERATED_KEY}  ") == A_GENERATED_KEY
-
-    def test_the_signing_secret_comes_through_it(self, monkeypatch):
-        monkeypatch.setenv("SECRET_KEY", f"  {A_GENERATED_KEY}  ")
-
-        assert secret_key_mod.signing_secret() == A_GENERATED_KEY
+        assert reads_the_secret() == A_GENERATED_KEY

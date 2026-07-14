@@ -300,21 +300,32 @@ docker-compose build --no-cache
 docker-compose up
 ```
 
-**Backend crash-loops with "`RESEND_API_KEY` / `RECAPTCHA_SECRET_KEY` is set to a placeholder this repository has printed"**:
+**Backend crash-loops with "`SECRET_KEY` / `RESEND_API_KEY` / `RECAPTCHA_SECRET_KEY` is set to a placeholder this repository has printed"**:
 
-Your root `.env` was copied from an older template that printed `RESEND_API_KEY=re_xxxxxxxx...` and `RECAPTCHA_SECRET_KEY=6Lcxxxxx...` as if they were fill-in values.
-They never worked - Resend rejects that key, and Google never issued that secret - but they are *truthy*, so the app took them for configured secrets and the failure landed at request time (a 500 per signup, a captcha verified against a key that cannot verify anything).
-They are refused by name at boot now, on a laptop as on a deployment, so the failure lands where it can be read.
-Blank both lines in your `.env` and leave the bypasses beside them on:
+An `.env` you already have was copied from an older template that printed `SECRET_KEY=your-secret-key-here-change-in-production`, `RESEND_API_KEY=re_xxxxxxxx...` and `RECAPTCHA_SECRET_KEY=6Lcxxxxx...` as if they were fill-in values.
+They never worked - Resend rejects that key, Google never issued that secret, and the signing key is one `git log` away from anybody - but they are *truthy*, so the app took them for configured secrets and the failure landed at request time (a 500 per signup, a captcha verified against a key that cannot verify anything) or, for the signing key, never at all.
+They are refused by name at boot now, on a laptop as on a deployment, escape hatch or not, so the failure lands where it can be read.
+
+**Two files can carry them, and the message does not say which one it read.** Check both:
+
+- **`back-end/.env`** - the file `cp .env.example .env` writes in step 5 of Backend Setup. Nothing read it before this change, so a stale one has been sitting there harmlessly; it is loaded now (`back-end/utils/env_file.py`), which is what makes it able to stop the process. This is the one you meet when you run the back end directly. `back-end/.env.example` ships the shape that boots.
+- **`.env` at the repository root** - what `docker-compose.yml` reads. This is the one you meet under `docker compose up`. `.env.example` at the root ships the shape that boots.
+
+In whichever file holds them, blank the secrets and leave the bypasses beside them on:
 
 ```bash
+SECRET_KEY=
 RESEND_API_KEY=
 RECAPTCHA_SECRET_KEY=
 DISABLE_EMAIL=true
 DISABLE_CAPTCHA=true
 ```
 
-`.env.example` at the repository root now ships exactly that shape, so `cp .env.example .env` is the other way out.
+In `back-end/.env` add `ALLOW_INSECURE_LOCAL_DEV=true` as well, which is what lets a process start with those blanks.
+Under `docker compose` you do not need it: `docker-compose.yml` sets it for the container.
+
+Both templates now ship exactly that shape, so `cp .env.example .env` - at the root, in `back-end/`, or both - is the other way out.
+A blank secret plus the escape hatch is what boots; a placeholder where a secret goes is what passes a check that asks only whether the variable is set, and then fails later, naming none of it.
 
 **Backend exits at startup with "Refusing to start: ... are not configured" (naming `SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `SESSION_TYPE`, ...)**:
 

@@ -269,16 +269,36 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   template and must boot as it stands (it sets the hatch); a placeholder that is *truthy* is worse
   than a blank, because the app takes it for a configured secret. A deploy doc that is wrong is worse
   than one that is missing, because it will be trusted.
-- **`back-end/.env` is read by `back-end/utils/env_file.py`, called on `app.py`'s first line**, before
-  `utils.captcha` and `utils.email` capture their keys at import - a `.env` loaded after them is a
-  `.env` nobody saw. Nothing loaded that file before this PR (no `load_dotenv`, no `python-dotenv`),
-  which was harmless only while the app booted regardless; with the five requirements in place, the
-  developer who followed `docs/STARTUP.md` met a refusal naming the variable they had just set. The
-  real environment wins (`override=False`): the Docker stack bind-mounts `back-end/` into the
-  container, so a stray `.env` must never be able to hand a process an escape hatch or a signing key
-  it did not choose. `test_the_local_development_template_boots_as_it_stands`
+- **Every secret is read from the environment when it is asked for, never captured at import.**
+  `signing_secret()`, `verifiable_secret()` and `sendable_key()` all call `os.getenv` per call, so the
+  boot check is a pure function of the environment rather than of the import order that produced it.
+  Two of them used to read their key into a module global on the way up, and that one difference cost
+  three separate bugs: a `.env` loaded afterwards was a `.env` nobody saw (hence the ordering rule
+  `app.py` used to hold in a comment), `monkeypatch.delenv` on those variables was a silent no-op, and
+  every test had to know which module attribute to patch instead - so a test that "cleared the secret"
+  cleared nothing and passed only because the shell running it happened to hold no key. Do not
+  reintroduce a module-level `os.getenv` for a secret. `resend.api_key` is set on the way into each
+  send (`ready_mailer()`), for the same reason.
+- **`back-end/.env` is read by `back-end/utils/env_file.py`, called on `app.py`'s first line** (before
+  the imports below it build their Mongo clients). Nothing loaded that file before this PR (no
+  `load_dotenv`, no `python-dotenv`), which was harmless only while the app booted regardless; with
+  the five requirements in place, the developer who followed `docs/STARTUP.md` met a refusal naming
+  the variable they had just set. The real environment wins (`override=False`): the Docker stack
+  bind-mounts `back-end/` into the container, so a stray `.env` must never be able to hand a process
+  an escape hatch or a signing key it did not choose. **The test suite reads no `.env` at all** -
+  `tests/conftest.py` points `utils.env_file.ENV_FILE` at a path that does not exist, because two test
+  modules import `app`, and a suite whose result depends on an untracked file is green in CI and red
+  on the laptop of anyone whose `.env` still carries what the old template printed.
+  `test_the_local_development_template_boots_as_it_stands`
   (`tests/test_public_endpoint_defenses.py`) runs the shipped template through the real boot check, so
   an edit that pins an origin or reinstates a placeholder fails there rather than on a laptop.
+- **`VITE_RECAPTCHA_SITE_KEY` is the other half of `RECAPTCHA_SECRET_KEY`, and it is a *build-time*
+  requirement.** Making the back-end secret mandatory is what made it load-bearing: a bundle with no
+  site key sends a placeholder token (`front-end/src/utils/captcha.ts`), which a back end with no
+  secret used to wave through and a back end with a real one hands to Google, who never issued it - so
+  every organizer signup 400s on a deployment that looks healthy. `vite build` therefore refuses a
+  bundle without it (`front-end/vite.config.ts`), with the same opt-in escape hatch by the same name
+  (`VITE_ALLOW_INSECURE_LOCAL_DEV`). A defense that exists on only one side of the wire is not one.
 
 ## Maintaining this file
 

@@ -6,7 +6,6 @@ import pytest
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import utils.captcha as captcha_mod
 from utils.captcha import (
     RECAPTCHA_SECRET_KEY_VAR,
     CaptchaNotConfiguredError,
@@ -14,6 +13,20 @@ from utils.captcha import (
     verify_recaptcha,
 )
 from utils.deployment import INSECURE_LOCAL_DEV_VAR
+
+
+@pytest.fixture(autouse=True)
+def no_secret(monkeypatch):
+    """A process holding no reCAPTCHA secret, unless the test says otherwise.
+
+    The environment, because that is what the module reads - on every call, not once at import. It
+    used to capture the key into a module global, which is why these tests used to patch the
+    attribute and clearing the *variable* said nothing at all: the ones that did passed only because
+    the shell running them happened to hold no key, and in a shell exporting a real one they would
+    have gone to Google instead of testing the bypass. Autouse, so a real key in a developer's shell
+    cannot decide what this file tests.
+    """
+    monkeypatch.delenv(RECAPTCHA_SECRET_KEY_VAR, raising=False)
 
 
 @pytest.fixture
@@ -26,18 +39,6 @@ def local_dev(monkeypatch):
 def deployed(monkeypatch):
     """Anything that has not said so -- which is every deployment, and the default."""
     monkeypatch.delenv(INSECURE_LOCAL_DEV_VAR, raising=False)
-
-
-@pytest.fixture
-def no_secret(monkeypatch):
-    """A process holding no reCAPTCHA secret.
-
-    The module global, not the environment: it is captured once at import, so clearing
-    ``RECAPTCHA_SECRET_KEY`` from the environment says nothing to this process. A test that cleared
-    the variable passed only because the shell running it happened not to have one - and in a shell
-    that exports a real key it would have gone to Google instead of testing the bypass.
-    """
-    monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", None)
 
 
 class TestCaptchaBypass:
@@ -73,7 +74,7 @@ class TestCaptchaBypass:
 
         monkeypatch.setattr("utils.captcha.requests.post", fake_post)
 
-        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", "prod-secret-key")
+        monkeypatch.setenv(RECAPTCHA_SECRET_KEY_VAR, "prod-secret-key")
 
         success, score = verify_recaptcha("dummy-token")
 
@@ -100,8 +101,7 @@ class TestCaptchaBypass:
 
         monkeypatch.setattr("utils.captcha.requests.post", fake_post)
 
-        import utils.captcha as captcha_mod
-        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", "test-secret-key")
+        monkeypatch.setenv(RECAPTCHA_SECRET_KEY_VAR, "test-secret-key")
 
         success, score = verify_recaptcha("bad-token")
 
@@ -111,8 +111,7 @@ class TestCaptchaBypass:
     def test_enforced_rejects_empty_token_with_secret_key(self, monkeypatch, local_dev):
         monkeypatch.delenv("DISABLE_CAPTCHA", raising=False)
 
-        import utils.captcha as captcha_mod
-        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", "test-secret-key")
+        monkeypatch.setenv(RECAPTCHA_SECRET_KEY_VAR, "test-secret-key")
 
         success, score = verify_recaptcha("", ip_address=None)
 
@@ -133,10 +132,7 @@ class TestAnUnconfiguredCaptchaFailsClosed:
     any more. The refusal is the default, and the exemption is what has to be asked for.
     """
 
-    def test_boot_refuses_when_the_secret_is_missing(self, monkeypatch, deployed):
-        import utils.captcha as captcha_mod
-        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", None)
-
+    def test_boot_refuses_when_the_secret_is_missing(self, deployed):
         with pytest.raises(CaptchaNotConfiguredError) as exc:
             assert_captcha_configured()
 
@@ -148,22 +144,16 @@ class TestAnUnconfiguredCaptchaFailsClosed:
         """The bug this replaces in one line: the image ships FLASK_ENV=development, so a gate keyed
         on it protected only the deployments that did not need protecting."""
         monkeypatch.setenv("FLASK_ENV", flask_env)
-        import utils.captcha as captcha_mod
-        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", None)
 
         with pytest.raises(CaptchaNotConfiguredError):
             assert_captcha_configured()
 
     def test_boot_is_allowed_once_the_secret_is_set(self, monkeypatch, deployed):
-        import utils.captcha as captcha_mod
-        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", "prod-secret-key")
+        monkeypatch.setenv(RECAPTCHA_SECRET_KEY_VAR, "prod-secret-key")
 
         assert_captcha_configured()
 
-    def test_an_opted_in_local_dev_machine_still_boots_without_a_secret(self, monkeypatch, local_dev):
-        import utils.captcha as captcha_mod
-        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", None)
-
+    def test_an_opted_in_local_dev_machine_still_boots_without_a_secret(self, local_dev):
         assert_captcha_configured()
 
     def test_an_unverifiable_token_is_not_a_verified_one(self, monkeypatch, deployed):
@@ -171,8 +161,6 @@ class TestAnUnconfiguredCaptchaFailsClosed:
         nothing to verify a token against, and that refuses rather than waves through.
         """
         monkeypatch.setenv("DISABLE_CAPTCHA", "true")
-        import utils.captcha as captcha_mod
-        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", None)
 
         success, score = verify_recaptcha("any-token")
 
@@ -183,8 +171,7 @@ class TestAnUnconfiguredCaptchaFailsClosed:
         """`RECAPTCHA_SECRET_KEY=" "` is the shape a half-edited .env line takes. Read raw, it is
         truthy, so the boot check passed and the 500 it exists to pre-empt arrived at request time
         instead."""
-        import utils.captcha as captcha_mod
-        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", "   ")
+        monkeypatch.setenv(RECAPTCHA_SECRET_KEY_VAR, "   ")
 
         with pytest.raises(CaptchaNotConfiguredError):
             assert_captcha_configured()
@@ -203,8 +190,7 @@ class TestAPlaceholderIsNotASecret:
     PUBLISHED_PLACEHOLDER = "6Lcxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
     def test_boot_refuses_the_placeholder_this_repo_published(self, monkeypatch, deployed):
-        import utils.captcha as captcha_mod
-        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", self.PUBLISHED_PLACEHOLDER)
+        monkeypatch.setenv(RECAPTCHA_SECRET_KEY_VAR, self.PUBLISHED_PLACEHOLDER)
 
         with pytest.raises(CaptchaNotConfiguredError) as exc:
             assert_captcha_configured()
@@ -216,8 +202,7 @@ class TestAPlaceholderIsNotASecret:
         """The escape hatch lets a process boot with *no* secret. It is not a licence to boot with
         one that cannot verify anything - and the `.env` carrying that placeholder is exactly the
         file that gets copied onto a deployment."""
-        import utils.captcha as captcha_mod
-        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", self.PUBLISHED_PLACEHOLDER)
+        monkeypatch.setenv(RECAPTCHA_SECRET_KEY_VAR, self.PUBLISHED_PLACEHOLDER)
 
         with pytest.raises(CaptchaNotConfiguredError):
             assert_captcha_configured()
@@ -233,8 +218,7 @@ class TestAPlaceholderIsNotASecret:
             raise AssertionError("a placeholder secret must never be sent to Google")
 
         monkeypatch.setattr("utils.captcha.requests.post", fake_post)
-        import utils.captcha as captcha_mod
-        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", self.PUBLISHED_PLACEHOLDER)
+        monkeypatch.setenv(RECAPTCHA_SECRET_KEY_VAR, self.PUBLISHED_PLACEHOLDER)
 
         success, score = verify_recaptcha("any-token")
 

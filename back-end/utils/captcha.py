@@ -13,6 +13,14 @@ actually perform.
 
 The escape hatch is ``ALLOW_INSECURE_LOCAL_DEV`` and nothing else. It is deliberately *not*
 ``FLASK_ENV``: see ``utils.deployment``.
+
+The secret is read from the environment on every call, never captured into a module global at
+import. A module that reads its key once, on the way up, is a module whose answer depends on when it
+happened to be imported: it made the boot check a function of import order rather than of the
+environment, it silently ignored anything ``load_dotenv`` put there afterwards, and it left the
+tests patching a module attribute - so a test that cleared the *variable* was testing nothing at all,
+and passed only because the shell running it happened to hold no key. ``utils.secret_key`` reads on
+call; so does this, and so does ``utils.email``.
 """
 
 import os
@@ -27,13 +35,17 @@ from utils.deployment import (
 )
 
 RECAPTCHA_SECRET_KEY_VAR = "RECAPTCHA_SECRET_KEY"
-RECAPTCHA_SECRET_KEY = os.getenv(RECAPTCHA_SECRET_KEY_VAR, "")
 RECAPTCHA_VERIFY_URL = "https://www.google.com/recaptcha/api/siteverify"
 MIN_SCORE = 0.5  # Minimum score threshold for reCAPTCHA v3
 
 
 class CaptchaNotConfiguredError(RuntimeError):
     """There is no reCAPTCHA secret, so the captcha gate would be a no-op."""
+
+
+def configured_value() -> str:
+    """What ``RECAPTCHA_SECRET_KEY`` holds right now, whatever it holds."""
+    return os.getenv(RECAPTCHA_SECRET_KEY_VAR, "")
 
 
 def verifiable_secret() -> str:
@@ -45,7 +57,7 @@ def verifiable_secret() -> str:
     a configured deployment. Boot and request time both ask this one question, so the check cannot
     pass on a value the request path then chokes on.
     """
-    return configured_secret(RECAPTCHA_SECRET_KEY)
+    return configured_secret(configured_value())
 
 
 def assert_captcha_configured() -> None:
@@ -57,7 +69,7 @@ def assert_captcha_configured() -> None:
             repository has published - which holds everywhere, escape hatch or not, the same way
             it does for the signing key.
     """
-    if is_published(RECAPTCHA_SECRET_KEY or ""):
+    if is_published(configured_value()):
         raise CaptchaNotConfiguredError(
             f"{RECAPTCHA_SECRET_KEY_VAR} is set to a placeholder this repository has printed, not "
             f"to a secret. Google never issued it, so every signup token would be verified against "

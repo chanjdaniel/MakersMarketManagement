@@ -16,6 +16,12 @@ Asking the question must not answer it: the check reads configuration, and insta
 is a separate call. flask-cors adds an ``after_request`` handler per invocation, so a check that
 configured the app as a side effect left one behind every time it was asked - which is why the test
 for that asserts against the module's *own* app object, the one a stray side effect would land on.
+
+And the check is a function of the environment, of nothing else. Every one of the five is read when
+it is asked for, so a fixture here says what a deployment holds by setting the variables an operator
+would set. Two of them used to be captured into module globals at import, which meant these fixtures
+had to name the attribute each module happened to remember its key in - a test speaking a private
+language, describing a deployment shape no operator can produce.
 """
 import pytest
 
@@ -24,8 +30,6 @@ from conftest import skip_without_real_dependencies
 skip_without_real_dependencies()
 
 import app as app_module
-import utils.captcha as captcha_mod
-import utils.email as email_mod
 
 from dotenv import dotenv_values
 from flask import Flask
@@ -33,14 +37,16 @@ from flask import Flask
 from utils.captcha import RECAPTCHA_SECRET_KEY_VAR
 from utils.cors import CORS_ALLOWED_ORIGINS_VAR, LOOPBACK_ORIGINS
 from utils.deployment import INSECURE_LOCAL_DEV_VAR
-from utils.email import RESEND_API_KEY_VAR, sendable_key
-from utils.env_file import ENV_FILE
+from utils.email import RESEND_API_KEY_VAR, assert_mailer_configured
+from utils.env_file import BACK_END_DIR
 from utils.secret_key import SECRET_KEY_VAR
 from utils.session_storage import IN_COOKIE, ON_DISK, SESSION_TYPE_VAR
 
-LOCAL_DEV_TEMPLATE = ENV_FILE.parent / ".env.example"
+LOCAL_DEV_TEMPLATE = BACK_END_DIR / ".env.example"
 
 A_REAL_SECRET = "SGDdxXn4YCG4M5pDeUjXTt8g0MSTXNKAtePMxo96b3s"
+
+A_REAL_MAIL_KEY = "re_QYt3bK9wLm2ZpR7vX4nHs6Ja"
 
 ALL_VARS = (
     RECAPTCHA_SECRET_KEY_VAR,
@@ -55,18 +61,15 @@ ALL_VARS = (
 def deployed(monkeypatch):
     """Anything that has not declared itself a local development machine - every deployment."""
     monkeypatch.delenv(INSECURE_LOCAL_DEV_VAR, raising=False)
-    monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", None)
-    monkeypatch.setattr(email_mod, "resend_initialized", False)
-    monkeypatch.delenv(SECRET_KEY_VAR, raising=False)
-    monkeypatch.delenv(CORS_ALLOWED_ORIGINS_VAR, raising=False)
-    monkeypatch.delenv(SESSION_TYPE_VAR, raising=False)
+    for variable in ALL_VARS:
+        monkeypatch.delenv(variable, raising=False)
 
 
 @pytest.fixture
 def configured(deployed, monkeypatch):
     """A deployment that has been told everything the check asks for."""
-    monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", "prod-secret")
-    monkeypatch.setattr(email_mod, "resend_initialized", True)
+    monkeypatch.setenv(RECAPTCHA_SECRET_KEY_VAR, "prod-secret")
+    monkeypatch.setenv(RESEND_API_KEY_VAR, A_REAL_MAIL_KEY)
     monkeypatch.setenv(SECRET_KEY_VAR, A_REAL_SECRET)
     monkeypatch.setenv(CORS_ALLOWED_ORIGINS_VAR, "https://app.example.com")
     monkeypatch.setenv(SESSION_TYPE_VAR, ON_DISK)
@@ -90,8 +93,8 @@ def test_the_refusal_points_at_the_deploy_documentation(deployed):
 
 
 def test_one_missing_variable_is_still_a_refusal(deployed, monkeypatch):
-    monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", "prod-secret")
-    monkeypatch.setattr(email_mod, "resend_initialized", True)
+    monkeypatch.setenv(RECAPTCHA_SECRET_KEY_VAR, "prod-secret")
+    monkeypatch.setenv(RESEND_API_KEY_VAR, A_REAL_MAIL_KEY)
     monkeypatch.setenv(SECRET_KEY_VAR, A_REAL_SECRET)
     monkeypatch.setenv(SESSION_TYPE_VAR, ON_DISK)
 
@@ -112,7 +115,7 @@ def test_a_deployment_that_cannot_send_mail_does_not_serve(deployed, monkeypatch
     With no key, registration rolls the account back and answers 500, and the operator is left to
     infer the variable from a broken signup. It is named here instead, once, before anybody tries.
     """
-    monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", "prod-secret")
+    monkeypatch.setenv(RECAPTCHA_SECRET_KEY_VAR, "prod-secret")
     monkeypatch.setenv(SECRET_KEY_VAR, A_REAL_SECRET)
     monkeypatch.setenv(CORS_ALLOWED_ORIGINS_VAR, "https://app.example.com")
     monkeypatch.setenv(SESSION_TYPE_VAR, ON_DISK)
@@ -174,9 +177,9 @@ def test_the_serverless_session_backend_installs_no_server_side_store(configured
 def test_a_local_development_machine_still_boots_without_a_mail_key(monkeypatch):
     """The escape hatch covers the mail key too: e2e runs with DISABLE_EMAIL and no Resend account."""
     monkeypatch.setenv(INSECURE_LOCAL_DEV_VAR, "true")
-    monkeypatch.setattr(email_mod, "resend_initialized", False)
+    monkeypatch.delenv(RESEND_API_KEY_VAR, raising=False)
 
-    email_mod.assert_mailer_configured()
+    assert_mailer_configured()
 
 
 def test_a_configured_deployment_boots_and_reports_what_it_found(configured):
@@ -226,14 +229,6 @@ def test_the_local_development_template_boots_as_it_stands(deployed, monkeypatch
     template = dotenv_values(LOCAL_DEV_TEMPLATE)
     for name, value in template.items():
         monkeypatch.setenv(name, value or "")
-    monkeypatch.setattr(
-        captcha_mod, "RECAPTCHA_SECRET_KEY", template.get(RECAPTCHA_SECRET_KEY_VAR) or "",
-    )
-    monkeypatch.setattr(
-        email_mod,
-        "resend_initialized",
-        bool(sendable_key(template.get(RESEND_API_KEY_VAR) or "")),
-    )
 
     defenses = app_module.check_public_endpoint_defenses()
 

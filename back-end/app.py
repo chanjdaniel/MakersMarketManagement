@@ -1,6 +1,7 @@
 # flask run --cert=adhoc > error.log 2>&1
-# First, before anything else: utils.captcha and utils.email read their keys at import, and the boot
-# check below reads the rest, so a `.env` loaded after them is a `.env` nobody saw. See utils.env_file.
+# First, before the imports below build their Mongo clients from it. Nothing reads a *secret* at
+# import any more - the three that used to are now read on call, so the boot check answers for the
+# environment as it stands rather than for the import order that produced it. See utils.env_file.
 from utils.env_file import load_env_file
 
 load_env_file()

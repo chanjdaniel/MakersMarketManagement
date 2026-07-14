@@ -246,7 +246,8 @@ This document outlines the complete technology stack used in the Conventioner ap
 ### Frontend
 - `VITE_FLASK_HOST` - API base path (default: `/api`)
 - `VITE_BACKEND_URL` - Backend URL for Vite proxy (default: `https://backend:5000`)
-- `VITE_RECAPTCHA_SITE_KEY` - Google reCAPTCHA v3 site key
+- `VITE_RECAPTCHA_SITE_KEY` - Google reCAPTCHA v3 site key, from the same reCAPTCHA property as the back end's `RECAPTCHA_SECRET_KEY`. **Required to build**: it is baked into the bundle, and without it the front end sends a placeholder token that the back end hands to Google, who never issued it - so every organizer signup is rejected. `vite build` refuses without it
+- `VITE_ALLOW_INSECURE_LOCAL_DEV` - the only thing that lets a bundle be built with no site key above (local development and E2E, where the back end runs with `DISABLE_CAPTCHA`). Opt-in, warns on every build it allows, and must never be set on a deployed build
 
 ## Project Structure
 

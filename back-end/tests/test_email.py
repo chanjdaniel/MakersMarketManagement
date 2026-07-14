@@ -42,10 +42,14 @@ def deployed(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def mailer_state(monkeypatch):
-    """The module reads its key once, at import. These are the two things it remembers."""
-    monkeypatch.setattr(email_mod, "resend_api_key", "")
-    monkeypatch.setattr(email_mod, "resend_initialized", False)
+def no_key(monkeypatch):
+    """A process holding no mail key, unless the test says otherwise.
+
+    The environment, because that is what the module reads - on every call, not once at import into a
+    pair of module globals a test had to know the names of. Autouse, so a real key exported in a
+    developer's shell cannot decide what this file tests.
+    """
+    monkeypatch.delenv(RESEND_API_KEY_VAR, raising=False)
 
 
 class TestADeploymentThatCannotSendMail:
@@ -57,8 +61,7 @@ class TestADeploymentThatCannotSendMail:
         assert INSECURE_LOCAL_DEV_VAR in str(exc.value)
 
     def test_boots_once_the_key_is_set(self, deployed, monkeypatch):
-        monkeypatch.setattr(email_mod, "resend_api_key", A_REAL_KEY)
-        monkeypatch.setattr(email_mod, "resend_initialized", True)
+        monkeypatch.setenv(RESEND_API_KEY_VAR, A_REAL_KEY)
 
         assert_mailer_configured()
 
@@ -68,7 +71,7 @@ class TestADeploymentThatCannotSendMail:
 
 class TestAPlaceholderIsNotAKey:
     def test_boot_refuses_the_placeholder_this_repo_published(self, deployed, monkeypatch):
-        monkeypatch.setattr(email_mod, "resend_api_key", PUBLISHED_PLACEHOLDER)
+        monkeypatch.setenv(RESEND_API_KEY_VAR, PUBLISHED_PLACEHOLDER)
 
         with pytest.raises(MailerNotConfiguredError) as exc:
             assert_mailer_configured()
@@ -80,29 +83,38 @@ class TestAPlaceholderIsNotAKey:
         """The escape hatch lets a process boot with *no* key. It is not a licence to boot with one
         Resend rejects - and the `.env` carrying that placeholder is exactly the file that gets
         copied onto a deployment."""
-        monkeypatch.setattr(email_mod, "resend_api_key", PUBLISHED_PLACEHOLDER)
+        monkeypatch.setenv(RESEND_API_KEY_VAR, PUBLISHED_PLACEHOLDER)
 
         with pytest.raises(MailerNotConfiguredError):
             assert_mailer_configured()
 
-    def test_it_never_becomes_the_key_the_mailer_sends_with(self):
-        """What the module asks at import before initializing the client. Initialized on a
-        placeholder, it would report a configured mailer to the boot check and 500 on every send."""
-        assert sendable_key(PUBLISHED_PLACEHOLDER) == ""
+    def test_it_never_becomes_the_key_the_mailer_sends_with(self, monkeypatch):
+        """What the module asks on the way into every send. Handed to the client, it would report a
+        configured mailer to the boot check and 500 on every send."""
+        monkeypatch.setenv(RESEND_API_KEY_VAR, PUBLISHED_PLACEHOLDER)
+
+        assert sendable_key() == ""
+        assert not email_mod.ready_mailer()
 
 
 class TestABlankKeyIsNoKey:
     def test_whitespace_is_not_a_key(self, deployed, monkeypatch):
         """`RESEND_API_KEY=" "` is what a half-edited .env line looks like. Read raw it is truthy,
         so the check passed and the failure it exists to pre-empt arrived at request time."""
-        monkeypatch.setattr(email_mod, "resend_api_key", "   ")
+        monkeypatch.setenv(RESEND_API_KEY_VAR, "   ")
 
         with pytest.raises(MailerNotConfiguredError):
             assert_mailer_configured()
 
-    def test_whitespace_does_not_initialize_the_mailer(self):
-        assert sendable_key("   ") == ""
+    def test_whitespace_does_not_ready_the_mailer(self, monkeypatch):
+        monkeypatch.setenv(RESEND_API_KEY_VAR, "   ")
 
-    def test_a_real_key_does(self):
+        assert sendable_key() == ""
+        assert not email_mod.ready_mailer()
+
+    def test_a_real_key_does(self, monkeypatch):
         """The floor under the two above: this check must still recognize an actual key."""
-        assert sendable_key(A_REAL_KEY) == A_REAL_KEY
+        monkeypatch.setenv(RESEND_API_KEY_VAR, A_REAL_KEY)
+
+        assert sendable_key() == A_REAL_KEY
+        assert email_mod.ready_mailer()

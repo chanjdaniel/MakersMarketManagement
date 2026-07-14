@@ -85,6 +85,10 @@ services:
       - VITE_FLASK_HOST=/api
       - VITE_BACKEND_URL=https://backend:5000
       - VITE_RECAPTCHA_SITE_KEY=${RECAPTCHA_SITE_KEY:-}
+      # This stack is a local development one, and it says so - the same declaration the back end
+      # makes with ALLOW_INSECURE_LOCAL_DEV. It is what lets the front end run with no reCAPTCHA
+      # site key, sending a placeholder token that only a back end with DISABLE_CAPTCHA accepts.
+      - VITE_ALLOW_INSECURE_LOCAL_DEV=true
     ports:
       - "5173:5173"
     volumes:

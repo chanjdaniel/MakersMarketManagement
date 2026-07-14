@@ -39,6 +39,18 @@ Setting it for the first time, or rotating it, ends every session signed with th
 `null` installs no server-side store at all - Flask signs the session into the cookie, which is the only place a serverless function can keep one.
 Nothing keys on `FLASK_ENV` any more - it defaulted to `development` in our own image, so every check that read it was exempting the deployments it existed for, and the old `SESSION_TYPE` default was derived from exactly that. Set the variables above by name instead.
 
+#### Required on the front-end project (build-time):
+```
+VITE_RECAPTCHA_SITE_KEY=<the reCAPTCHA v3 site key from the same property as RECAPTCHA_SECRET_KEY above>
+```
+
+This is set on the **front end's** Vercel project, not this one, and it is the other half of the back end's `RECAPTCHA_SECRET_KEY`: the two must come from the same reCAPTCHA property.
+Vite bakes it into the bundle at build time, so setting it later does nothing until the front end is rebuilt.
+
+A front end deployed without it ships a bundle that has no captcha to solve and sends a placeholder token.
+The back end no longer waves that through - it has a real secret now, and Google never issued that token - so `POST /register` answers 400 and **no organizer can sign up**, on a deployment that otherwise looks healthy.
+`vite build` refuses to produce such a bundle for exactly that reason; the refusal names the variable.
+
 #### Optional (if using individual MongoDB params instead of URI):
 ```
 MONGODB_HOST=your-mongodb-host
