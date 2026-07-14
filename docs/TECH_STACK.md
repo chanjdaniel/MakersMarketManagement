@@ -232,8 +232,8 @@ This document outlines the complete technology stack used in the Conventioner ap
 - `FROM_EMAIL` - Email address to send from (default: `onboarding@resend.dev`)
 - `RECAPTCHA_SECRET_KEY` - Google reCAPTCHA v3 secret key. **Required**: the app refuses to boot without it
 - `CORS_ALLOWED_ORIGINS` - Comma-separated browser origins allowed to make credentialed requests (e.g., `https://app.example.com`). **Required**: the app refuses to boot without it, and `*` is refused
-- `SECRET_KEY` - Signs the Flask session cookie. **Required**: there is no fallback, and the app refuses to boot without it
-- `ALLOW_INSECURE_LOCAL_DEV` - Local-development escape hatch for the four required variables above (default OFF; set `true`/`1`). Never set it on a deployment
+- `SECRET_KEY` - Signs the Flask session cookie. **Required**: there is no fallback, and the app refuses to boot without it. Must be at least 32 characters, and every value this repository has published (the old `TEMP_KEY_CHANGE_IN_PRODUCTION` fallback, the env-template and deploy-guide placeholders) is refused by name - it is readable by anyone who can read the repo. Rotating it ends every session signed with the old key
+- `ALLOW_INSECURE_LOCAL_DEV` - Local-development escape hatch for the five required variables above (default OFF; set `true`/`1`). Never set it on a deployment
 - `DISABLE_CAPTCHA` - Test-only flag to skip reCAPTCHA verification (default OFF; set `true`/`1`). Honored only when `ALLOW_INSECURE_LOCAL_DEV` is also set
 - `DISABLE_EMAIL` - Test-only flag to skip sending verification, password reset, and OTP emails via Resend, treating them as sent (default OFF; set `true`/`1`). Honored only when `ALLOW_INSECURE_LOCAL_DEV` is also set
 - `MONGODB_HOST` - MongoDB hostname (default: `mongodb` in Docker, `localhost` locally)
@@ -241,7 +241,7 @@ This document outlines the complete technology stack used in the Conventioner ap
 - `MONGODB_USER` - MongoDB username (default: `admin`)
 - `MONGODB_PASSWORD` - MongoDB password (default: `secret`)
 - `MONGODB_DB` - Database name (default: `conventioner`)
-- `SESSION_TYPE` - Session storage (default: `filesystem`; a serverless deployment must set `null`)
+- `SESSION_TYPE` - Where the organizer's session is kept: `filesystem` (on local disk: a container or VM) or `null` (in the signed cookie only: a serverless deployment, which has no disk that outlives a request). **Required**: there is deliberately no default, because neither value is right for both hosts, and the app refuses to boot without it
 
 ### Frontend
 - `VITE_FLASK_HOST` - API base path (default: `/api`)

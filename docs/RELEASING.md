@@ -64,24 +64,30 @@ Once `v0.1.0` is tagged, remove the `release-as` field from `release-please-conf
 
 ## Pre-Deploy: Required Production Environment
 
-The back end **refuses to start** unless all four of these are set, and it fails at import, so a deployment that is missing one serves nothing at all.
+The back end **refuses to start** unless all five of these are set, and it fails at import, so a deployment that is missing one serves nothing at all.
 Set them in the hosting environment **before** promoting `dev` → `main`.
 The startup log names every variable that is missing, all of them at once.
 
 Three of them are defenses, and each fails *silently* when unset - it stops defending and says nothing.
-The fourth is the mail key, and it is required for the opposite reason: unset, it breaks every route into an organizer account, one 500 at a time, and none of those 500s names it.
+The other two are required for the opposite reason: unset, the mail key breaks every route into an organizer account one 500 at a time, and the session backend sends a serverless deployment looking for a disk it does not have - and neither of those failures names the variable behind it.
 
 | Variable | What it is | What an unset value would do |
 |----------|------------|------------------------------|
-| `SECRET_KEY` | A long random string. Signs the Flask session cookie. Generate with `python -c 'import secrets; print(secrets.token_urlsafe(48))'`. | The session cookie would be signed with a key published in this repository, so anyone could forge a session for any organizer and read and write their markets, vendors and applications - no password, no login. |
+| `SECRET_KEY` | A long random string, at least 32 characters. Signs the Flask session cookie. Generate with `python -c 'import secrets; print(secrets.token_urlsafe(48))'`. | The session cookie would be signed with a key published in this repository, so anyone could forge a session for any organizer and read and write their markets, vendors and applications - no password, no login. |
 | `RECAPTCHA_SECRET_KEY` | The reCAPTCHA v3 secret ([admin console](https://www.google.com/recaptcha/admin)). Gates the public organizer signup endpoint (`POST /register`). | The captcha would pass every caller, leaving an unauthenticated endpoint that writes a user document and sends mail from our domain with nothing in front of it. |
 | `CORS_ALLOWED_ORIGINS` | The comma-separated list of browser origins allowed to make credentialed requests to the API, each written exactly as a browser sends it - `https://app.example.com`, no trailing slash, no path. Usually just the front end's own origin. | The API answers cross-site requests with `Access-Control-Allow-Credentials: true`, and the organizer's session cookie is `SameSite=None`, so with no origin list every website an organizer visits could read and write the organizer API - markets, vendors, applications - as them. `*` is refused for the same reason. |
 | `RESEND_API_KEY` | The Resend API key ([dashboard](https://resend.com/api-keys)). Delivers the email-verification link, the password-reset link, and the OTP login code. | No organizer could get an account at all: registration rolls the new user back and answers 500 when the verification mail cannot be sent, an unverified account cannot log in, and password reset and OTP answer 500. The deployment would look healthy and onboard nobody. |
+| `SESSION_TYPE` | Where the organizer's session is kept: `null` on a serverless host (Vercel), which keeps it in the signed cookie, or `filesystem` on a container or VM, which keeps it on local disk. | Neither value is right for both hosts, so there is no default to fall back on. A serverless deployment that got `filesystem` would go looking for a disk that does not outlive a request: it raises at import, every request answers 500, and nothing in the log names this variable. It used to be derived from `FLASK_ENV`, which our own image pins to `development` - so the derivation answered `filesystem` on precisely the deployments that have no filesystem. |
 
 There is deliberately **no default** for any of them.
 A default that quietly becomes the production value is the failure each of these checks exists to prevent - the signing key was such a default, and it was a literal committed to this repository.
 
-The one exemption is `ALLOW_INSECURE_LOCAL_DEV=true`, which `docker-compose.yml` sets and which logs every defense it turns off.
+For the same reason, **`SECRET_KEY` refuses the values this repository has published**, including the old `TEMP_KEY_CHANGE_IN_PRODUCTION` fallback and the placeholders the env template and this guide once carried.
+They are all one `git log` away from anybody, so setting one back would clear the boot refusal and leave the vulnerability exactly where it was.
+Note that **setting `SECRET_KEY` for the first time, or rotating it, ends every session signed with the old key**: organizers are asked to log in again, once.
+That is the price of the key not being public, and it is not a reason to reach for the old one.
+
+The one exemption is `ALLOW_INSECURE_LOCAL_DEV=true`, which `docker-compose.yml` and `back-end/.env.example` set and which logs every defense it turns off.
 It must never be set on a deployed environment.
 
 A deployment that terminates TLS at a proxy in front of Flask needs nothing here today: no code on this branch keys anything on the caller's IP address except the optional `remoteip` hint passed to reCAPTCHA.

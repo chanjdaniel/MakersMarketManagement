@@ -11,6 +11,16 @@ public-endpoint defenses, and the refusal names the variable -- the same shape a
 secret and the origin list, and for the same reason: a security control keyed on a variable whose
 default is the insecure value is not a control.
 
+Removing the fallback is only half of it, because the fallback is still readable - in this
+repository's history, and in every deployment currently signing with it. An operator meeting the new
+boot refusal has an incentive pointing straight back at it: a fresh key logs out every organizer, and
+the old literal does not. Pasting it into ``SECRET_KEY`` would clear the refusal and change nothing
+at all, so the values this repository has ever published are refused by name. A published value is
+not a secret, whoever typed it in and wherever they typed it.
+
+A short key is refused for the neighbouring reason: it is not a secret either, it is a guess away
+from one, and the check exists to say so before the deployment does.
+
 The local-development escape hatch (see ``utils.deployment``) does not restore a fallback either. It
 mints a *random* secret for the life of the process, which is the part that matters: a value nobody
 can predict cannot be forged against, and a value that changes every boot cannot quietly become the
@@ -32,6 +42,19 @@ logger = logging.getLogger(__name__)
 
 SECRET_KEY_VAR = "SECRET_KEY"
 
+MINIMUM_SECRET_LENGTH = 32
+
+# Every value this repository has ever shipped as a signing key: the fallback that used to live in
+# this module, and the placeholders in the env template and the deploy guide. Each is one `git log`
+# away from anybody, so each is a key that is already published - and a published key is exactly
+# what a deployment reaching for the lowest-friction way past the boot refusal would reach for.
+PUBLISHED_SECRETS = frozenset({
+    "temp_key_change_in_production",
+    "your-secret-key-here-change-in-production",
+    "your-strong-secret-key-here",
+    "your-secret-key-here",
+})
+
 _ephemeral_secret = None
 
 
@@ -44,10 +67,12 @@ def signing_secret() -> str:
 
     Raises:
         SecretKeyNotConfiguredError: when no secret is configured and this is not an opted-in
-            local development process.
+            local development process, when the configured value is one this repository has
+            published, or when it is too short to be a secret.
     """
     configured = os.getenv(SECRET_KEY_VAR, "").strip()
     if configured:
+        _reject_a_secret_that_is_not_one(configured)
         return configured
 
     if insecure_local_dev():
@@ -63,6 +88,40 @@ def signing_secret() -> str:
         f"`python -c 'import secrets; print(secrets.token_urlsafe(48))'`), or set "
         f"{INSECURE_LOCAL_DEV_VAR}=true if this really is a local development machine."
     )
+
+
+def _reject_a_secret_that_is_not_one(configured: str) -> None:
+    """Refuse the values that are already public, and the ones too short to stay private.
+
+    This holds on a development machine too. The escape hatch exists so a process with *no* key can
+    still boot, with a random one; it is not a licence to sign with a key the internet already has,
+    and a ``.env`` carrying a published literal is exactly the file that gets copied to a deployment.
+
+    Raises:
+        SecretKeyNotConfiguredError: what a published or too-short key amounts to.
+    """
+    if configured.lower() in PUBLISHED_SECRETS:
+        raise SecretKeyNotConfiguredError(
+            f"{SECRET_KEY_VAR} is set to a value this repository has published. It appears in the "
+            f"source history, the env template or the deploy guide, so it is readable by anyone who "
+            f"can read the repo - which makes it a key, not a secret: a session cookie naming any "
+            f"organizer can be minted from it and spent against the organizer API with no password "
+            f"and no login. That is the exact vulnerability this check exists to close, and setting "
+            f"the old value back would close nothing. Generate a real one with "
+            f"`python -c 'import secrets; print(secrets.token_urlsafe(48))'`. Rotating the key ends "
+            f"every session currently signed with it, so organizers will be asked to log in again "
+            f"once; a key everyone already holds is not the alternative."
+        )
+
+    if len(configured) < MINIMUM_SECRET_LENGTH:
+        raise SecretKeyNotConfiguredError(
+            f"{SECRET_KEY_VAR} is {len(configured)} characters long. A signing key is only worth the "
+            f"work it takes to guess: this one signs the session cookie the organizer API "
+            f"authenticates every request with, and a short one is brute-forced offline from a "
+            f"single cookie, after which sessions for any organizer can be minted at will. At least "
+            f"{MINIMUM_SECRET_LENGTH} characters, and random rather than chosen - "
+            f"`python -c 'import secrets; print(secrets.token_urlsafe(48))'`."
+        )
 
 
 def _ephemeral_dev_secret() -> str:

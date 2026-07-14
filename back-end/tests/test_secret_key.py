@@ -4,6 +4,13 @@ The fallback that used to stand in for it was a literal in this repository, whic
 published key: the Flask session cookie every organizer request authenticates with was signed with a
 string anyone could read off the source, so anyone could write one. A secret with a default is not a
 secret, and these tests hold the line that there is no default.
+
+Deleting the fallback is not the whole of it, though, because the fallback is still readable - in
+this repository's history, and in the environment of every deployment that is signing with it right
+now. An operator meeting the new boot refusal has an incentive pointing straight back at it: a fresh
+key ends every organizer's session, and the old literal does not. So the values this repository has
+ever published are refused by name, on a deployment and on a laptop alike, and a key too short to
+stay private is refused beside them. A published value is not a secret, whoever typed it in.
 """
 
 import pytest
@@ -15,12 +22,16 @@ skip_without_real_dependencies()
 import utils.secret_key as secret_key_module
 from utils.deployment import INSECURE_LOCAL_DEV_VAR
 from utils.secret_key import (
+    MINIMUM_SECRET_LENGTH,
+    PUBLISHED_SECRETS,
     SECRET_KEY_VAR,
     SecretKeyNotConfiguredError,
     signing_secret,
 )
 
 PUBLISHED_FALLBACK = "TEMP_KEY_CHANGE_IN_PRODUCTION"
+
+A_REAL_SECRET = "SGDdxXn4YCG4M5pDeUjXTt8g0MSTXNKAtePMxo96b3s"
 
 
 @pytest.fixture(autouse=True)
@@ -70,9 +81,74 @@ class TestADeploymentWithoutASecret:
             signing_secret()
 
     def test_a_configured_secret_is_the_one_used(self, monkeypatch, deployed):
-        monkeypatch.setenv(SECRET_KEY_VAR, "a-real-secret")
+        monkeypatch.setenv(SECRET_KEY_VAR, A_REAL_SECRET)
 
-        assert signing_secret() == "a-real-secret"
+        assert signing_secret() == A_REAL_SECRET
+
+
+class TestASecretThisRepositoryHasAlreadyPublished:
+    """Removing the fallback achieves nothing if the operator can paste the fallback back in.
+
+    And the incentive points exactly there: the deployment is *currently signing* with that literal,
+    a new key logs every organizer out, and the old one is a `git log` away. Setting it back would
+    clear the boot refusal and leave the vulnerability precisely where it was.
+    """
+
+    @pytest.mark.parametrize("published", sorted(PUBLISHED_SECRETS))
+    def test_every_value_this_repo_ever_shipped_is_refused(
+        self, monkeypatch, deployed, published,
+    ):
+        monkeypatch.setenv(SECRET_KEY_VAR, published)
+
+        with pytest.raises(SecretKeyNotConfiguredError) as exc:
+            signing_secret()
+
+        assert "published" in str(exc.value)
+
+    def test_the_removed_fallback_is_one_of_them(self, monkeypatch, deployed):
+        """The literal this PR deletes from the source. It is still in the history, so it is still
+        a key anybody can read - which is all a signing secret has to be to be worthless."""
+        monkeypatch.setenv(SECRET_KEY_VAR, PUBLISHED_FALLBACK)
+
+        with pytest.raises(SecretKeyNotConfiguredError):
+            signing_secret()
+
+    def test_the_case_it_is_typed_in_does_not_launder_it(self, monkeypatch, deployed):
+        monkeypatch.setenv(SECRET_KEY_VAR, PUBLISHED_FALLBACK.lower())
+
+        with pytest.raises(SecretKeyNotConfiguredError):
+            signing_secret()
+
+    def test_a_local_dev_machine_is_refused_it_too(self, monkeypatch, local_dev):
+        """The escape hatch lets a process boot with *no* key, signing with a random one. It is not
+        a licence to sign with a key the internet holds - and the `.env` carrying that literal is
+        exactly the file that gets copied onto a deployment."""
+        monkeypatch.setenv(SECRET_KEY_VAR, PUBLISHED_FALLBACK)
+
+        with pytest.raises(SecretKeyNotConfiguredError):
+            signing_secret()
+
+
+class TestASecretTooShortToStayOne:
+    def test_a_short_key_is_refused(self, monkeypatch, deployed):
+        """It signs the cookie the organizer API authenticates every request with, and it is
+        brute-forced offline from a single one of those cookies."""
+        monkeypatch.setenv(SECRET_KEY_VAR, "x" * (MINIMUM_SECRET_LENGTH - 1))
+
+        with pytest.raises(SecretKeyNotConfiguredError) as exc:
+            signing_secret()
+
+        assert str(MINIMUM_SECRET_LENGTH) in str(exc.value)
+
+    def test_the_generated_key_the_refusal_recommends_is_accepted(self, monkeypatch, deployed):
+        """`secrets.token_urlsafe(48)` is what every refusal and every doc tells an operator to run,
+        so the length floor must not refuse what it asks for."""
+        import secrets
+
+        generated = secrets.token_urlsafe(48)
+        monkeypatch.setenv(SECRET_KEY_VAR, generated)
+
+        assert signing_secret() == generated
 
 
 class TestAnOptedInLocalDevMachine:

@@ -129,7 +129,15 @@ docker run -d \
   ```bash
    mkdir -p flask_session csv_exports
   ```
-5. Initialize the database:
+5. Create the environment file:
+  ```bash
+   cp .env.example .env
+  ```
+   The template boots as it stands - no keys to go and fetch, no accounts to sign up for.
+   It works because it sets `ALLOW_INSECURE_LOCAL_DEV=true`, which is what lets a process start without the five variables a deployment must set (`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY`, `SESSION_TYPE`), and which names in the log everything it turns off.
+   Sessions are then signed with a random per-process key, so restarting the back end logs you out; set `SECRET_KEY` to a generated value if that gets annoying.
+   Never set `ALLOW_INSECURE_LOCAL_DEV` on a deployed environment - see [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment).
+6. Initialize the database:
   ```bash
    python init_database.py
   ```

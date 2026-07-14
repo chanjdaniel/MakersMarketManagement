@@ -224,22 +224,40 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   committed literal, and the CORS policy gated on `FLASK_ENV`, whose default (`development`) ran
   the permissive branch on every deployment.
 - **There is no fallback signing secret anywhere in this repository** and there must never be one
-  again - not even "for dev". A committed fallback is a published key.
-- **`ALLOW_INSECURE_LOCAL_DEV` is the ONLY escape hatch** for the four boot-time requirements
-  (`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY`). It defaults to
-  OFF - the secure state is the one you get by forgetting.
-- **A boot requirement must defend something this branch actually serves.** Each of the four is
+  again - not even "for dev". A committed fallback is a published key. Deleting one is only half the
+  job, because it stays readable in the history: `PUBLISHED_SECRETS` (`back-end/utils/secret_key.py`)
+  refuses every value this repo has ever printed as a key, on a laptop as on a deployment. An
+  operator meeting the boot refusal has an incentive to paste the old literal back (a fresh key logs
+  every organizer out; the old one does not), and that would clear the refusal while changing nothing.
+  Add any future placeholder to that set, and never let a doc or template print a usable-looking key.
+- **`ALLOW_INSECURE_LOCAL_DEV` is the ONLY escape hatch** for the five boot-time requirements
+  (`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY`, `SESSION_TYPE`).
+  It defaults to OFF - the secure state is the one you get by forgetting. It does *not* excuse a
+  published `SECRET_KEY`: the hatch exists so a process with **no** key can boot with a random one.
+- **A boot requirement must defend something this branch actually serves.** Each of the five is
   reachable today: the session cookie, `POST /register`'s captcha, the organizer API's origin list,
-  and the mail that carries every verification link, reset link and OTP. Rate limiting and
-  `TRUSTED_PROXY_HOPS` were cut from this PR and land with the applicant endpoints they key on: a
-  requirement with nothing behind it teaches operators to work around the check.
+  the mail that carries every verification link, reset link and OTP, and the store the session is
+  kept in. Rate limiting and `TRUSTED_PROXY_HOPS` were cut from this PR and land with the applicant
+  endpoints they key on: a requirement with nothing behind it teaches operators to work around the
+  check.
 - **Nothing reads `FLASK_ENV`.** The Dockerfile sets it to `development`, so anything keyed on it
-  reads the same on a deployment as on a laptop - that is how the CORS hole survived. Session
-  storage is `SESSION_TYPE` (serverless must set `null`), and `SESSION_COOKIE_SECURE` is not
-  configurable at all, because a `SameSite=None` cookie is only accepted by a browser when Secure.
+  reads the same on a deployment as on a laptop - that is how the CORS hole survived, and how
+  `SESSION_TYPE` came to default to `filesystem` on serverless hosts that have no disk. `SESSION_TYPE`
+  is therefore configuration with no default (`back-end/utils/session_storage.py`), and
+  `SESSION_COOKIE_SECURE` is not configurable at all, because a `SameSite=None` cookie is only
+  accepted by a browser when Secure.
+- **`SESSION_TYPE=null` installs no session store.** flask-session has no `null` backend and raises
+  on one; Flask's own interface signs the session into the cookie, which is the only store a
+  serverless function has. Do not "fix" a `null` deployment by handing it to `Session(app)`.
+- **The check is a check.** `check_public_endpoint_defenses()` reads configuration and returns it;
+  `configure_public_endpoint_defenses()` is the only thing that touches the app. Keep them apart:
+  flask-cors installs an `after_request` handler per call, so a check with side effects stacked one
+  onto the live app every time anything asked it a question.
 - **The required production environment is documented in `docs/RELEASING.md`** - keep that table
-  in step with the boot check in `back-end/app.py`. A deploy doc that is wrong is worse than one
-  that is missing, because it will be trusted.
+  in step with the boot check in `back-end/app.py`. `back-end/.env.example` is the local-development
+  template and must boot as it stands (it sets the hatch); a placeholder that is *truthy* is worse
+  than a blank, because the app takes it for a configured secret. A deploy doc that is wrong is worse
+  than one that is missing, because it will be trusted.
 
 ## Maintaining this file
 

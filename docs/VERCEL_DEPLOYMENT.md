@@ -15,7 +15,7 @@ Set these in your Vercel project settings:
 
 #### Required for Production:
 ```
-SECRET_KEY=your-strong-secret-key-here
+SECRET_KEY=<generate: python -c 'import secrets; print(secrets.token_urlsafe(48))'>
 SESSION_TYPE=null
 MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/conventioner?retryWrites=true&w=majority
 # Note: MONGODB_URI is automatically set if you use MongoDB Atlas integration from Vercel Marketplace
@@ -25,11 +25,16 @@ CORS_ALLOWED_ORIGINS=https://your-frontend-domain.vercel.app
 RESEND_API_KEY=your-resend-api-key
 ```
 
-`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS` and `RESEND_API_KEY` are **boot-time requirements**: the function refuses to start without them, so a deployment that is missing one serves nothing at all.
+All five of `SECRET_KEY`, `SESSION_TYPE`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS` and `RESEND_API_KEY` are **boot-time requirements**: the function refuses to start without them, so a deployment that is missing one serves nothing at all.
 See [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment) for what each one defends and what an unset value would do.
 
-`SESSION_TYPE=null` is not optional on Vercel: sessions default to the filesystem, and a serverless function has no filesystem that outlives a request.
-Nothing keys on `FLASK_ENV` any more - it defaulted to `development` in our own image, so every check that read it was exempting the deployments it existed for. Set the variables above by name instead.
+`SECRET_KEY` must be **generated**, not typed: the app refuses every value this repository has ever published (the old `TEMP_KEY_CHANGE_IN_PRODUCTION` fallback, and the placeholders that used to sit on this very line), because each of them is readable by anyone who can read the repo.
+It also refuses anything under 32 characters.
+Setting it for the first time, or rotating it, ends every session signed with the old key - organizers log in again, once.
+
+`SESSION_TYPE=null` is not optional on Vercel, and it is now a boot requirement rather than a default: a serverless function has no filesystem that outlives a request, so the on-disk session store raises at import there.
+`null` installs no server-side store at all - Flask signs the session into the cookie, which is the only place a serverless function can keep one.
+Nothing keys on `FLASK_ENV` any more - it defaulted to `development` in our own image, so every check that read it was exempting the deployments it existed for, and the old `SESSION_TYPE` default was derived from exactly that. Set the variables above by name instead.
 
 #### Optional (if using individual MongoDB params instead of URI):
 ```
@@ -50,8 +55,9 @@ FROM_EMAIL=your-verified-email@domain.com
 ## Important Notes
 
 ### Session Storage
-- **For Vercel**: Use `SESSION_TYPE=null` (sessions stored in cookies only)
-- **For Local Dev**: Use `SESSION_TYPE=filesystem` (default)
+- **For Vercel**: Set `SESSION_TYPE=null` (the session is signed into the cookie; no server-side store is installed)
+- **For a container or VM**: Set `SESSION_TYPE=filesystem` (sessions on local disk)
+- There is **no default**, and an unset value is a boot refusal: neither answer is right for both hosts, and the one that used to be derived from `FLASK_ENV` was `filesystem` on every deployment built from our image - including the serverless ones that have no filesystem
 - Filesystem sessions don't work on Vercel's serverless platform
 
 ### MongoDB Connection
@@ -98,7 +104,7 @@ FROM_EMAIL=your-verified-email@domain.com
 4. **Configure Environment Variables**
    - Go to Project Settings > Environment Variables
    - Add the following required variables (if not already set by MongoDB Atlas integration):
-     - `SECRET_KEY=your-strong-secret-key-here`
+     - `SECRET_KEY=` a value you generated with `python -c 'import secrets; print(secrets.token_urlsafe(48))'` - a placeholder or a value from this repo's history is refused
      - `SESSION_TYPE=null`
      - `FRONTEND_URL=https://your-frontend-domain.vercel.app`
      - `RESEND_API_KEY=your-resend-api-key`
@@ -106,7 +112,7 @@ FROM_EMAIL=your-verified-email@domain.com
      - `RECAPTCHA_SECRET_KEY=your-recaptcha-secret-key`
      - `CORS_ALLOWED_ORIGINS=https://your-frontend-domain.vercel.app`
    - **Note**: `MONGODB_URI` should already be set if you used the MongoDB Atlas integration
-   - **Note**: `SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS` and `RESEND_API_KEY` are checked at import. Miss one and the function does not boot; the log names every one that is missing.
+   - **Note**: `SECRET_KEY`, `SESSION_TYPE`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS` and `RESEND_API_KEY` are checked at import. Miss one and the function does not boot; the log names every one that is missing.
    - Apply to Production, Preview, and Development environments as needed
 
 5. **Initialize / migrate the database** (before the first deploy, and before any deploy that carries a new migration)
@@ -136,7 +142,8 @@ back-end/
 
 - **Import Errors**: Ensure all dependencies are in `requirements.txt`
 - **MongoDB Connection Issues**: Check your MongoDB Atlas network access settings
-- **Session Issues**: Verify `SESSION_TYPE=null` is set for Vercel. Sessions default to the filesystem, which a serverless function does not keep between requests.
+- **Session Issues**: Verify `SESSION_TYPE=null` is set for Vercel. There is no default - the function refuses to boot without it - and `filesystem` is a store a serverless function does not keep between requests.
 - **CORS Issues**: Ensure `CORS_ALLOWED_ORIGINS` lists your frontend's origin exactly as the browser sends it (`https://your-frontend-domain.vercel.app` - scheme and host, no trailing slash, no path). A preview deployment served from a different domain is a different origin and has to be listed too. `FRONTEND_URL` is only used for the links in outgoing mail and has no say in CORS.
-- **"Refusing to start: N of the things this app's public surface rests on are not configured"**: one or more of `SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY` is unset. The log names every one of them, and each names what it defends or delivers. Set them and redeploy; do not work around it by setting `ALLOW_INSECURE_LOCAL_DEV`, which turns all of that off. See [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment).
+- **"Refusing to start: N of the things this app's public surface rests on are not configured"**: one or more of `SECRET_KEY`, `SESSION_TYPE`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY` is unset. The log names every one of them, and each names what it defends, delivers or stores. Set them and redeploy; do not work around it by setting `ALLOW_INSECURE_LOCAL_DEV`, which turns all of that off. See [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment).
+- **"`SECRET_KEY` is set to a value this repository has published"**: the key you set is one of the placeholders or fallbacks that appear in this repo (or its history), so it is readable by anyone who can read the repo. Generate a real one with `python -c 'import secrets; print(secrets.token_urlsafe(48))'`. This ends every session signed with the old key, so organizers log in again once - that is the cost of the key not being public.
 - **"The market-key migration has not been applied to this database"**: the function is refusing to boot because it cannot confirm the migration (see step 5 above). Run `migrations/migrate_market_keys.py` against the Atlas database and redeploy. The same error appears when the marker simply cannot be read - an unknown migration state is treated as unmigrated - so check network access too.

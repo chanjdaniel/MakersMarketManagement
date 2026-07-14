@@ -15,7 +15,6 @@ from api.floorplans_save import floorplans_save_bp
 
 from typing import Any, Dict, List, NamedTuple
 from flask import Flask, request, jsonify, Response
-from flask_session import Session
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user
 from flask_bcrypt import Bcrypt
 from datetime import timedelta, datetime, timezone
@@ -55,11 +54,17 @@ from utils.secret_key import (
     SecretKeyNotConfiguredError,
     signing_secret,
 )
+from utils.session_storage import (
+    ON_DISK,
+    SESSION_FOLDER,
+    SessionStorageNotConfiguredError,
+    install_session_storage,
+    session_backend,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-SESSION_FOLDER = "flask_session"
 SESSION_MAX_AGE = 7200
 
 
@@ -100,6 +105,7 @@ class PublicEndpointDefenses(NamedTuple):
 
     signing_secret: str
     origins: List[AllowedOrigin]
+    session_backend: str
 
 
 def check_public_endpoint_defenses() -> PublicEndpointDefenses:
@@ -109,17 +115,21 @@ def check_public_endpoint_defenses() -> PublicEndpointDefenses:
     the database, and they send mail from this domain. What keeps a script off them is a reCAPTCHA
     secret; what makes the session cookie they hand back mean anything is a signing secret; what
     decides which websites may spend that cookie against the organizer API is the browser origin
-    list; and what carries the verification link, the reset link, and the login code - the only
-    ways an organizer account is ever reached - is a mail key.
+    list; what carries the verification link, the reset link, and the login code - the only ways an
+    organizer account is ever reached - is a mail key; and what says where that session is kept at
+    all, which has no answer that is right for both a container and a serverless function, is
+    ``SESSION_TYPE``.
 
-    Three of the four fail *silently* when unset: the captcha passes everybody, a session cookie
+    Three of the five fail *silently* when unset: the captcha passes everybody, a session cookie
     signed with a key the repository publishes is a session anyone can forge, and a credentialed
     CORS policy with no origin list hands the organizer API to every website an organizer visits.
-    The mail key is here for the mirror-image reason - unset, it fails *every* registration, reset,
-    and OTP with a 500 that names nothing - and a variable whose absence has to be diagnosed one
-    failed signup at a time belongs in the same refusal as the ones whose absence is never
-    diagnosed at all. As with the market-key migration above, an unknown state is never taken for a
-    safe one: it fails at boot, naming the variables, rather than in production, naming nothing.
+    The mail key and the session backend are here for the mirror-image reason - unset, the first
+    fails *every* registration, reset and OTP with a 500 that names nothing, and the second sends a
+    serverless deployment looking for a disk it does not have, failing at import and naming nothing
+    either - and a variable whose absence has to be diagnosed one broken deployment at a time
+    belongs in the same refusal as the ones whose absence is never diagnosed at all. As with the
+    market-key migration above, an unknown state is never taken for a safe one: it fails at boot,
+    naming the variables, rather than in production, naming nothing.
 
     This is a *check*: it reads configuration and nothing else, so asking whether this deployment is
     configured cannot change it. Installing what it found is ``configure_public_endpoint_defenses``.
@@ -143,6 +153,7 @@ def check_public_endpoint_defenses() -> PublicEndpointDefenses:
     problems = []
     secret = ""
     origins: List[AllowedOrigin] = []
+    sessions = ON_DISK
 
     try:
         assert_captcha_configured()
@@ -164,41 +175,49 @@ def check_public_endpoint_defenses() -> PublicEndpointDefenses:
     except CorsConfigError as e:
         problems.append(str(e))
 
+    try:
+        sessions = session_backend()
+    except SessionStorageNotConfiguredError as e:
+        problems.append(str(e))
+
     if problems:
         message = "\n\n".join([
             f"Refusing to start: {len(problems)} of the things this app's public surface rests on "
             f"are not configured, and not one of them announces itself when unset - each is either "
-            f"a defense that quietly stops defending or the mail without which no organizer account "
-            f"can be reached at all. All of them are named below. See the required production "
-            f"environment in docs/RELEASING.md before promoting.",
+            f"a defense that quietly stops defending, the mail without which no organizer account "
+            f"can be reached at all, or the store the session itself is kept in. All of them are "
+            f"named below. See the required production environment in docs/RELEASING.md before "
+            f"promoting.",
             *problems,
         ])
         logger.critical("%s", message)
         raise PublicEndpointDefenseError(message)
 
-    return PublicEndpointDefenses(signing_secret=secret, origins=origins)
+    return PublicEndpointDefenses(
+        signing_secret=secret, origins=origins, session_backend=sessions,
+    )
 
 
 def configure_public_endpoint_defenses(
     flask_app: Flask, defenses: PublicEndpointDefenses,
 ) -> None:
-    """Install what the check confirmed: the signing key, and the origin list it is spent from."""
+    """Install what the check confirmed: the signing key, the origins it may be spent from, and the
+    store it is kept in.
+
+    The session store goes on last, because a cookie-only session *is* the signed cookie: the
+    interface is built against the app's ``SECRET_KEY``, which the first line here is what puts
+    there.
+    """
     flask_app.config["SECRET_KEY"] = defenses.signing_secret
     install_cors(flask_app, defenses.origins)
     logger.info(
         "Allowing credentialed browser requests from: %s", describe_origins(defenses.origins),
     )
+    install_session_storage(flask_app, defenses.session_backend)
 
 
 app = Flask(__name__)
 
-# Session storage: 'filesystem' keeps sessions on disk; a serverless deployment has no disk that
-# outlives a request and must set SESSION_TYPE=null (sessions in the signed cookie only).
-# Deliberately not derived from FLASK_ENV: the Dockerfile sets FLASK_ENV=development and nothing
-# overrides it, so anything keyed on it reads the same on a deployment as on a laptop.
-session_type = os.getenv("SESSION_TYPE", "filesystem")
-
-app.config["SESSION_TYPE"] = session_type
 app.config["SESSION_PERMANENT"] = True
 app.config["PERMANENT_SESSION_LIFETIME"] = SESSION_MAX_AGE
 app.config["SESSION_COOKIE_NAME"] = "session"
@@ -214,12 +233,6 @@ configure_public_endpoint_defenses(app, check_public_endpoint_defenses())
 
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB upload limit
 
-# Only create session folder for filesystem sessions
-if session_type == "filesystem":
-    os.makedirs(SESSION_FOLDER, exist_ok=True)
-    app.config["SESSION_FILE_DIR"] = SESSION_FOLDER
-
-Session(app)
 bcrypt = Bcrypt(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -1210,7 +1223,7 @@ def get_market_attendance(market_id: str) -> Response:
 
 def cleanup_sessions() -> None:
     """Clean up expired session files. Only runs for filesystem sessions."""
-    if app.config["SESSION_TYPE"] == "filesystem":
+    if app.config["SESSION_TYPE"] == ON_DISK:
         now = time.time()
         for session_file in glob.glob(os.path.join(SESSION_FOLDER, "*")):
             if os.stat(session_file).st_mtime < now - SESSION_MAX_AGE:

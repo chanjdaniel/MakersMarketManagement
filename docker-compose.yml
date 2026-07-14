@@ -43,6 +43,10 @@ services:
       # which is what the dev server and the e2e stack need (the Vite port moves per worktree).
       # A deployment has to name its front end's origin here - there is no wildcard.
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
+      # Stated rather than left to the escape hatch: this container has a disk, so it keeps sessions
+      # on it. A serverless deployment has none and must set `null` - which is why there is no
+      # default to inherit. See docs/RELEASING.md.
+      - SESSION_TYPE=${SESSION_TYPE:-filesystem}
       - MONGODB_HOST=mongodb
       - MONGODB_PORT=27017
       - MONGODB_USER=admin
