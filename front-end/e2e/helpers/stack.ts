@@ -30,7 +30,7 @@
  *
  * Primary-checkout / CI (no worktree slot):
  *   ports:     mongo=27017  backend=5000  frontend=5173
- *   containers: conventioner_mongodb  conventioner_backend
+ *   containers: conventioner-mongodb-1  conventioner-backend-1
  *
  * Worktree slot N (offset = N * 10):
  *   ports:     mongo=27017+N*10  backend=5000+N*10  frontend=5173+N*10
@@ -84,8 +84,8 @@ function ciIdentity(): StackIdentity {
     backendPort: 5000,
     frontendPort: 5173,
     mongoPort: 27017,
-    backendContainerName: 'conventioner_backend',
-    mongoContainerName: 'conventioner_mongodb',
+    backendContainerName: 'conventioner-backend-1',
+    mongoContainerName: 'conventioner-mongodb-1',
     backendURL: 'https://localhost:5000',
   }
 }
