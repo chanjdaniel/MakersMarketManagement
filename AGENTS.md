@@ -225,12 +225,18 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   the permissive branch on every deployment.
 - **There is no fallback signing secret anywhere in this repository** and there must never be one
   again - not even "for dev". A committed fallback is a published key.
-- **`ALLOW_INSECURE_LOCAL_DEV` is the ONLY escape hatch** for the five boot-time requirements
-  (`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `TRUSTED_PROXY_HOPS`, `CORS_ALLOWED_ORIGINS`,
-  `RESEND_API_KEY`). It defaults to OFF - the secure state is the one you get by forgetting.
-- **Nothing on the public applicant endpoints may differ** between an address that has applied and
-  one that has not - not status, not body, not the attempt counter. Who has applied is the
-  organizer's private data.
+- **`ALLOW_INSECURE_LOCAL_DEV` is the ONLY escape hatch** for the four boot-time requirements
+  (`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY`). It defaults to
+  OFF - the secure state is the one you get by forgetting.
+- **A boot requirement must defend something this branch actually serves.** Each of the four is
+  reachable today: the session cookie, `POST /register`'s captcha, the organizer API's origin list,
+  and the mail that carries every verification link, reset link and OTP. Rate limiting and
+  `TRUSTED_PROXY_HOPS` were cut from this PR and land with the applicant endpoints they key on: a
+  requirement with nothing behind it teaches operators to work around the check.
+- **Nothing reads `FLASK_ENV`.** The Dockerfile sets it to `development`, so anything keyed on it
+  reads the same on a deployment as on a laptop - that is how the CORS hole survived. Session
+  storage is `SESSION_TYPE` (serverless must set `null`), and `SESSION_COOKIE_SECURE` is not
+  configurable at all, because a `SameSite=None` cookie is only accepted by a browser when Secure.
 - **The required production environment is documented in `docs/RELEASING.md`** - keep that table
   in step with the boot check in `back-end/app.py`. A deploy doc that is wrong is worse than one
   that is missing, because it will be trusted.

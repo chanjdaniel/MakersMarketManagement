@@ -1,9 +1,9 @@
 """The key everything in this product is signed with, and what happens when nobody configured one.
 
 The fallback that used to stand in for it was a literal in this repository, which is to say a
-published key: the Flask session cookie and the application-scoped applicant token were both signed
-with a string anyone could read off the source, so anyone could write either one. A secret with a
-default is not a secret, and these tests hold the line that there is no default.
+published key: the Flask session cookie every organizer request authenticates with was signed with a
+string anyone could read off the source, so anyone could write one. A secret with a default is not a
+secret, and these tests hold the line that there is no default.
 """
 
 import pytest

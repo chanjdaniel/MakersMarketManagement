@@ -29,23 +29,21 @@ else:
 
 
 class MailerNotConfiguredError(RuntimeError):
-    """There is no mail key, so the applicant's login code would be delivered nowhere."""
+    """There is no mail key, so nothing this product sends would be delivered."""
 
 
 def assert_mailer_configured() -> None:
-    """Refuse to serve an applicant flow whose one-time code cannot be delivered.
+    """Refuse to serve endpoints whose whole purpose is the mail they cannot send.
 
-    Every failure to deliver the applicant's code is silent, and each layer is silent on purpose: the
-    send is not reported to the caller because who is on the organizer's applicant list is the
-    organizer's private data, so ``request-key`` answers "a code is on the way" identically whether
-    one was sent, and ``send_otp_email`` returns False with a log line nobody is reading. There is no
-    other way in: an applicant has no password and no account, so a deployment that forgot this
-    variable serves a sign-in that *cannot* succeed, tells every applicant a code is coming, and says
-    nothing anywhere an operator would look.
+    Every route into an organizer account runs through this key. Registration rolls the new user
+    back and answers 500 when the verification mail does not go out; an account that is never
+    verified cannot log in; and the password-reset and OTP endpoints answer 500 as well. So a
+    deployment that forgot this variable does not degrade - it cannot onboard a single organizer,
+    and it says so one failed signup at a time, in a 500 that names nothing.
 
-    That is the same failure shape as the four defenses beside it - a variable whose absence removes
-    the thing rather than announcing it - so it is checked in the same place, at boot, and named in
-    the same refusal.
+    That is the mirror image of the three defenses beside it, whose absence is never reported at
+    all, and it wants the same answer: name the variable once, at boot, where an operator is
+    looking, instead of leaving it to be inferred from the wreckage.
 
     Raises:
         MailerNotConfiguredError: when no key is configured and this is not an opted-in local
@@ -57,13 +55,12 @@ def assert_mailer_configured() -> None:
         warn_insecure_local_dev(f"outbound email ({RESEND_API_KEY_VAR})")
         return
     raise MailerNotConfiguredError(
-        f"{RESEND_API_KEY_VAR} is not set. It is what delivers the one-time code the public "
-        f"applicant sign-in is built on, and an applicant has no other way in - no password, no "
-        f"account. Every failure on that path is silent by design (the response cannot say whether "
-        f"mail was sent without disclosing who has applied), so a deployment without this key serves "
-        f"a sign-in that no applicant can ever complete, and nothing says so. Set "
-        f"{RESEND_API_KEY_VAR} (https://resend.com/api-keys), or set {INSECURE_LOCAL_DEV_VAR}=true "
-        f"if this really is a local development machine."
+        f"{RESEND_API_KEY_VAR} is not set. It delivers the email-verification link, the "
+        f"password-reset link, and the OTP login code - every route by which an organizer account "
+        f"is reached. Without it, registration fails and rolls the account back, an unverified "
+        f"organizer can never log in, and reset and OTP answer 500: not a degraded deployment, one "
+        f"that cannot onboard anybody. Set {RESEND_API_KEY_VAR} (https://resend.com/api-keys), or "
+        f"set {INSECURE_LOCAL_DEV_VAR}=true if this really is a local development machine."
     )
 
 # Get frontend URL from environment
@@ -80,8 +77,7 @@ def _email_disabled() -> bool:
     DISABLE_EMAIL env var. It used to be scoped by ``FLASK_ENV != "production"``, which scoped it to
     nothing: the Dockerfile sets ``FLASK_ENV=development`` and nothing overrides it, so a deployment
     that inherited ``DISABLE_EMAIL=true`` from a copied env file would silently send no mail at all
-    -- including the applicant's login code, which is the one piece of mail a sign-in cannot happen
-    without. See ``utils.deployment``.
+    -- while reporting every verification link and reset link as delivered. See ``utils.deployment``.
     """
     if not insecure_local_dev():
         return False

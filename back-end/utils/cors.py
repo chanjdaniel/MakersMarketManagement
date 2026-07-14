@@ -11,8 +11,8 @@ be visiting it.
 So the origin list is configuration, not a default, and there is no wildcard: a credentialed wildcard
 is not a permissive setting, it is the absence of the control. ``CORS_ALLOWED_ORIGINS`` is the
 comma-separated list of origins that may do it, and a process that has not been told refuses to boot,
-naming the variable - the same shape as the reCAPTCHA secret, the signing secret, and the
-trusted-hop count, and for the same reason: this used to be keyed on ``FLASK_ENV != "production"``,
+naming the variable - the same shape as the reCAPTCHA secret and the signing secret, and for the same
+reason: this used to be keyed on ``FLASK_ENV != "production"``,
 and the repo's own image sets ``FLASK_ENV=development``, so every deployment built from it served the
 reflect-any-origin branch. A security control keyed on a variable whose default is the insecure value
 is not a control.
@@ -103,11 +103,15 @@ def allowed_origins() -> List[AllowedOrigin]:
     )
 
 
-def apply_cors(app) -> List[AllowedOrigin]:
-    """Install the credentialed CORS policy on the app. Returns the origins it allows."""
-    origins = allowed_origins()
+def install_cors(app, origins: List[AllowedOrigin]) -> None:
+    """Install the credentialed CORS policy for an already-validated origin list.
+
+    Takes the origins rather than reading them, so that deciding whether this deployment is
+    configured and *changing* the app are two different calls: flask-cors installs an
+    ``after_request`` handler per invocation, and a check that quietly installed one would leave a
+    handler behind every time anything asked it a question.
+    """
     CORS(app, origins=origins, supports_credentials=True)
-    return origins
 
 
 def describe_origins(origins: List[AllowedOrigin]) -> str:

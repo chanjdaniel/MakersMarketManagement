@@ -3,12 +3,13 @@ reCAPTCHA v3 verification utility.
 
 The bypasses below exist so a developer can run the stack without Google credentials, and every one
 of them is scoped to a process that has explicitly said it is a local development one. A captcha
-that disappears when it is not configured is not a control: the endpoints that carry it are public,
-unauthenticated, and they write and send mail, so a deployment with no secret would serve them wide
-open and say nothing about it. Anything that is not an opted-in local dev process therefore refuses
--- at boot, through ``assert_captcha_configured``, so the refusal names the variable rather than
-arriving as a mystery 400 on an applicant's screen, and again here, so no caller reaches a
-verification this process cannot actually perform.
+that disappears when it is not configured is not a control: the endpoint that carries it - organizer
+signup - is public, unauthenticated, and it writes a user document and sends mail from this domain,
+so a deployment with no secret would serve it wide open and say nothing about it. Anything that is
+not an opted-in local dev process therefore refuses -- at boot, through
+``assert_captcha_configured``, so the refusal names the variable rather than arriving as a mystery
+400 on a caller's screen, and again here, so no caller reaches a verification this process cannot
+actually perform.
 
 The escape hatch is ``ALLOW_INSECURE_LOCAL_DEV`` and nothing else. It is deliberately *not*
 ``FLASK_ENV``: see ``utils.deployment``.
@@ -47,10 +48,10 @@ def assert_captcha_configured() -> None:
         warn_insecure_local_dev("reCAPTCHA verification")
         return
     raise CaptchaNotConfiguredError(
-        f"{RECAPTCHA_SECRET_KEY_VAR} is not set. The public applicant and signup endpoints are "
-        f"gated on reCAPTCHA, and without a secret there is nothing to verify a token against, "
-        f"so the gate would silently pass every caller -- including the scripts it exists to "
-        f"keep off an endpoint that writes to the database and sends mail from this domain. "
+        f"{RECAPTCHA_SECRET_KEY_VAR} is not set. The public signup endpoint is gated on reCAPTCHA, "
+        f"and without a secret there is nothing to verify a token against, so the gate would "
+        f"silently pass every caller -- including the scripts it exists to keep off an endpoint "
+        f"that writes to the database and sends mail from this domain. "
         f"Set {RECAPTCHA_SECRET_KEY_VAR} (https://www.google.com/recaptcha/admin), or set "
         f"{INSECURE_LOCAL_DEV_VAR}=true if this really is a local development machine."
     )

@@ -20,7 +20,7 @@ from utils.cors import (
     CORS_ALLOWED_ORIGINS_VAR,
     CorsConfigError,
     allowed_origins,
-    apply_cors,
+    install_cors,
 )
 from utils.deployment import INSECURE_LOCAL_DEV_VAR
 
@@ -51,7 +51,7 @@ def _allow_origin_for(origin, monkeypatch, **env):
     def markets():
         return {"markets": []}
 
-    apply_cors(app)
+    install_cors(app, allowed_origins())
     with app.test_client() as client:
         response = client.get("/markets", headers={"Origin": origin})
         return response.headers.get("Access-Control-Allow-Origin")

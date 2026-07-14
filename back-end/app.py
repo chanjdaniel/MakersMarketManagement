@@ -13,7 +13,7 @@ from api.floorplans_calibrate import floorplans_calibrate_bp
 from api.floorplans_export import floorplans_export_bp
 from api.floorplans_save import floorplans_save_bp
 
-from typing import Any, Dict
+from typing import Any, Dict, List, NamedTuple
 from flask import Flask, request, jsonify, Response
 from flask_session import Session
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user
@@ -41,17 +41,15 @@ from utils.captcha import (
     assert_captcha_configured,
 )
 from utils.cors import (
+    AllowedOrigin,
     CorsConfigError,
-    apply_cors,
+    allowed_origins,
     describe_origins,
+    install_cors,
 )
 from utils.email import (
     MailerNotConfiguredError,
     assert_mailer_configured,
-)
-from utils.proxy import (
-    TrustedProxyConfigError,
-    apply_trusted_proxy_fix,
 )
 from utils.secret_key import (
     SecretKeyNotConfiguredError,
@@ -97,27 +95,34 @@ class PublicEndpointDefenseError(RuntimeError):
     """The public endpoints are not configured to defend themselves."""
 
 
-def verify_public_endpoint_defenses() -> str:
+class PublicEndpointDefenses(NamedTuple):
+    """What a passing check found, so the caller that installs it does not fetch it a second time."""
+
+    signing_secret: str
+    origins: List[AllowedOrigin]
+
+
+def check_public_endpoint_defenses() -> PublicEndpointDefenses:
     """Refuse to boot without the configuration this app's public surface rests on.
 
-    The applicant login endpoints are unauthenticated, they write to the database, and they send
-    mail from this domain. What keeps a script off them is a reCAPTCHA secret; what keeps their
-    rate limits keyed on the caller rather than on a shared proxy address is a trusted-hop count;
-    and what makes the token they authenticate with mean anything is a signing secret. The
-    organizer API beside them is defended by a different thing entirely - the list of browser
-    origins allowed to send it the organizer's session cookie. And what carries the one-time code
-    an applicant's only way in depends on is a mail key. All five silently degrade to nothing when
-    unset - the captcha passes everybody, the limits lock out everybody, a token signed with a key
-    the repository publishes is a token anyone can write, a credentialed CORS policy with no origin
-    list hands the organizer API to every website an organizer visits, and an applicant with no
-    mail key is told a code is on its way that was never sent - so, as with the market-key
-    migration above, an unknown state is never taken for a safe one: it fails at boot, naming the
-    variables, rather than in production, naming nothing.
+    The signup, verification, password-reset and OTP endpoints are unauthenticated, they write to
+    the database, and they send mail from this domain. What keeps a script off them is a reCAPTCHA
+    secret; what makes the session cookie they hand back mean anything is a signing secret; what
+    decides which websites may spend that cookie against the organizer API is the browser origin
+    list; and what carries the verification link, the reset link, and the login code - the only
+    ways an organizer account is ever reached - is a mail key.
 
-    The mail key sits with the defenses rather than apart from them because it fails in their
-    shape: the thing it removes is removed silently, and the silence is deliberate everywhere it is
-    reachable (a send this endpoint reported on would be an oracle for who has applied). A control
-    and a dependency that both vanish without a word are one kind of problem to an operator.
+    Three of the four fail *silently* when unset: the captcha passes everybody, a session cookie
+    signed with a key the repository publishes is a session anyone can forge, and a credentialed
+    CORS policy with no origin list hands the organizer API to every website an organizer visits.
+    The mail key is here for the mirror-image reason - unset, it fails *every* registration, reset,
+    and OTP with a 500 that names nothing - and a variable whose absence has to be diagnosed one
+    failed signup at a time belongs in the same refusal as the ones whose absence is never
+    diagnosed at all. As with the market-key migration above, an unknown state is never taken for a
+    safe one: it fails at boot, naming the variables, rather than in production, naming nothing.
+
+    This is a *check*: it reads configuration and nothing else, so asking whether this deployment is
+    configured cannot change it. Installing what it found is ``configure_public_endpoint_defenses``.
 
     Every check runs, and the refusal carries *all* of them. Stopping at the first would hand an
     operator one variable at a time and a redeploy between each, which turns one loud failure into
@@ -132,13 +137,12 @@ def verify_public_endpoint_defenses() -> str:
     ``utils.deployment`` - so a development machine can still boot unconfigured while a deployment
     that forgets cannot.
 
-    Returns:
-        The signing secret, so that the one place that needs it does not fetch it a second time.
+    Raises:
+        PublicEndpointDefenseError: naming every variable that is missing, all at once.
     """
     problems = []
     secret = ""
-    trusted_proxy_hops = 0
-    origins = []
+    origins: List[AllowedOrigin] = []
 
     try:
         assert_captcha_configured()
@@ -156,49 +160,57 @@ def verify_public_endpoint_defenses() -> str:
         problems.append(str(e))
 
     try:
-        trusted_proxy_hops = apply_trusted_proxy_fix(app)
-    except TrustedProxyConfigError as e:
-        problems.append(str(e))
-
-    try:
-        origins = apply_cors(app)
+        origins = allowed_origins()
     except CorsConfigError as e:
         problems.append(str(e))
 
     if problems:
         message = "\n\n".join([
             f"Refusing to start: {len(problems)} of the things this app's public surface rests on "
-            f"are not configured, and every one of them fails silently when unset. All of them are "
-            f"named below. See the required production environment in docs/RELEASING.md before "
-            f"promoting.",
+            f"are not configured, and not one of them announces itself when unset - each is either "
+            f"a defense that quietly stops defending or the mail without which no organizer account "
+            f"can be reached at all. All of them are named below. See the required production "
+            f"environment in docs/RELEASING.md before promoting.",
             *problems,
         ])
         logger.critical("%s", message)
         raise PublicEndpointDefenseError(message)
 
-    logger.info("Trusting %d proxy hop(s) for the client address", trusted_proxy_hops)
-    logger.info("Allowing credentialed browser requests from: %s", describe_origins(origins))
-    return secret
+    return PublicEndpointDefenses(signing_secret=secret, origins=origins)
+
+
+def configure_public_endpoint_defenses(
+    flask_app: Flask, defenses: PublicEndpointDefenses,
+) -> None:
+    """Install what the check confirmed: the signing key, and the origin list it is spent from."""
+    flask_app.config["SECRET_KEY"] = defenses.signing_secret
+    install_cors(flask_app, defenses.origins)
+    logger.info(
+        "Allowing credentialed browser requests from: %s", describe_origins(defenses.origins),
+    )
 
 
 app = Flask(__name__)
 
-# Session configuration: Use 'null' for Vercel serverless (stores in cookies only)
-# For production with persistent sessions, consider MongoDB-backed sessions
-# Set SESSION_TYPE env var to override: 'null' for Vercel, 'filesystem' for local dev
-session_type = os.getenv("SESSION_TYPE", "filesystem" if os.getenv("FLASK_ENV") != "production" else "null")
+# Session storage: 'filesystem' keeps sessions on disk; a serverless deployment has no disk that
+# outlives a request and must set SESSION_TYPE=null (sessions in the signed cookie only).
+# Deliberately not derived from FLASK_ENV: the Dockerfile sets FLASK_ENV=development and nothing
+# overrides it, so anything keyed on it reads the same on a deployment as on a laptop.
+session_type = os.getenv("SESSION_TYPE", "filesystem")
 
 app.config["SESSION_TYPE"] = session_type
 app.config["SESSION_PERMANENT"] = True
 app.config["PERMANENT_SESSION_LIFETIME"] = SESSION_MAX_AGE
 app.config["SESSION_COOKIE_NAME"] = "session"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
-# Only require secure cookies in production or when using HTTPS
-app.config["SESSION_COOKIE_SECURE"] = os.getenv("FLASK_ENV") == "production" or os.getenv("USE_HTTPS", "true").lower() == "true"
+# Not configurable: a SameSite=None cookie is one the browser attaches to cross-site requests, and
+# browsers only accept such a cookie when it is also Secure - so an environment variable that could
+# turn this off would not "allow plain HTTP", it would ship a session cookie the browser drops, or
+# sends in the clear where it does not. Loopback counts as a secure context, so local dev is unaffected.
+app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 
-secret_key = verify_public_endpoint_defenses()
-app.config['SECRET_KEY'] = secret_key
+configure_public_endpoint_defenses(app, check_public_endpoint_defenses())
 
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB upload limit
 

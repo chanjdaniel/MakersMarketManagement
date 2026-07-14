@@ -79,7 +79,6 @@ def skip_without_real_dependencies():
 if _needs_stub("pymongo"):
     fake_pymongo = types.ModuleType("pymongo")
     fake_pymongo_results = types.ModuleType("pymongo.results")
-    fake_pymongo_errors = types.ModuleType("pymongo.errors")
 
     class _FakeCollection:
         def find_one(self, *_args, **_kwargs):
@@ -105,22 +104,13 @@ if _needs_stub("pymongo"):
         def __getitem__(self, _name):
             return _FakeDatabase()
 
-    class _FakePyMongoError(Exception):
-        pass
-
     fake_pymongo.MongoClient = _FakeMongoClient
     fake_pymongo.results = fake_pymongo_results
-    fake_pymongo.errors = fake_pymongo_errors
-    # The conditional-update helpers the challenge store and the rate limiter are built on name
-    # these, so the stub has to as well or the suite cannot even be collected without pymongo.
-    fake_pymongo.ReturnDocument = SimpleNamespace(BEFORE=False, AFTER=True)
-    fake_pymongo_errors.PyMongoError = _FakePyMongoError
     fake_pymongo_results.InsertOneResult = object
     fake_pymongo_results.UpdateResult = object
     fake_pymongo_results.DeleteResult = object
     sys.modules["pymongo"] = fake_pymongo
     sys.modules["pymongo.results"] = fake_pymongo_results
-    sys.modules["pymongo.errors"] = fake_pymongo_errors
 
 if _needs_stub("bson"):
     fake_bson = types.ModuleType("bson")
@@ -148,8 +138,6 @@ if _needs_stub("resend"):
     fake_resend.Emails = SimpleNamespace(send=lambda *_args, **_kwargs: {})
     sys.modules["resend"] = fake_resend
 
-
-from pymongo import ReturnDocument
 
 from datatypes import AssignmentObject, Market, MarketPhase, MarketRole
 
@@ -205,112 +193,6 @@ def client_market(**overrides) -> Market:
     return Market(**kwargs)
 
 
-class FakeKeyedCollection:
-    """Stand-in for a small Mongo collection addressed by an exact-match filter.
-
-    Supports the operations the applicant login-code store and the rate limiter actually use:
-    ``find_one``/``update_one``/``delete_one`` with ``$set`` and ``$inc``, upserts, and the
-    ``find_one_and_update`` both the limiter and the login challenge count with -- including the
-    comparison operators in its filter, because those are load-bearing: the attempt cap is a
-    *conditional* update ("increment only while the count is under the cap, and only while the code
-    is live"), which is what makes the check and the spend one operation rather than a race. A fake
-    that quietly ignored the condition would pass a test the real collection fails.
-    ``create_index`` is a no-op, as it is for a collection that only lives for the length of a test.
-    """
-
-    _OPERATORS = {
-        "$lt": lambda actual, want: actual is not None and actual < want,
-        "$lte": lambda actual, want: actual is not None and actual <= want,
-        "$gt": lambda actual, want: actual is not None and actual > want,
-        "$gte": lambda actual, want: actual is not None and actual >= want,
-        "$ne": lambda actual, want: actual != want,
-    }
-
-    def __init__(self):
-        self.documents: list = []
-
-    def create_index(self, *_args, **_kwargs):
-        return "fake-index"
-
-    def _matches_one(self, actual, condition):
-        if isinstance(condition, dict) and condition and all(
-            k in self._OPERATORS for k in condition
-        ):
-            return all(self._OPERATORS[op](actual, want) for op, want in condition.items())
-        return actual == condition
-
-    def _matches(self, doc, query):
-        return all(
-            self._matches_one(doc.get(key), condition)
-            for key, condition in (query or {}).items()
-        )
-
-    def _find(self, query):
-        for doc in self.documents:
-            if self._matches(doc, query):
-                return doc
-        return None
-
-    def find_one(self, query):
-        doc = self._find(query)
-        return dict(doc) if doc else None
-
-    def insert_one(self, document):
-        self.documents.append(dict(document))
-        return SimpleNamespace(inserted_id=str(len(self.documents)))
-
-    def _apply(self, doc, update):
-        for key, value in (update.get("$set") or {}).items():
-            doc[key] = value
-        for key, value in (update.get("$inc") or {}).items():
-            doc[key] = doc.get(key, 0) + value
-        return doc
-
-    def _inserted(self, query, update):
-        """The document an upsert of a filter that did not match creates, as Mongo builds it:
-        from the filter's equality terms only, since a comparison is not a value to store."""
-        doc = {
-            key: condition for key, condition in (query or {}).items()
-            if not (isinstance(condition, dict) and condition
-                    and all(k in self._OPERATORS for k in condition))
-        }
-        doc.update(update.get("$setOnInsert") or {})
-        self.documents.append(doc)
-        return doc
-
-    def update_one(self, query, update, upsert=False):
-        doc = self._find(query)
-        if doc is None:
-            if not upsert:
-                return SimpleNamespace(matched_count=0, modified_count=0, upserted_id=None)
-            self._apply(self._inserted(query, update), update)
-            return SimpleNamespace(matched_count=0, modified_count=0, upserted_id="fake-id")
-        self._apply(doc, update)
-        return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
-
-    def find_one_and_update(self, query, update, upsert=False, return_document=None):
-        doc = self._find(query)
-        if doc is None:
-            if not upsert:
-                return None
-            doc = self._inserted(query, update)
-        before = dict(doc)
-        self._apply(doc, update)
-        if return_document is ReturnDocument.AFTER:
-            return dict(doc)
-        return before
-
-    def delete_one(self, query):
-        doc = self._find(query)
-        if doc is None:
-            return SimpleNamespace(deleted_count=0)
-        self.documents.remove(doc)
-        return SimpleNamespace(deleted_count=1)
-
-    def count_documents(self, query):
-        return sum(1 for doc in self.documents if self._matches(doc, query))
-
-
 class FakeApplicationsCollection:
     """Stand-in for the applications collection the D9 form lock counts.
 
@@ -342,21 +224,6 @@ def applications(monkeypatch):
 
     fake = FakeApplicationsCollection()
     monkeypatch.setattr(ApplicationsApi, "applications_collection", fake)
-    return fake
-
-
-@pytest.fixture(autouse=True)
-def rate_limits(monkeypatch):
-    """Every public endpoint counts against a rate limit, and the counter is in Mongo.
-
-    Faked for the whole suite, and *counting* rather than disabled: a test that means to exhaust a
-    budget must be able to, and a test that does not mean to must not silently be exempt from one.
-    """
-    import utils.rate_limit as RateLimit
-
-    fake = FakeKeyedCollection()
-    monkeypatch.setattr(RateLimit, "rate_limits_collection", fake)
-    monkeypatch.setattr(RateLimit, "_ttl_index_ready", False)
     return fake
 
 # app.py refuses to boot unless the market-key migration is recorded as applied, and it fails

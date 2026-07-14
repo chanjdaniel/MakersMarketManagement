@@ -64,26 +64,28 @@ Once `v0.1.0` is tagged, remove the `release-as` field from `release-please-conf
 
 ## Pre-Deploy: Required Production Environment
 
-The back end **refuses to start** unless all five of these are set, and it fails at import, so a deployment that is missing one serves nothing at all - not the applicant endpoints, not the organizer app.
+The back end **refuses to start** unless all four of these are set, and it fails at import, so a deployment that is missing one serves nothing at all.
 Set them in the hosting environment **before** promoting `dev` → `main`.
 The startup log names every variable that is missing, all of them at once.
 
-What they have in common is the reason the check exists: each of them fails *silently* when unset.
-Four are defenses that quietly stop defending; the fifth is the mail key, without which the applicant sign-in quietly cannot be completed by anybody.
+Three of them are defenses, and each fails *silently* when unset - it stops defending and says nothing.
+The fourth is the mail key, and it is required for the opposite reason: unset, it breaks every route into an organizer account, one 500 at a time, and none of those 500s names it.
 
 | Variable | What it is | What an unset value would do |
 |----------|------------|------------------------------|
-| `SECRET_KEY` | A long random string. Signs the Flask session cookie and the application-scoped applicant token. Generate with `python -c 'import secrets; print(secrets.token_urlsafe(48))'`. | Anyone could forge an applicant token and read or overwrite any application, past the one-time code, the captcha, and every rate limit - and forge an organizer session with it. |
-| `RECAPTCHA_SECRET_KEY` | The reCAPTCHA v3 secret ([admin console](https://www.google.com/recaptcha/admin)). Gates the public applicant login and the organizer signup. | The captcha would pass every caller, leaving an unauthenticated endpoint that writes to the database and sends mail from our domain with nothing in front of it. |
-| `TRUSTED_PROXY_HOPS` | How many proxies **of ours** a request passes through before it reaches Flask (a reverse proxy, load balancer, or serverless ingress is one each). `0` means Flask is exposed directly. On Vercel it is `1`. | The applicant rate limits would key on the proxy's address, which is the same address for every caller in the world: one shared budget that the first burst spends on everyone's behalf. |
+| `SECRET_KEY` | A long random string. Signs the Flask session cookie. Generate with `python -c 'import secrets; print(secrets.token_urlsafe(48))'`. | The session cookie would be signed with a key published in this repository, so anyone could forge a session for any organizer and read and write their markets, vendors and applications - no password, no login. |
+| `RECAPTCHA_SECRET_KEY` | The reCAPTCHA v3 secret ([admin console](https://www.google.com/recaptcha/admin)). Gates the public organizer signup endpoint (`POST /register`). | The captcha would pass every caller, leaving an unauthenticated endpoint that writes a user document and sends mail from our domain with nothing in front of it. |
 | `CORS_ALLOWED_ORIGINS` | The comma-separated list of browser origins allowed to make credentialed requests to the API, each written exactly as a browser sends it - `https://app.example.com`, no trailing slash, no path. Usually just the front end's own origin. | The API answers cross-site requests with `Access-Control-Allow-Credentials: true`, and the organizer's session cookie is `SameSite=None`, so with no origin list every website an organizer visits could read and write the organizer API - markets, vendors, applications - as them. `*` is refused for the same reason. |
-| `RESEND_API_KEY` | The Resend API key ([dashboard](https://resend.com/api-keys)). Delivers the one-time code the public applicant sign-in is built on, alongside the organizer's verification and password-reset mail. | No applicant could sign in at all - they have no password and no account, and the code is the only way in - while every one of them is told a code is on the way. The failure is silent on purpose at every layer: a response that reported the send would disclose who has applied to the market. |
+| `RESEND_API_KEY` | The Resend API key ([dashboard](https://resend.com/api-keys)). Delivers the email-verification link, the password-reset link, and the OTP login code. | No organizer could get an account at all: registration rolls the new user back and answers 500 when the verification mail cannot be sent, an unverified account cannot log in, and password reset and OTP answer 500. The deployment would look healthy and onboard nobody. |
 
 There is deliberately **no default** for any of them.
 A default that quietly becomes the production value is the failure each of these checks exists to prevent - the signing key was such a default, and it was a literal committed to this repository.
 
 The one exemption is `ALLOW_INSECURE_LOCAL_DEV=true`, which `docker-compose.yml` sets and which logs every defense it turns off.
 It must never be set on a deployed environment.
+
+A deployment that terminates TLS at a proxy in front of Flask needs nothing here today: no code on this branch keys anything on the caller's IP address except the optional `remoteip` hint passed to reCAPTCHA.
+The trusted-hop configuration lands with the applicant endpoints and the rate limits that will key on that address.
 
 ## Pre-Deploy: Database Migrations
 
@@ -92,15 +94,13 @@ Before a promotion reaches production, run the pending migrations in `back-end/m
 
 ```bash
 python migrations/migrate_phase.py                    # backfills `phase` on existing markets
-python migrations/migrate_market_keys.py              # rewrites markets into canonical form: camelCase keys, stored+indexed slug
+python migrations/migrate_market_keys.py              # rewrites markets under the canonical camelCase keys
 python migrations/migrate_is_draft_consistency.py     # makes `isDraft` agree with `phase` on markets that have one
-python migrations/create_applications_collection.py   # creates the applications collection and its indexes
+python migrations/create_applications_collection.py   # creates the applications collection and its `market_id` index
 ```
 
-`create_applications_collection.py` builds the unique index on (`market_id`, `applicant_email`, `application_type`), which is what stops one address from holding two applications: the public request-key endpoint reads the applicant list before it writes to it, so without the index two concurrent requests for one address each insert an application, and the one nothing can reach afterwards double-counts that applicant through review, assignment, and the D9 form lock.
-A database that already holds such a duplicate cannot take the index; the migration names the documents and stops, because which of the two is the applicant's is the organizer's call.
-The back end builds that index (and the unique index on the applicant login-challenge store) at boot and **refuses to start** if either will not build, so a database it cannot enforce this on fails at startup instead of serving public applicant traffic with the guarantee silently absent.
-Skipping the migration is therefore safe in one direction only: on a clean collection the boot build creates the indexes itself, while on a collection that already holds duplicates the process will not start until they are resolved.
+`create_applications_collection.py` creates the applications collection and indexes it on `market_id`, which is the lookup the D9 application-form lock counts on.
+It is not a uniqueness constraint and nothing on this branch depends on one: the collection has no public writer yet, so the only documents in it are the ones an operator or a test put there.
 
 `migrate_is_draft_consistency.py` **must** be run with the code that makes `phase` the single source of truth, and it is the migration whose omission is visible to vendors.
 A market the old build published carries `phase: "draft"` + `isDraft: false` (publishing was a `PUT` of `isDraft: false`; nothing advanced the phase), and every read now derives the market's state from `phase`.
@@ -110,9 +110,7 @@ Run it after `migrate_phase.py`: the two are disjoint by construction (one touch
 
 `migrate_market_keys.py` **must** be run before the code that reads market documents by the canonical key only.
 An unmigrated market is invisible to every such read: vendors are told the market does not exist at check-in, and organization members get an empty market list.
-It also backfills each market's `slug` - the segment every public URL names it by - and builds the index the public slug lookup queries; a market with no stored slug is reachable at no public URL at all.
-**Run it again even on a database an earlier build already migrated**: that build recorded only the key marker and knew nothing about slugs, so its markets have none.
-The migration records a marker per part in the `schema_migrations` collection when it completes, and the back end refuses to boot unless it can read all of them; the fatal log names every missing marker and the one script that records them.
+The migration records a marker document in the `schema_migrations` collection when it completes, and the back end refuses to boot unless it can read that marker; the fatal log names the script to run.
 The check fails closed on anything short of a confirmed marker - an unknown migration state is not a migrated one - so a deploy that skipped the migration fails loudly at startup rather than quietly serving half the data.
 
 ## Files
