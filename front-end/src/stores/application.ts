@@ -4,6 +4,7 @@ import type { Application } from '@/assets/types/datatypes';
 import { getApiErrorMessage } from '@/utils/api';
 import { applicantApi, setApplicantToken } from '@/utils/applicantApi';
 import {
+  forgetAllDrafts,
   forgetDraft,
   forgetForeignDraft,
   forgetOwnedDraft,
@@ -202,11 +203,13 @@ export const useApplicationStore = defineStore('application', () => {
     try {
       const { data } = await applicantApi.put(applicationUrl(slug), { formData });
       application.value = data.application;
-      // These answers are the server's now, so the draft has nothing left to protect. A draft that
-      // outlived the save it was waiting for would be prefilled over the applicant's own saved
-      // answers on their next visit, which is the data loss this exists to prevent, running
-      // backwards. A save that *failed* keeps it: that is exactly when it is still needed.
-      forgetDraft(slug);
+      // These answers are the server's now, so the drafts this applicant could have been reading -
+      // their own, and the unowned one the application page restores on sight - have nothing left to
+      // protect. A draft that outlived the save it was waiting for would be prefilled over the
+      // applicant's own saved answers on their next visit, or held against them as a contested one,
+      // which is the data loss this exists to prevent, running backwards. A save that *failed* keeps
+      // it: that is exactly when it is still needed.
+      forgetDraft(slug, identityFor(slug));
       return true;
     } catch (err: unknown) {
       error.value = getApiErrorMessage(err, 'Failed to save your application.');
@@ -274,14 +277,18 @@ export const useApplicationStore = defineStore('application', () => {
   /**
    * The person at the screen has looked at these answers and said they are not to be kept - the
    * application page's "not mine" on a restored unowned draft, or its "keep my saved answers" on a
-   * contested one. That statement covers an unowned draft precisely because the answers were on
-   * screen when it was made, so this deletes whatever is there.
+   * contested one. That statement covers the unowned draft precisely because the answers were on
+   * screen when it was made, so this deletes it, along with any draft of the applicant's own.
+   *
+   * It reaches no further than that. A draft owned by *another* address is answers this page has
+   * never shown anybody, so a visitor's "not mine" says nothing about them; they are ended where a
+   * draft meets a proved identity (`forgetForeignDraft`) and nowhere else.
    *
    * A view that did *not* show the draft has no such statement to pass on: see
    * `discardOwnDraftAnswers`.
    */
   function discardDraftAnswers(slug: string): void {
-    forgetDraft(slug);
+    forgetDraft(slug, identityFor(slug));
   }
 
   /**
@@ -309,9 +316,10 @@ export const useApplicationStore = defineStore('application', () => {
   }
 
   /**
-   * A deliberate sign-out, so the draft goes too: an applicant who signs out on a shared machine -
-   * a library terminal, a laptop at the market's own front desk - must not leave their half-typed
-   * answers to be prefilled into the next person's form.
+   * A deliberate sign-out, so every draft this market holds on this tab goes with it - whoever owns
+   * them. An applicant who signs out on a shared machine - a library terminal, a laptop at the
+   * market's own front desk - is saying they are done with it, and leaving anybody's half-typed
+   * answers behind is what prefills them into the next person's form.
    *
    * This is why signing out and being signed *out* are different functions. See
    * `endExpiredSession`, which must not do this.
@@ -319,7 +327,7 @@ export const useApplicationStore = defineStore('application', () => {
   function logout() {
     const slug = marketSlug.value;
     clearSession();
-    if (slug) forgetDraft(slug);
+    if (slug) forgetAllDrafts(slug);
     error.value = null;
   }
 

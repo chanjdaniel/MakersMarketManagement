@@ -233,6 +233,56 @@ test.describe('Public applicant flow', () => {
     await expect(dashboard.field('business_name')).toContainText(NO_ANSWER);
   });
 
+  test('answers stranded by an expired session survive a stranger typing into the same form', async ({
+    page,
+  }) => {
+    const apply = new ApplyPage(page);
+    const login = new ApplicantLoginPage(page);
+    const dashboard = new ApplicantDashboardPage(page);
+
+    // The same shared tab, and the same expiry: the first applicant's unsaved answers are held for
+    // them, owned, because a verified session is what wrote them.
+    await apply.goto(market.marketSlug);
+    await apply.fillField('business_name', 'Alice Bakery');
+    await apply.fillField('product_type', 'Sourdough');
+    await apply.submit();
+    await page.waitForURL(loginUrl(market.marketSlug, 'apply'));
+    await login.signIn(market.marketId, APPLICANT);
+    await page.waitForURL(applyUrl(market.marketSlug));
+    await apply.submit();
+    await expect(apply.savedBanner).toBeVisible();
+
+    await apply.fillField('business_name', 'Alice Secret Recipes Ltd');
+    await expireTheSessionOnTheNextSave(page);
+    await apply.submit();
+    await page.waitForURL(loginUrl(market.marketSlug, 'apply'));
+
+    // Now somebody who never signs in walks up to the tab and uses the form. They cannot read the
+    // stranded answers - those have an owner and it is not them - so they type their own, and press
+    // the button that carries answers to the login screen. That press is a *write*, and it is owned
+    // by nobody: with one slot per market it lands on top of the first applicant's answers and
+    // destroys them, with no sign-in, no proved identity and nobody ever having read them. An owner
+    // the storage cannot keep two of is not an owner.
+    await apply.goto(market.marketSlug);
+    await expect(apply.input('business_name')).toHaveValue('');
+    await apply.fillField('business_name', 'Passerby Pretzels');
+    await apply.fillField('product_type', 'Pretzels');
+    await apply.submit();
+    await page.waitForURL(loginUrl(market.marketSlug, 'apply'));
+
+    // The first applicant comes back to the tab and signs in, and the save the expiry interrupted is
+    // finished for them - with the answers they typed, not the ones a passer-by left on the way past.
+    await login.signIn(market.marketId, APPLICANT);
+    await page.waitForURL(applyUrl(market.marketSlug));
+    await expect(apply.savedBanner).toBeVisible();
+    await expect(apply.input('business_name')).toHaveValue('Alice Secret Recipes Ltd');
+
+    await login.goto(market.marketSlug);
+    await login.signIn(market.marketId, APPLICANT);
+    await page.waitForURL(dashboardUrl(market.marketSlug));
+    await expect(dashboard.field('business_name')).toContainText('Alice Secret Recipes Ltd');
+  });
+
   test('answers typed by somebody who never signed in are not saved onto the applicant who does', async ({
     page,
   }) => {
@@ -358,6 +408,12 @@ test.describe('Public applicant flow', () => {
     await apply.useTypedAnswers();
     await expect(apply.input('business_name')).toHaveValue('Unclaimed Bakery');
     await expect(apply.input('product_type')).toHaveValue('Pretzels');
+
+    // Asked once. The question the choice above puts is "are these yours", and it has been answered:
+    // re-asking it under the restored-draft notice would offer a button that throws the answers away,
+    // one click after the applicant said they were theirs.
+    await expect(apply.draftChoice).not.toBeVisible();
+    await expect(apply.draftNotice).not.toBeVisible();
 
     // Saying whose they are is not asking for them to be sent: that is still a press of the button.
     await expect(apply.savedBanner).not.toBeVisible();

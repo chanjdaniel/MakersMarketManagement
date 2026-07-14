@@ -77,12 +77,17 @@ const contestedDraft = computed(
  * tab, and a tab at a shared desk is not a person. Restoring them is what the applicant who typed
  * them is owed; saying so, in front of the one person who can tell, is what the applicant who did
  * not is owed. See `@/utils/applicantDraft`.
+ *
+ * A *contested* draft is not this, and never becomes it. The question above is the same question -
+ * are these yours - asked where the product could not act without an answer, and it has been asked
+ * and answered. Putting this notice up afterwards would ask it a second time about the very answers
+ * the applicant just claimed, one click from a button that throws them away.
  */
 const restoredDraftNotice = computed(
   () =>
     !!draft.value &&
     !draft.value.owned &&
-    !contestedDraft.value &&
+    !draft.value.contested &&
     !draftNoticeDismissed.value,
 );
 

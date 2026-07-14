@@ -364,23 +364,33 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   draft that was not saved. `ApplicationPage.completePendingSave()` finishes the save the button
   promised; `ApplicantDashboard.restorePendingEdits()` reopens the edit form over it.
 - **A draft is what an *unfinished* save left behind, so anything that finishes it clears it**: a
-  successful save (`forgetDraft`), a deliberate sign-out (a shared machine must not prefill the next
-  person's form), and Cancel on the dashboard edit. Only `endExpiredSession` deliberately keeps it -
-  that is the one moment the applicant most needs their answers to still be there.
+  successful save, a deliberate sign-out (a shared machine must not prefill the next person's form),
+  and Cancel on the dashboard edit. Only `endExpiredSession` deliberately keeps it - that is the one
+  moment the applicant most needs their answers to still be there.
+  Each of those deletes exactly what the person in front of it has spoken about, and no more.
   Cancel clears the applicant's *own* draft and nothing else (`discardOwnDraftAnswers` ->
   `forgetOwnedDraft`): the dashboard restores an owned draft and no other, so an unowned one was
   never on that screen, and a Cancel that deleted it would be one applicant silently throwing away
-  answers a stranger typed on a shared tab. The unconditional delete (`discardDraftAnswers` ->
-  `forgetDraft`) is for the callers that *have* a person's statement about the answers in front of
-  them: sign-out, and the application page's "not mine" / "keep my saved answers".
-- **A draft is owned by (market, email), because an application is** - and the email half exists
-  because of the rule above it. A tab is not one applicant: expiry leaves the draft in storage on
-  purpose, so a laptop at a convention's front desk holds one applicant's unsaved answers while the
-  next one signs in on it. Owned by nobody, those answers were prefilled into the new applicant's
-  form and then *saved onto their application* by `completePendingSave`, with nothing pressed. So the
-  owner is recorded with the answers, only the owner may read them, and signing in as anyone else
-  destroys them (`forgetForeignDraft`, called from `verifyKey` - the one place a draft and a proved
-  identity meet). The owner comes from `identityFor(slug)`, never from the bare session address: a
+  answers a stranger typed on a shared tab. A successful save and the application page's "not mine" /
+  "keep my saved answers" (`discardDraftAnswers`) clear both drafts *that applicant could have been
+  shown* (`forgetDraft` -> their own, plus the unowned one the page restores on sight) and leave
+  another address's alone. Sign-out (`forgetAllDrafts`) is the one statement that covers a draft its
+  maker never saw: they are done with the machine, so nothing this market holds on it survives them.
+- **A draft is owned by (market, email), because an application is - and that pair is the storage
+  key, not a field inside one slot per market.** A tab is not one applicant: expiry leaves the draft
+  in storage on purpose, so a laptop at a convention's front desk holds one applicant's unsaved
+  answers while the next one signs in on it. Owned by nobody, those answers were prefilled into the
+  new applicant's form and then *saved onto their application* by `completePendingSave`, with nothing
+  pressed. So the owner is recorded with the answers, only the owner may read them, and signing in as
+  anyone else destroys them (`forgetForeignDraft`, called from `verifyKey` - the one place a draft and
+  a proved identity meet).
+  One slot per market cannot hold two people's answers, and the second writer silently wins: a
+  stranger typing into the signed-out form overwrote the answers an applicant's expired session had
+  left behind - no sign-in, no proved identity, nobody having read them. An ownership model the
+  storage cannot represent is not a model, it is a comment, so `utils/applicantDraft` keys one slot
+  per (market, owner) and exactly one per market for "nobody". Every rule above is a rule the storage
+  can now actually keep; do not fold it back into a single slot.
+  The owner comes from `identityFor(slug)`, never from the bare session address: a
   session names an applicant to *the one market it was issued for*, so a vendor signed in to market A
   who types into market B's form must not have B's draft stamped with the address A knows them by -
   they would be unable to read their own answers back after signing in to B as anyone else.
@@ -414,6 +424,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   each one "fixing" the other. So neither side is touched: the saved answers stay in the form, the
   draft stays in storage, and `ApplicationPage` asks (`apply-draft-choice`). An unowned draft is
   deleted only by the person at the screen saying it is not theirs.
+  It is asked *once*: "are these yours" is the whole content of that choice, so an applicant who has
+  answered it must not then meet `apply-draft-notice`, which asks the same question again about the
+  answers they just claimed - one click from a button that throws them away. `restoredDraftNotice`
+  therefore keys on `draft.contested`, not on the computed the acceptance flips.
   The empty-form case is not this case and must not grow friction from it: with nothing saved, the
   draft is restored on sight, which is the primary path.
   The rule lives in the store and not in the two views that restore drafts, because the third one will

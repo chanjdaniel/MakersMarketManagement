@@ -24,6 +24,14 @@
  * (that is the moment the answers are most needed), so a laptop at a convention's own front desk can
  * hold one applicant's unsaved answers while the next applicant signs in on it.
  *
+ * So the owner is part of the *storage key*, not a field inside one slot per market. A single slot
+ * cannot hold answers belonging to two people, and the second writer would silently win: a stranger
+ * typing into the signed-out form would overwrite - with no sign-in, no proved identity, and nobody
+ * having read them - the unsaved answers an applicant's expired session had left behind. An
+ * ownership model the storage cannot represent is not a model; it is a comment. One slot per (market,
+ * owner), plus exactly one per market for "nobody", is what makes each of the rules below something
+ * the storage can actually keep.
+ *
  * An **owned** draft was written while a verified session was live, so the product knows whose
  * answers those are: only that address can read them back, and signing in as anybody else destroys
  * them (`forgetForeignDraft`). Restoring them, and finishing the save they were interrupted by, is
@@ -62,14 +70,24 @@ export interface StoredDraft {
   answers: Record<string, unknown>;
 }
 
-function draftKey(marketSlug: string): string {
-  return `${DRAFT_KEY_PREFIX}${marketSlug}`;
-}
-
 /** Addresses are compared, so they are compared in one spelling. The login screen sends this one. */
-function normalizeOwner(email: DraftOwner): DraftOwner {
+function normalizeOwner(email: DraftOwner | undefined): DraftOwner {
   const normalized = email?.trim().toLowerCase();
   return normalized ? normalized : null;
+}
+
+/**
+ * Every slot this market holds on this tab shares this prefix, which is what lets a sign-in find the
+ * drafts of the addresses it displaces. The parts are escaped so the separator cannot be smuggled in
+ * through either of them, and one market's prefix cannot be another market's prefix plus an owner.
+ */
+function marketPrefix(marketSlug: string): string {
+  return `${DRAFT_KEY_PREFIX}${encodeURIComponent(marketSlug)}:`;
+}
+
+/** The one slot (market, owner) owns. The empty owner is "nobody", and there is one of those. */
+function draftKey(marketSlug: string, owner: DraftOwner): string {
+  return `${marketPrefix(marketSlug)}${owner ? encodeURIComponent(owner) : ''}`;
 }
 
 /**
@@ -77,36 +95,62 @@ function normalizeOwner(email: DraftOwner): DraftOwner {
  * configured to refuse site data throws on read. Losing the draft is bad; taking the application
  * form down with it is worse, so every one of these degrades to "there is no draft".
  */
-function loadDraft(marketSlug: string): StoredDraft | null {
+function readSlot(marketSlug: string, owner: DraftOwner): StoredDraft | null {
   if (!marketSlug) return null;
   try {
-    const raw = sessionStorage.getItem(draftKey(marketSlug));
+    const raw = sessionStorage.getItem(draftKey(marketSlug, owner));
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
     const { email, answers } = parsed as Partial<StoredDraft>;
     if (!answers || typeof answers !== 'object' || Array.isArray(answers)) return null;
-    if (email !== null && typeof email !== 'string') return null;
-    return { email: normalizeOwner(email), answers: answers as Record<string, unknown> };
+    // The owner is in the key and in the value, so a slot whose two disagree has been written by
+    // something that is not this module, and there is no reading it that is not a guess.
+    if (normalizeOwner(email) !== owner) return null;
+    return { email: owner, answers: answers as Record<string, unknown> };
   } catch {
     return null;
   }
 }
 
-function storeDraft(marketSlug: string, draft: StoredDraft): void {
+function removeSlot(marketSlug: string, owner: DraftOwner): void {
   try {
-    sessionStorage.setItem(draftKey(marketSlug), JSON.stringify(draft));
+    sessionStorage.removeItem(draftKey(marketSlug, owner));
   } catch {
-    // A browser that will not store the draft still gets a working form.
+    // Nothing to do: the draft is already unreadable to anyone who asks for it.
+  }
+}
+
+/** Every key this market holds, whoever owns it - the only thing that has to enumerate. */
+function marketSlots(marketSlug: string): string[] {
+  if (!marketSlug) return [];
+  const prefix = marketPrefix(marketSlug);
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < sessionStorage.length; i += 1) {
+      const key = sessionStorage.key(i);
+      if (key?.startsWith(prefix)) keys.push(key);
+    }
+    return keys;
+  } catch {
+    return [];
+  }
+}
+
+function removeKey(key: string): void {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    // As above.
   }
 }
 
 /**
  * Hold these answers for `email`, who is `null` when nobody is signed in on this market - which is
- * the only honest owner for answers typed by a person who has not said who they are. The owner is
- * recorded with the answers rather than folded into the storage key so that a draft belonging to
- * somebody else is *found* and destroyed on the next sign-in, instead of sitting in storage waiting
- * for its owner to come back to a machine they have walked away from.
+ * the only honest owner for answers typed by a person who has not said who they are. Each owner
+ * writes to their own slot, so a draft written here can never be one written by somebody else: the
+ * answers an expired session left behind are still there after a stranger types into the same form
+ * on the same tab, and they are still that applicant's.
  */
 export function rememberDraft(
   marketSlug: string,
@@ -114,7 +158,12 @@ export function rememberDraft(
   answers: Record<string, unknown>,
 ): void {
   if (!marketSlug) return;
-  storeDraft(marketSlug, { email: normalizeOwner(email), answers });
+  const owner = normalizeOwner(email);
+  try {
+    sessionStorage.setItem(draftKey(marketSlug, owner), JSON.stringify({ email: owner, answers }));
+  } catch {
+    // A browser that will not store the draft still gets a working form.
+  }
 }
 
 /**
@@ -123,16 +172,23 @@ export function rememberDraft(
  * to the unowned draft only: an owned one is a signed-in applicant's unsaved answers, and a
  * signed-out visitor is not known to be them.
  *
+ * A signed-in applicant is entitled to both, so their own draft comes first: it is the one the
+ * product can prove is theirs, and the one that carries an interrupted save. The unowned draft is
+ * what they get when they have none, which is the ordinary path - they typed it, signed in, and came
+ * back for it.
+ *
  * The owner is handed back rather than stripped off here on purpose. A caller that receives bare
  * answers cannot tell whether the product knows who typed them, and the only safe default for that
  * caller - never restore, never save - would throw away the interrupted save this exists to finish.
  * So the distinction travels with the answers, and every caller has to decide about it.
  */
 export function readDraft(marketSlug: string, email: DraftOwner): StoredDraft | null {
-  const draft = loadDraft(marketSlug);
-  if (!draft) return null;
-  if (draft.email !== null && draft.email !== normalizeOwner(email)) return null;
-  return draft;
+  const owner = normalizeOwner(email);
+  if (owner) {
+    const owned = readSlot(marketSlug, owner);
+    if (owned) return owned;
+  }
+  return readSlot(marketSlug, null);
 }
 
 /**
@@ -148,9 +204,11 @@ export function readDraft(marketSlug: string, email: DraftOwner): StoredDraft | 
  * page still puts them back on screen, and says so.
  */
 export function forgetForeignDraft(marketSlug: string, email: string): void {
-  const draft = loadDraft(marketSlug);
-  if (!draft || draft.email === null) return;
-  if (draft.email !== normalizeOwner(email)) forgetDraft(marketSlug);
+  const mine = draftKey(marketSlug, normalizeOwner(email));
+  const unowned = draftKey(marketSlug, null);
+  for (const key of marketSlots(marketSlug)) {
+    if (key !== mine && key !== unowned) removeKey(key);
+  }
 }
 
 /**
@@ -159,20 +217,36 @@ export function forgetForeignDraft(marketSlug: string, email: string): void {
  * the dashboard are only ever the owned ones (`restorePendingEdits`), so an unowned draft it never
  * showed them is not its to destroy: those answers were typed by whoever was at the keyboard before,
  * this applicant has never seen them, and only a person looking at answers can say they are not
- * theirs. `forgetDraft` is the unconditional delete, for the callers entitled to make it - a
- * deliberate sign-out, and the application page's "not mine" on answers it has actually displayed.
+ * theirs.
  */
 export function forgetOwnedDraft(marketSlug: string, email: DraftOwner): void {
-  const draft = loadDraft(marketSlug);
-  if (!draft || draft.email === null) return;
-  if (draft.email === normalizeOwner(email)) forgetDraft(marketSlug);
+  const owner = normalizeOwner(email);
+  if (!marketSlug || !owner) return;
+  removeSlot(marketSlug, owner);
 }
 
-export function forgetDraft(marketSlug: string): void {
+/**
+ * The applicant is done with the answers this market's pages could have put in front of them: their
+ * own draft, and the unowned one the application page restores on sight. Both go - a save that
+ * succeeded has taken them to the server, and a "not mine" has thrown them away, and either way a
+ * draft left behind is one that would be laid back over the applicant's saved answers on their next
+ * visit, which is this mechanism's own data loss running backwards.
+ *
+ * It does not touch another address's owned draft: that is not this applicant's to end, and nothing
+ * has shown it to them. Signing in is where those die (`forgetForeignDraft`), and signing out is
+ * where everything does (`forgetAllDrafts`).
+ */
+export function forgetDraft(marketSlug: string, email: DraftOwner): void {
   if (!marketSlug) return;
-  try {
-    sessionStorage.removeItem(draftKey(marketSlug));
-  } catch {
-    // Nothing to do: the draft is already unreadable to anyone who asks for it.
-  }
+  forgetOwnedDraft(marketSlug, email);
+  removeSlot(marketSlug, null);
+}
+
+/**
+ * A deliberate sign-out on a machine that is not the applicant's - which is the case this exists for
+ * - so nothing this market holds on this tab is left for the next person to sit down at it, whoever
+ * it belonged to.
+ */
+export function forgetAllDrafts(marketSlug: string): void {
+  for (const key of marketSlots(marketSlug)) removeKey(key);
 }

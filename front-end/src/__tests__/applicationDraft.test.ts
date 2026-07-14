@@ -273,6 +273,10 @@ describe('answers typed before signing in survive the login redirect', () => {
       (back.find('[data-testid="apply-input-booth_size"]').element as HTMLSelectElement).value,
     ).toBe('Large');
     expect(back.find('[data-testid="apply-draft-choice"]').exists()).toBe(false);
+    // And it is not asked again. "Are these yours" is the question the choice above puts, it has
+    // been answered, and the notice that asks it a second time carries a button that throws the
+    // answers away - one click after the applicant said they were theirs.
+    expect(back.find('[data-testid="apply-draft-notice"]').exists()).toBe(false);
     expect(put).not.toHaveBeenCalled();
     expect(back.find('[data-testid="apply-saved"]').exists()).toBe(false);
 
@@ -439,6 +443,73 @@ describe('the draft belongs to one market, and to one applicant', () => {
       owned: false,
       contested: false,
     });
+  });
+
+  it('does not let a stranger typing into the form overwrite the answers an expired session left behind', async () => {
+    // The shared tab again, from the other side. One slot per market cannot hold two people's
+    // answers, so a store keyed by market alone hands this to whoever wrote last: the stranger's
+    // typing would destroy the first applicant's unsaved answers with no sign-in, no proved
+    // identity, and nobody having read them. An owner is only an owner if the storage can keep two.
+    signInAs('first@example.com');
+    const store = useApplicationStore();
+    await store.verifyKey(MARKET, 'first@example.com', '123456');
+    store.rememberDraftAnswers(MARKET, { business_name: 'First Applicant Bakery' });
+    store.endExpiredSession();
+
+    // Nobody is signed in, so these are owned by nobody - and they are not the first applicant's.
+    store.rememberDraftAnswers(MARKET, { business_name: 'Stranger Bakery' });
+
+    signInAs('first@example.com');
+    await store.verifyKey(MARKET, 'first@example.com', '123456');
+    expect(store.draftFor(MARKET)).toEqual({
+      answers: { business_name: 'First Applicant Bakery' },
+      owned: true,
+      contested: false,
+    });
+
+    // And the answers typed on this tab before anyone signed in are still there for the person who
+    // signs in next, who the product has no reason to think is not the one who typed them.
+    signInAs('second@example.com');
+    await store.verifyKey(MARKET, 'second@example.com', '654321');
+    expect(store.draftFor(MARKET)).toEqual({
+      answers: { business_name: 'Stranger Bakery' },
+      owned: false,
+      contested: false,
+    });
+  });
+
+  it('leaves nothing behind for this market when the applicant signs out on a shared machine', async () => {
+    // Sign-out is the one statement that covers a draft the applicant never saw: they are done with
+    // the machine, and anything this market holds on it is prefill waiting for the next person.
+    const store = useApplicationStore();
+    store.rememberDraftAnswers(MARKET, { business_name: 'Stranger Bakery' });
+    signInAs('vendor@example.com');
+    await store.verifyKey(MARKET, 'vendor@example.com', '123456');
+    store.rememberDraftAnswers(MARKET, { business_name: 'Acme' });
+
+    store.logout();
+
+    expect(store.draftFor(MARKET)).toBeNull();
+    signInAs('next@example.com');
+    await store.verifyKey(MARKET, 'next@example.com', '654321');
+    expect(store.draftFor(MARKET)).toBeNull();
+  });
+
+  it('clears the answers typed before sign-in once the save they were waiting for lands', async () => {
+    // The primary path, one step past the save. The unowned draft has reached the server, so a copy
+    // left in storage is one that comes back on the next visit as answers "we cannot tell whether
+    // you typed" - held against the application the applicant had just made out of them.
+    const store = useApplicationStore();
+    store.rememberDraftAnswers(MARKET, { business_name: 'Acme' });
+
+    signInAs('vendor@example.com');
+    vi.spyOn(applicantApi, 'put').mockResolvedValue({
+      data: { application: { id: 'app-1', formData: { business_name: 'Acme' } } },
+    } as never);
+    await store.verifyKey(MARKET, 'vendor@example.com', '123456');
+
+    expect(await store.saveApplication(MARKET, { business_name: 'Acme' })).toBe(true);
+    expect(store.draftFor(MARKET)).toBeNull();
   });
 
   it('keeps the draft when the save it was waiting for fails', async () => {
