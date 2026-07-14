@@ -14,7 +14,7 @@ from unittest.mock import patch
 from conftest import (
     FakeApplicationsCollection,
     FakeKeyedCollection,
-    mongo_matches,
+    FakeSlugMarketsCollection,
     stored_market,
 )
 from datatypes import (
@@ -71,37 +71,6 @@ def _seed_challenge(
 
 def _stored_challenge(login_codes, email, market_id="market-123"):
     return login_codes.find_one({"market_id": market_id, "email": email})
-
-
-class FakeSlugMarketsCollection:
-    """Stand-in for the markets collection, matching filters the way Mongo does.
-
-    ``find`` applies the filter rather than handing back everything, so the public slug lookup is
-    exercised as it actually runs: it queries the *stored* slug, and a document that does not carry
-    one is a market Mongo would never return.
-    """
-
-    def __init__(self, docs):
-        self.docs = docs if isinstance(docs, list) else [docs]
-        self.last_update = None
-
-    def find_one(self, query):
-        return next(self.find(query), None)
-
-    def find(self, query, projection=None):
-        matched = [dict(d) for d in self.docs if mongo_matches(d, query)]
-        if projection:
-            matched = [{k: v for k, v in d.items() if k in projection} for d in matched]
-        return iter(matched)
-
-    def update_one(self, _filter, update):
-        self.last_update = update
-        from types import SimpleNamespace
-        return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
-
-    def insert_one(self, document):
-        from types import SimpleNamespace
-        return SimpleNamespace(inserted_id="fake-id")
 
 
 @pytest.fixture

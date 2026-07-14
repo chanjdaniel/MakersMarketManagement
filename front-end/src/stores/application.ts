@@ -12,19 +12,23 @@ function applicationUrl(marketSlug: string): string {
 }
 
 /**
- * Unsaved answers to one market's form, and whether the product knows whose they are.
+ * Unsaved answers to one market's form, and what the product knows about whose they are.
  *
  * `owned` is what decides how far a view may go with them. Answers written under a verified session
  * belong to that applicant, so they are restored and the save they were interrupted by is finished,
  * without asking again. Answers typed before anyone signed in belong to whoever was at the keyboard,
  * which is not necessarily whoever is at it now: they are restored into the visible form - on the
  * ordinary path they are the reader's own, and withholding them loses a first-time applicant exactly
- * what they pressed a button to keep - but they are never written to the server on anybody's behalf,
- * and never laid over an application that already has saved answers. See `@/utils/applicantDraft`.
+ * what they pressed a button to keep - but they are never written to the server on anybody's behalf.
+ *
+ * `contested` is the one case where even putting them on screen is a decision nothing here is
+ * entitled to make: unowned answers, and an applicant signed in who already has answers saved. See
+ * `draftFor`, and `@/utils/applicantDraft`.
  */
 export interface ApplicantDraft {
   answers: Record<string, unknown>;
   owned: boolean;
+  contested: boolean;
 }
 
 export const useApplicationStore = defineStore('application', () => {
@@ -229,19 +233,25 @@ export const useApplicationStore = defineStore('application', () => {
   }
 
   /**
-   * The unsaved answers this market's pages may act on, and whether the product knows whose they
-   * are. A draft another applicant left on this tab is not readable here at all; one typed before
-   * anyone signed in comes back marked unowned, which is what tells a view it may put those answers
-   * on screen but may never save them on anybody's behalf.
+   * The unsaved answers this market's pages may act on, and what is known about whose they are. A
+   * draft another applicant left on this tab is not readable here at all; one typed before anyone
+   * signed in comes back marked unowned, which is what tells a view it may put those answers on
+   * screen but may never save them on anybody's behalf.
    *
-   * An unowned draft is destroyed here rather than handed back when the applicant reading it already
-   * has answers on the server. Unowned answers are restored because on the ordinary path they are
-   * the applicant's own - typed a moment ago, on this page, before signing in. An applicant who has
-   * *saved* an application did not type them on the way to this session, so on the device this
-   * mechanism is written for - a shared one - they are a stranger's, and laying them over a
-   * submitted application under a notice reading "we put back what you entered" is an invitation to
-   * press Save on somebody else's answers. The saved application wins, and the draft that could only
-   * corrupt it goes.
+   * `contested` is unowned answers held against an application that *already* has saved ones. Two
+   * ordinary paths end there and nothing in this product can tell them apart. One is a vendor who has
+   * applied before, opening the market's public apply link - the only URL they were ever given -
+   * retyping their answers while signed out and pressing the button to sign in and save them: those
+   * answers are theirs, and they typed them a minute ago. The other is a shared device, where a
+   * stranger typed into the form and walked away, and the applicant who signs in next has an
+   * application of their own that the stranger's typing would be laid over, under a notice they would
+   * read as their own draft.
+   *
+   * Every rule that guessed between them destroyed somebody's answers. Overlaying the saved
+   * application corrupts the returning applicant's submission; discarding the draft throws away the
+   * answers they just typed, which is the loss this whole mechanism exists to prevent, aimed at the
+   * person it was written for. So neither side is touched: both are kept, and the view puts the
+   * question to the one party who knows the answer.
    *
    * The rule lives here, not in the views, because both of them restore drafts and the next one
    * will too: a boundary kept per call site is a boundary the next call site is written without.
@@ -251,11 +261,8 @@ export const useApplicationStore = defineStore('application', () => {
     if (!draft || Object.keys(draft.answers).length === 0) return null;
 
     const owned = draft.email !== null;
-    if (!owned && isAuthenticatedFor(slug) && hasSavedAnswers()) {
-      forgetDraft(slug);
-      return null;
-    }
-    return { answers: draft.answers, owned };
+    const contested = !owned && isAuthenticatedFor(slug) && hasSavedAnswers();
+    return { answers: draft.answers, owned, contested };
   }
 
   /**

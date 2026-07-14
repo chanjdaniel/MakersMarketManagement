@@ -329,7 +329,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (`PUBLIC_MARKET_FIELDS`, passed to `published_market_by_slug`), never the organizer's `setupObject`,
   `assignmentObject` and `modificationList`, which for a market with a full assignment is a
   multi-megabyte decode per page load. An indexed query bounds how many documents a public read
-  touches; only a projection bounds how big one is. There is deliberately **no global ceiling** on it:
+  touches; only a projection bounds how big one is. **Every applicant read is projected, not just the
+  unauthenticated ones**: `_market_for_applicant` (`APPLICANT_MARKET_FIELDS`) names the fields the
+  token-gated GET and PUT read, because the applicant's dashboard calls *both* endpoints on mount and
+  an unprojected read on either one pays the whole cost the other one stopped paying. A token makes
+  that a cost rather than an exposure; it does not make it free.
+  The fakes enforce it (`FakeSlugMarketsCollection` in `back-end/tests/conftest.py` applies the
+  projection, and `TestApplicantReadsOnlyTheFieldsItServes` pins it), so a read of a field nobody
+  asked for fails in the suite instead of returning `None` in production.
+  There is deliberately **no global ceiling** on it:
   a global cap on an unauthenticated read is
   a cap an attacker reaches on purpose, and what breaks when they do is the application form for every
   applicant at every market, which is the outage the limit was written to prevent (the same reason
@@ -385,13 +393,25 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   application are not - so the line is drawn at the write, not at the display. Both shared-tab paths -
   the expired session's owned draft and the walk-away unowned one - are pinned in
   `front-end/e2e/applicant.spec.ts`, and no unit test can reach either.
-  The one place an unowned draft is *not* restored is over an application that already holds saved
-  answers: `draftFor` (the store) destroys it instead of handing it back. Display is only recoverable
-  while the reader can tell the answers are not theirs, and a returning applicant looking at a form
-  that says "we put back what you entered on this device" has every reason to read a stranger's
-  typing as their own draft and press Save on it - which lands it on a submitted application by a
-  deliberate press instead of a silent write. The rule lives in the store and not in the two views
-  that restore drafts, because the third one will be written without it.
+- **The one thing the product will not do about an unowned draft is guess** (`draftFor`'s `contested`
+  flag, in the store).
+  Unowned answers held against an application that *already* has saved ones are the one case where
+  even putting them on screen is a decision, and two entirely ordinary paths arrive at it with nothing
+  to tell them apart.
+  A vendor who has applied before opens the market's public `/apply` link - the only URL they were
+  ever given - retypes their answers while signed out, and presses the button to sign in and save
+  them: those answers are *theirs*, typed a minute ago.
+  On a shared desk, a stranger typed them and walked away, and the applicant who signs in next has a
+  submitted application of their own that a restore would lay them over, under a notice they would
+  read as their own draft.
+  Overlaying corrupts the second; discarding destroys the first - and *both* have been shipped here,
+  each one "fixing" the other. So neither side is touched: the saved answers stay in the form, the
+  draft stays in storage, and `ApplicationPage` asks (`apply-draft-choice`). An unowned draft is
+  deleted only by the person at the screen saying it is not theirs.
+  The empty-form case is not this case and must not grow friction from it: with nothing saved, the
+  draft is restored on sight, which is the primary path.
+  The rule lives in the store and not in the two views that restore drafts, because the third one will
+  be written without it.
 - **The signed-out button does not say "Save".** It cannot save - there is no session to save into -
   so it says `Continue to sign in`, and the Save it promised is the one waiting on the other side of
   the redirect (`submitLabel` in `ApplicationPage`). A button labelled Save that saves nothing is how
@@ -401,10 +421,29 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   is the only thing that says so** - `router/index.ts` and `App.vue` both read it, and they must
   keep reading the same field. `App.vue`'s `/check-session` probe redirects a session-less visitor
   to `/login`, which for an applicant or a vendor checking in - neither of whom has an account at
-  all - takes the page away from exactly the person it is for. It must also `await router.isReady()`
-  before asking where it is: route components are lazily imported, so on a cold load the probe
-  answers first while `matched` is still empty, and "is this route public" then asks about no route
-  at all. `front-end/e2e/applicant.spec.ts` is what catches this; no unit test can.
+  all - takes the page away from exactly the person it is for. It must also wait for the first
+  navigation before asking where it is: route components are lazily imported, so on a cold load the
+  probe answers first while `matched` is still empty, and "is this route public" then asks about no
+  route at all. `front-end/e2e/applicant.spec.ts` is what catches this; no unit test can.
+- **Nothing may wait on `router.isReady()` directly - wait on `routerSettled` (`utils/routerReady`).**
+  Two callers need the first navigation: the mount in `main.ts` (which must not paint the organizer's
+  width floor over an applicant's phone for a frame) and the session probe in `App.vue` (which must
+  not send an applicant to the organizer's login page). `isReady()` cannot serve both, and the way it
+  fails is silent. When the first navigation *fails* - a lazy chunk a deploy has replaced, a
+  `JSON.parse` of a corrupt `localStorage.user` in the router guard - vue-router rejects the promises
+  it has handed out, empties the set that held them, and stays not-ready; a *second* `isReady()` then
+  registers a handler for a navigation that already happened and nothing will drive again, so it never
+  settles at all - neither resolving nor rejecting - and its caller simply stops, with no error
+  anywhere. A `.catch()` does not fix that, which is the trap: the promise is not rejected, it is
+  abandoned. `routerSettled` awaits the navigation once per router, resolves whether it succeeded or
+  failed, and hands every later caller the same answer. It must be called *while* the first navigation
+  is in flight (`main.ts` does, in the same tick as `app.use(router)`); asked for after the failure,
+  even it can only return the promise that never settles. `src/__tests__/routerReady.test.ts` pins all
+  of this against the real router, because it is a claim about vue-router's internals and nothing else
+  here would notice if a version changed it.
+  The failure is absorbed rather than propagated on purpose: a white page nobody can navigate off is a
+  far worse outcome than the route that would not load, and the shell is the only surface left that
+  could tell anybody what happened.
 - **The organizer shell's 1000px width floor is the organizer's, not the app's**, and `meta.public`
   is what says which is which (`App.vue`'s `public-shell` class). The organizer's views are tables,
   floorplans and market setup, and they are entitled to that floor; the public pages are the only

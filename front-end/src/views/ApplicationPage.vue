@@ -58,6 +58,19 @@ const draft = ref<ApplicantDraft | null>(null);
 /** Dismissing the notice says "yes, these are mine" - it does not throw the answers away. */
 const draftNoticeDismissed = ref(false);
 
+/** The applicant answered the question below: the unowned answers are theirs, so they go in. */
+const contestedDraftAccepted = ref(false);
+
+/**
+ * Unowned answers, and a saved application to lay them over. Both are somebody's, the product cannot
+ * say whether it is the same somebody, and either way of guessing throws away answers that a person
+ * typed - so the form keeps showing what the server holds, the draft is left where it is, and the
+ * one party who knows is asked. See `draftFor` in the store.
+ */
+const contestedDraft = computed(
+  () => !!draft.value?.contested && !contestedDraftAccepted.value,
+);
+
 /**
  * Answers were put into the form that the product cannot prove belong to whoever is reading it: they
  * were typed before anyone signed in, so all that is known of their author is that they used this
@@ -66,11 +79,27 @@ const draftNoticeDismissed = ref(false);
  * not is owed. See `@/utils/applicantDraft`.
  */
 const restoredDraftNotice = computed(
-  () => !!draft.value && !draft.value.owned && !draftNoticeDismissed.value,
+  () =>
+    !!draft.value &&
+    !draft.value.owned &&
+    !contestedDraft.value &&
+    !draftNoticeDismissed.value,
 );
 
 function readDraft() {
   draft.value = store.draftFor(marketSlug.value);
+}
+
+/** The saved answers, which are only this page's to show when the session that holds them is here. */
+function savedAnswers(): Record<string, unknown> {
+  return signedIn.value ? { ...(store.application?.formData ?? {}) } : {};
+}
+
+/** "They are mine": the unowned answers go into the form, over the saved ones. Nothing is sent. */
+function acceptContestedDraft() {
+  contestedDraftAccepted.value = true;
+  formData.value = { ...savedAnswers(), ...(draft.value?.answers ?? {}) };
+  validationErrors.value = {};
 }
 
 // Prefill from what this applicant has already put into this market's form, from either of the two
@@ -87,16 +116,16 @@ function readDraft() {
 // `completePendingSave`. Withholding them until asked for cost the first-time applicant, on the
 // product's primary path, the answers they had just pressed a button to keep.
 //
-// An unowned draft never reaches an applicant who has saved answers already: `draftFor` destroys it
-// rather than hand it back, so the merge below cannot lay a stranger's typing over a submitted
-// application under a notice its owner would read as their own. See `draftFor` in the store.
+// The one draft this merge will not make that decision for is a contested one - unowned answers over
+// an application that already has saved ones. There the saved answers stand, untouched, and the
+// applicant is asked; see `contestedDraft`.
 watch(
   () => (signedIn.value ? store.application : null),
   (app) => {
     readDraft();
     const merged = {
       ...(app?.formData ?? {}),
-      ...(draft.value?.answers ?? {}),
+      ...(contestedDraft.value ? {} : draft.value?.answers ?? {}),
     };
     if (Object.keys(merged).length > 0) {
       formData.value = merged;
@@ -138,14 +167,19 @@ async function completePendingSave() {
 }
 
 /**
- * The restored answers are not this applicant's. The form goes back to what the server holds for
- * them - which is nothing at all if they have saved nothing - and the draft is destroyed rather than
- * left to be restored again for the next person to sit down at a shared tab.
+ * The person at the screen has said the unowned answers are not theirs - either of the restored ones
+ * ("not mine") or of the contested ones ("keep my saved answers"), which are the same sentence about
+ * the same answers. The form goes back to what the server holds for them - nothing at all if they
+ * have saved nothing - and the draft is destroyed rather than left to be put in front of the next
+ * person to sit down at a shared tab.
+ *
+ * This is the only thing that deletes an unowned draft, and a person deciding about their own screen
+ * is the only thing entitled to.
  */
 function clearRestoredDraft() {
   store.discardDraftAnswers(marketSlug.value);
   draft.value = null;
-  formData.value = { ...(signedIn.value ? store.application?.formData ?? {} : {}) };
+  formData.value = savedAnswers();
   validationErrors.value = {};
 }
 
@@ -249,11 +283,43 @@ function goToLogin() {
             <a href="#" @click.prevent="goToLogin">view or edit it</a> at any time.
           </div>
 
+          <!-- Answers typed in this browser before anyone signed in, and an application already
+               saved for the applicant who just did. They may be the same person - a returning vendor
+               retyping their answers on the public link, which is the only URL they have - or a
+               shared desk, where the answers are a stranger's and the saved application is this
+               applicant's. Both are somebody's, so neither is touched and the question goes to the
+               only party who can answer it. -->
+          <div v-if="contestedDraft" class="apply-draft-notice" data-testid="apply-draft-choice">
+            <p class="apply-draft-notice-text">
+              Answers were entered on this device before you signed in, and you already have an
+              application saved. We cannot tell whether you typed them, so
+              <strong>nothing has been changed</strong> - the form below shows your saved answers.
+            </p>
+            <div class="apply-draft-notice-actions">
+              <button
+                type="button"
+                class="apply-draft-keep-btn"
+                @click="acceptContestedDraft"
+                data-testid="apply-draft-choice-use-button"
+              >
+                They're mine - use them
+              </button>
+              <button
+                type="button"
+                class="apply-draft-clear-btn"
+                @click="clearRestoredDraft"
+                data-testid="apply-draft-choice-keep-saved-button"
+              >
+                Keep my saved answers
+              </button>
+            </div>
+          </div>
+
           <!-- Answers typed in this browser before anyone signed in. They are back in the form,
                because they are almost always the answers of the person now reading it - but this
                device may be shared, and the product holds no evidence of who typed them, so it says
                so rather than submitting them for anybody. -->
-          <div v-if="restoredDraftNotice" class="apply-draft-notice" data-testid="apply-draft-notice">
+          <div v-else-if="restoredDraftNotice" class="apply-draft-notice" data-testid="apply-draft-notice">
             <p class="apply-draft-notice-text">
               We put back the answers entered on this device before signing in.
               <strong>They have not been submitted yet</strong> - check them over and press

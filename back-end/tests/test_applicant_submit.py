@@ -12,7 +12,7 @@ from unittest.mock import patch
 from conftest import (
     FakeApplicationsCollection,
     FakeMarketsCollection,
-    mongo_matches,
+    FakeSlugMarketsCollection,
     stored_market,
 )
 from datatypes import (
@@ -41,28 +41,6 @@ VALID_FORM = {
         {"key": "start_date", "label": "Start Date", "type": "date", "required": False, "order": 6},
     ]
 }
-
-
-class FakeSlugMarketsCollection:
-    """Stand-in for the markets collection, matching filters the way Mongo does.
-
-    ``find`` applies the filter rather than handing back everything, so the public slug lookup is
-    exercised as it actually runs: it queries the *stored* slug, and a document that does not carry
-    one is a market Mongo would never return.
-    """
-
-    def __init__(self, docs):
-        self.docs = docs if isinstance(docs, list) else [docs]
-        self.last_update = None
-
-    def find_one(self, query):
-        return next(self.find(query), None)
-
-    def find(self, query, projection=None):
-        matched = [dict(d) for d in self.docs if mongo_matches(d, query)]
-        if projection:
-            matched = [{k: v for k, v in d.items() if k in projection} for d in matched]
-        return iter(matched)
 
 
 MARKET_SLUG = "test-market"
@@ -1015,3 +993,56 @@ class TestApplicantSessionIsMarketScoped:
 
         assert status == 403
         assert apps_coll.find_one({"id": "app-xyz"})["form_data"] == {}
+
+
+class TestApplicantReadsOnlyTheFieldsItServes:
+    """The applicant endpoints fetch the market fields they read, and none of the organizer's.
+
+    A market document carries the organizer's working state - ``setupObject``, ``assignmentObject``,
+    ``modificationList`` - which for a market with a full assignment is megabytes. The applicant's
+    dashboard calls the token-gated endpoints and the public form endpoint on every mount, and an
+    unprojected read of any of them pays for decoding all of that on every load and every save. A
+    token makes that a cost rather than an exposure; it does not make it free.
+    """
+
+    TOKEN = lambda self: {
+        "application_id": "app-xyz",
+        "market_id": "market-123",
+        "email": "vendor@example.com",
+    }
+
+    ORGANIZER_ONLY = ("setupObject", "assignmentObject", "modificationList")
+
+    def test_the_token_gated_read_does_not_fetch_the_organizers_working_state(
+        self, open_market, apps_coll,
+    ):
+        _seeded_app(apps_coll)
+
+        _, status = ApplicantsApi.get_applicant_application(MARKET_SLUG, self.TOKEN())
+
+        assert status == 200
+        assert open_market.last_projection, "the market was fetched whole"
+        for key in self.ORGANIZER_ONLY:
+            assert key not in open_market.last_projection
+
+    def test_the_save_does_not_fetch_the_organizers_working_state(self, open_market, apps_coll):
+        _seeded_app(apps_coll)
+
+        _, status = ApplicantsApi.save_applicant_application(
+            MARKET_SLUG,
+            self.TOKEN(),
+            {"business_name": "Acme", "email": "a@b.com", "booth_size": "Small", "agree": True},
+        )
+
+        assert status == 200
+        assert open_market.last_projection, "the market was fetched whole"
+        for key in self.ORGANIZER_ONLY:
+            assert key not in open_market.last_projection
+
+    def test_the_public_form_read_does_not_fetch_the_organizers_working_state(self, open_market):
+        _, status = ApplicantsApi.get_public_application_form(MARKET_SLUG, client_ip="203.0.113.7")
+
+        assert status == 200
+        assert open_market.last_projection, "the market was fetched whole"
+        for key in self.ORGANIZER_ONLY:
+            assert key not in open_market.last_projection

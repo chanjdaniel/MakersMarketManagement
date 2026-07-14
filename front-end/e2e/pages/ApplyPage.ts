@@ -54,4 +54,23 @@ export class ApplyPage {
   async clearRestoredDraft() {
     await this.page.getByTestId('apply-draft-clear-button').click();
   }
+
+  /**
+   * Shown when answers typed on this device before anyone signed in meet an application that is
+   * already saved. Either one of them may be this applicant's and the product cannot tell which, so
+   * it changes neither and asks.
+   */
+  get draftChoice(): Locator {
+    return this.page.getByTestId('apply-draft-choice');
+  }
+
+  /** "They're mine": the typed answers go into the form. Still nothing is sent. */
+  async useTypedAnswers() {
+    await this.page.getByTestId('apply-draft-choice-use-button').click();
+  }
+
+  /** "Keep my saved answers": the typed answers are discarded, by the one person entitled to. */
+  async keepSavedAnswers() {
+    await this.page.getByTestId('apply-draft-choice-keep-saved-button').click();
+  }
 }

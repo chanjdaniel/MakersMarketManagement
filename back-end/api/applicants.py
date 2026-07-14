@@ -37,6 +37,7 @@ from datatypes import (
 from market_documents import (
     market_doc_field,
     market_doc_filter,
+    market_doc_projection,
     market_name_slug,
     published_market_by_slug,
 )
@@ -228,6 +229,14 @@ ATTEMPTS_EXHAUSTED_ERROR = (
 # ``published_market_by_slug``.
 PUBLIC_MARKET_FIELDS = ("id", "name", "application_form")
 
+# The same set, for the endpoints an applicant reaches holding a token, plus the two fields the phase
+# gate is decided from - ``published_market_by_slug`` adds those itself, and a lookup by id has to
+# name them. The bound matters here for the same reason it matters there and not one reason less: the
+# applicant's dashboard calls both endpoints on mount, so a whole-document decode on this side is
+# exactly the megabytes the projection on that side was added to stop paying, charged again on every
+# load and every save. A token makes this a cost rather than an exposure; it does not make it free.
+APPLICANT_MARKET_FIELDS = (*PUBLIC_MARKET_FIELDS, "phase", "is_draft")
+
 
 def _get_market_doc_by_slug(market_slug: str) -> Optional[Dict[str, Any]]:
     """Find the published market whose slugified name matches the given slug."""
@@ -257,6 +266,9 @@ def _market_for_applicant(
     signed in to whatever phase it has since moved to - that is the phase gate's question to answer,
     with the phase named, not this one's to hide behind a 404.
 
+    It fetches the fields its callers read and no others (``APPLICANT_MARKET_FIELDS``), for the same
+    reason the unauthenticated lookup does.
+
     Returns ``(refusal, None)`` or ``(None, market_doc)``.
 
     Anti-F6: the refusal says the session is for a different market, not merely "forbidden".
@@ -265,7 +277,10 @@ def _market_for_applicant(
         return ({"error": "Market identifier is required."}, 400), None
 
     market_id = token_payload.get("market_id", "")
-    market_doc = markets_collection.find_one(market_doc_filter("id", market_id))
+    market_doc = markets_collection.find_one(
+        market_doc_filter("id", market_id),
+        market_doc_projection(APPLICANT_MARKET_FIELDS),
+    )
     if not market_doc:
         return ({"error": "Market not found."}, 404), None
 

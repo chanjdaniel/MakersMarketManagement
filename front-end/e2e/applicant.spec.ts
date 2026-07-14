@@ -275,12 +275,16 @@ test.describe('Public applicant flow', () => {
     await expect(dashboard.field('business_name')).toContainText(NO_ANSWER);
   });
 
-  test('answers typed by a stranger are not laid over the saved application of the applicant who signs in', async ({
-    page,
-  }) => {
-    const apply = new ApplyPage(page);
-    const login = new ApplicantLoginPage(page);
-
+  /**
+   * An applicant with a saved application signs in on a tab holding answers nobody's session ever
+   * claimed. Two entirely ordinary stories end exactly here and no evidence the product holds tells
+   * them apart: a returning vendor who opened the public apply link - the only URL they have - retyped
+   * their answers while signed out and pressed the button to sign in and save them, and a shared desk
+   * where the typing is a stranger's and the saved application is this applicant's. Overlaying
+   * corrupts the second; discarding destroys the first. Both are answers somebody typed, so the
+   * product changes neither and asks the one party that can tell.
+   */
+  async function signInOverAnUnclaimedDraft(page: Page, apply: ApplyPage, login: ApplicantLoginPage) {
     // The applicant has applied already: they filled in the form, signed in, and saved. Their
     // answers are on the server, and the save that landed them there took the draft with it.
     await apply.goto(market.marketSlug);
@@ -297,22 +301,72 @@ test.describe('Public applicant flow', () => {
     // leaves the tab exactly as the next person at a shared desk finds it.
     await page.reload();
 
-    // Somebody else types into the form and walks away from the login screen without signing in.
+    // Somebody types into the form and walks away from the login screen without signing in. Whether
+    // that somebody is this applicant or a stranger is the whole question, and nothing here answers
+    // it.
     await apply.goto(market.marketSlug);
-    await apply.fillField('business_name', 'Stranger Bakery');
+    await apply.fillField('business_name', 'Unclaimed Bakery');
     await apply.fillField('product_type', 'Pretzels');
     await apply.submit();
     await page.waitForURL(loginUrl(market.marketSlug, 'apply'));
 
-    // The applicant comes back and signs in as themselves. Restoring an unowned draft is only
-    // recoverable while the reader can tell the answers are not theirs - and an applicant reading
-    // "we put back the answers entered on this device" over their own form has every reason to take
-    // a stranger's typing for their own draft and press Save on it. So their saved application wins,
-    // and the draft that could only corrupt it is destroyed rather than shown.
     await login.signIn(market.marketId, APPLICANT);
     await page.waitForURL(applyUrl(market.marketSlug));
+  }
+
+  test('answers typed by nobody in particular are neither laid over a saved application nor thrown away', async ({
+    page,
+  }) => {
+    const apply = new ApplyPage(page);
+    const login = new ApplicantLoginPage(page);
+    const dashboard = new ApplicantDashboardPage(page);
+
+    await signInOverAnUnclaimedDraft(page, apply, login);
+
+    // Nothing has been decided, so nothing has been changed: the saved application is what is on
+    // screen, and the applicant is asked about the rest.
+    await expect(apply.draftChoice).toBeVisible();
     await expect(apply.input('business_name')).toHaveValue('Acme Bakery');
     await expect(apply.input('product_type')).toHaveValue('Sourdough');
-    await expect(apply.draftNotice).not.toBeVisible();
+    await expect(apply.savedBanner).not.toBeVisible();
+
+    // The applicant says they are not theirs, and only then are they gone.
+    await apply.keepSavedAnswers();
+    await expect(apply.draftChoice).not.toBeVisible();
+    await expect(apply.input('business_name')).toHaveValue('Acme Bakery');
+
+    // And the server never heard about them.
+    await login.goto(market.marketSlug);
+    await login.signIn(market.marketId, APPLICANT);
+    await page.waitForURL(dashboardUrl(market.marketSlug));
+    await expect(dashboard.field('business_name')).toContainText('Acme Bakery');
+  });
+
+  test('a returning applicant who retyped their answers before signing in gets them back', async ({
+    page,
+  }) => {
+    const apply = new ApplyPage(page);
+    const login = new ApplicantLoginPage(page);
+    const dashboard = new ApplicantDashboardPage(page);
+
+    await signInOverAnUnclaimedDraft(page, apply, login);
+
+    // The other half of the same question, and the reason it has to be asked rather than guessed:
+    // this is the applicant themselves, and a rule that discarded an unclaimed draft would have
+    // destroyed the answers they typed a minute ago behind the button they pressed to keep them.
+    await expect(apply.draftChoice).toBeVisible();
+    await apply.useTypedAnswers();
+    await expect(apply.input('business_name')).toHaveValue('Unclaimed Bakery');
+    await expect(apply.input('product_type')).toHaveValue('Pretzels');
+
+    // Saying whose they are is not asking for them to be sent: that is still a press of the button.
+    await expect(apply.savedBanner).not.toBeVisible();
+    await apply.submit();
+    await expect(apply.savedBanner).toBeVisible();
+
+    await login.goto(market.marketSlug);
+    await login.signIn(market.marketId, APPLICANT);
+    await page.waitForURL(dashboardUrl(market.marketSlug));
+    await expect(dashboard.field('business_name')).toContainText('Unclaimed Bakery');
   });
 });

@@ -34,8 +34,7 @@
  * entered in this tab, and a tab at a shared desk outlives the person who used it: an applicant can
  * type, press "Continue to sign in", and walk away from the login screen before the next person sits
  * down. So an unowned draft is never *adopted* by whoever signs in next - it stays unowned, and the
- * line it may not cross is the *write*: nothing saves it onto anybody's application, and it is not
- * laid over an application that already holds saved answers (see `draftFor` in the store).
+ * line it may not cross is the *write*: nothing saves it onto anybody's application, ever.
  *
  * Short of that write it is restored, visibly, into the form, under a notice saying where the
  * answers came from and that they have not been submitted. Withholding them is not the safe default
@@ -44,6 +43,13 @@
  * to keep reads that as the product having lost it. Answers shown to the wrong person are cleared by
  * that person; answers written onto the wrong person's application are not. The line is drawn at the
  * write, not at the display.
+ *
+ * The exception, and the only one, is an unowned draft over an application that *already* holds saved
+ * answers. Restoring would lay a possible stranger's typing over a submitted application, and
+ * discarding would throw away answers a possible returning applicant typed a minute ago; nothing here
+ * can tell those two apart, and both guesses destroy somebody's work. So neither is made: the saved
+ * answers stay in the form, the draft stays in storage, and the applicant is asked. See `draftFor` in
+ * the store.
  */
 
 const DRAFT_KEY_PREFIX = 'applicant-draft:';

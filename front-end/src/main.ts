@@ -9,6 +9,7 @@ import App from './App.vue'
 import router from './router'
 import { PrimeVue } from '@primevue/core'
 import { installApplicantSessionExpiry } from './utils/applicantSessionExpiry'
+import { routerSettled } from './utils/routerReady'
 
 const app = createApp(App)
 
@@ -28,14 +29,11 @@ installApplicantSessionExpiry(router)
 // phone for that first frame, which is a visible flash of the sideways-scrolled layout the floor was
 // scoped away from those pages to prevent.
 //
-// Waiting for it is not the same as depending on it. `isReady()` *rejects* when the first navigation
-// fails - a lazy route chunk that a deploy has replaced, a guard that threw - and a mount chained
-// only to its fulfilment would leave the app permanently unmounted on a white page, which is a far
-// worse thing than the frame of layout it is waiting to avoid. So the failure is absorbed and the
-// app is mounted either way: the router reports the navigation error through its own channels, and
-// the shell it paints is the only surface that could tell anyone about it.
-router.isReady()
-  .catch((err: unknown) => {
-    console.error('The first navigation failed; mounting anyway.', err)
-  })
-  .then(() => app.mount('#app'))
+// Waiting for it is not the same as depending on it. A first navigation that *fails* - a lazy route
+// chunk a deploy has replaced, a guard that threw - must not leave the app permanently unmounted on a
+// white page, which is a far worse thing than the frame of layout the wait exists to avoid. So this
+// waits for the navigation to be over rather than to have worked, and mounts either way. `App.vue`
+// waits on the same thing, which is why it is asked through `routerSettled` and not of the router
+// directly: `isReady()` answers a second caller with a promise that never settles once the first
+// navigation has failed.
+routerSettled(router).then(() => app.mount('#app'))

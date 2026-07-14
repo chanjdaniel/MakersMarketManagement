@@ -184,7 +184,7 @@ describe('a session that expires mid-save does not cost the applicant their answ
     ).toBe('Acme Bakery & Cafe');
     // Written under a verified session, so it is decidably this applicant's: the dashboard is
     // allowed to put it back in front of them without asking whose it is.
-    expect(store.draftFor(MARKET)).toEqual({ answers: EDITED, owned: true });
+    expect(store.draftFor(MARKET)).toEqual({ answers: EDITED, owned: true, contested: false });
   });
 
   it('drops the draft once the applicant cancels the edit it belonged to', async () => {

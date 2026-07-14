@@ -168,6 +168,18 @@ from datatypes import (
 )
 
 
+def mongo_project(doc: dict, projection) -> dict:
+    """Apply a Mongo projection the way the server does, so a fake hands back what Mongo would.
+
+    A fake that ignores the projection hands the caller fields the real query never fetched, which
+    is exactly how a read of a field nobody asked for passes here and reads ``None`` in production.
+    Only the inclusion form is modelled, because that is the only form these callers use.
+    """
+    if not projection:
+        return doc
+    return {key: value for key, value in doc.items() if key in projection}
+
+
 class FakeMarketsCollection:
     """Stand-in for the markets collection, holding one market document."""
 
@@ -176,8 +188,8 @@ class FakeMarketsCollection:
         self.last_update = None
         self.inserted = None
 
-    def find_one(self, _query):
-        return dict(self.doc) if self.doc is not None else None
+    def find_one(self, _query, projection=None):
+        return mongo_project(dict(self.doc), projection) if self.doc is not None else None
 
     def update_one(self, _filter, update):
         self.last_update = update
@@ -186,6 +198,40 @@ class FakeMarketsCollection:
     def insert_one(self, document):
         self.inserted = document
         return SimpleNamespace(inserted_id="mongo-id")
+
+
+class FakeSlugMarketsCollection:
+    """Stand-in for the markets collection, matching filters and projections the way Mongo does.
+
+    ``find`` applies the filter rather than handing back everything, so the public slug lookup is
+    exercised as it actually runs: it queries the *stored* slug, and a document that does not carry
+    one is a market Mongo would never return. It applies the projection for the same reason, one
+    step on: the applicant endpoints fetch the fields they read and no others, and a fake that
+    served the whole document would let a read of the rest pass here and find nothing in production.
+
+    It lives here, and not in the two suites that need it, because it did live in both of them: the
+    same fake written twice is the same fix applied once.
+    """
+
+    def __init__(self, docs):
+        self.docs = docs if isinstance(docs, list) else [docs]
+        self.last_update = None
+        self.last_projection = None
+
+    def find_one(self, query, projection=None):
+        return next(self.find(query, projection), None)
+
+    def find(self, query, projection=None):
+        self.last_projection = projection
+        matched = [dict(d) for d in self.docs if mongo_matches(d, query)]
+        return iter([mongo_project(d, projection) for d in matched])
+
+    def update_one(self, _filter, update):
+        self.last_update = update
+        return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
+
+    def insert_one(self, _document):
+        return SimpleNamespace(inserted_id="fake-id")
 
 
 def mongo_matches(doc: dict, query: dict) -> bool:

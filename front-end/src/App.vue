@@ -7,6 +7,7 @@ import ElementNavigation from './components/elements/ElementNavigation.vue';
 
 import { onMounted, ref, provide, computed, watch } from 'vue';
 import { useRoute, useRouter } from "vue-router";
+import { routerSettled } from './utils/routerReady';
 
 const hostname = import.meta.env.VITE_FLASK_HOST;
 
@@ -59,9 +60,14 @@ onMounted(async () => {
 
   // Every route component is lazily imported, so a navigation still in flight has matched nothing
   // yet, and asking where we are before it lands asks about no page at all - whose answer to "is it
-  // public" is no. `main.ts` mounts this app only once the router is ready, and this waits for the
-  // same thing, because a mount from anywhere else must not lose that race either.
-  await router.isReady();
+  // public" is no. `main.ts` mounts this app only once the first navigation is over, and this waits
+  // for the same thing, because a mount from anywhere else must not lose that race either.
+  //
+  // Over, not successful: a first navigation that failed leaves this page unpainted, and the redirect
+  // below is the only thing left that can get the visitor anywhere. Waiting on `router.isReady()`
+  // here would forfeit exactly that - after a failure it hands a second caller a promise it never
+  // settles, so nothing below this line would ever run. See `routerSettled`.
+  await routerSettled(router);
 
   // Having no session on a public route is not a problem to fix: those pages are reached by
   // applicants and by vendors checking in, none of whom have an organizer account at all, so

@@ -119,6 +119,7 @@ describe('answers typed before signing in survive the login redirect', () => {
     expect(useApplicationStore().draftFor(MARKET)).toEqual({
       answers: TYPED_ANSWERS,
       owned: false,
+      contested: false,
     });
   });
 
@@ -197,9 +198,14 @@ describe('answers typed before signing in survive the login redirect', () => {
     expect(store.draftFor(MARKET)).toBeNull();
   });
 
-  it('leaves a returning applicant their own saved answers, not a stranger typing on this device', async () => {
-    // The other half of the shared tab. Somebody typed into the form, pressed the button, and walked
-    // away from the login screen; the applicant who signs in next has an application of their own.
+  /**
+   * Unowned answers, and an applicant who signs in already holding a saved application. Two ordinary
+   * stories end here and the product cannot tell them apart: a returning vendor who retyped their
+   * answers on the public link before signing in, and a shared desk where the typing is a stranger's.
+   * Overlaying corrupts the second one's submission; discarding destroys the first one's answers. So
+   * it does neither, and asks - these three tests are the question and both of its answers.
+   */
+  async function signInOverAStrangersTyping() {
     await typeAndLeaveForTheLoginScreen();
 
     const pinia = createPinia();
@@ -213,21 +219,69 @@ describe('answers typed before signing in survive the login redirect', () => {
 
     const back = mount(ApplicationPage, { global: { plugins: [pinia] } });
     await flushPromises();
+    return { back, store, put };
+  }
 
-    // Their saved application wins outright. Restoring is only recoverable while the reader can tell
-    // the answers are not theirs - and a returning applicant reading "we put back what you entered on
-    // this device" has every reason to take a stranger's typing for their own draft and press Save on
-    // it, which lands it on their submitted application by a deliberate press instead of a silent
-    // write. So the stranger's draft is destroyed rather than shown.
+  it('asks rather than choosing when unowned answers meet an application that is already saved', async () => {
+    const { back, store, put } = await signInOverAStrangersTyping();
+
+    // Nothing has been decided, so nothing has been touched: the saved application is what is on
+    // screen, and the answers typed on this device are still in storage, waiting on an answer.
+    expect(back.find('[data-testid="apply-draft-choice"]').exists()).toBe(true);
     expect(
       (back.find('[data-testid="apply-input-business_name"]').element as HTMLInputElement).value,
     ).toBe('Their Own Bakery');
     expect(
       (back.find('[data-testid="apply-input-booth_size"]').element as HTMLSelectElement).value,
     ).toBe('Small');
+    expect(put).not.toHaveBeenCalled();
+    expect(store.draftFor(MARKET)).toEqual({
+      answers: TYPED_ANSWERS,
+      owned: false,
+      contested: true,
+    });
+  });
+
+  it('keeps the saved application when the applicant says the typed answers are not theirs', async () => {
+    const { back, store, put } = await signInOverAStrangersTyping();
+
+    await back.find('[data-testid="apply-draft-choice-keep-saved-button"]').trigger('click');
+
+    // A stranger's typing reached neither their form nor their application, and a shared tab does not
+    // go on offering it to everybody who sits down at it.
+    expect(
+      (back.find('[data-testid="apply-input-business_name"]').element as HTMLInputElement).value,
+    ).toBe('Their Own Bakery');
+    expect(back.find('[data-testid="apply-draft-choice"]').exists()).toBe(false);
     expect(back.find('[data-testid="apply-draft-notice"]').exists()).toBe(false);
     expect(put).not.toHaveBeenCalled();
     expect(store.draftFor(MARKET)).toBeNull();
+  });
+
+  it('puts the typed answers in the form when the applicant says they are theirs, and still saves nothing for them', async () => {
+    const { back, put } = await signInOverAStrangersTyping();
+
+    await back.find('[data-testid="apply-draft-choice-use-button"]').trigger('click');
+
+    // The returning applicant who retyped their answers gets them back - which is the whole point of
+    // asking rather than discarding. The save is still theirs to press: the product has been told
+    // whose answers these are, it has not been told to submit them.
+    expect(
+      (back.find('[data-testid="apply-input-business_name"]').element as HTMLInputElement).value,
+    ).toBe('Acme Bakery');
+    expect(
+      (back.find('[data-testid="apply-input-booth_size"]').element as HTMLSelectElement).value,
+    ).toBe('Large');
+    expect(back.find('[data-testid="apply-draft-choice"]').exists()).toBe(false);
+    expect(put).not.toHaveBeenCalled();
+    expect(back.find('[data-testid="apply-saved"]').exists()).toBe(false);
+
+    await back.find('[data-testid="apply-form"]').trigger('submit');
+    await flushPromises();
+
+    expect(put).toHaveBeenCalledWith('/public/markets/summer-market/applicant/application', {
+      formData: TYPED_ANSWERS,
+    });
   });
 
   it('keeps the answers when a visitor backs out of the login screen without verifying', async () => {
@@ -273,6 +327,7 @@ describe('the draft belongs to one market, and to one applicant', () => {
     expect(store.draftFor('market-b')).toEqual({
       answers: { business_name: 'Acme' },
       owned: false,
+      contested: false,
     });
   });
 
@@ -290,6 +345,7 @@ describe('the draft belongs to one market, and to one applicant', () => {
     expect(store.draftFor(MARKET)).toEqual({
       answers: { business_name: 'Acme' },
       owned: true,
+      contested: false,
     });
   });
 
@@ -338,6 +394,7 @@ describe('the draft belongs to one market, and to one applicant', () => {
     expect(store.draftFor(MARKET)).toEqual({
       answers: { business_name: 'Acme' },
       owned: false,
+      contested: false,
     });
   });
 
@@ -364,6 +421,7 @@ describe('the draft belongs to one market, and to one applicant', () => {
     expect(store.draftFor(MARKET)).toEqual({
       answers: { business_name: 'Acme' },
       owned: true,
+      contested: false,
     });
   });
 });
