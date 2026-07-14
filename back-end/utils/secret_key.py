@@ -32,7 +32,7 @@ import logging
 import os
 import secrets
 
-from utils.configured_secret import is_published
+from utils.configured_secret import configured_secret, is_published
 from utils.deployment import (
     INSECURE_LOCAL_DEV_VAR,
     insecure_local_dev,
@@ -60,9 +60,11 @@ def signing_secret() -> str:
             local development process, when the configured value is one this repository has
             published, or when it is too short to be a secret.
     """
-    configured = os.getenv(SECRET_KEY_VAR, "").strip()
+    value = os.getenv(SECRET_KEY_VAR, "")
+    _reject_a_secret_that_is_not_one(value)
+
+    configured = configured_secret(value)
     if configured:
-        _reject_a_secret_that_is_not_one(configured)
         return configured
 
     if insecure_local_dev():
@@ -80,17 +82,20 @@ def signing_secret() -> str:
     )
 
 
-def _reject_a_secret_that_is_not_one(configured: str) -> None:
+def _reject_a_secret_that_is_not_one(value: str) -> None:
     """Refuse the values that are already public, and the ones too short to stay private.
 
     This holds on a development machine too. The escape hatch exists so a process with *no* key can
     still boot, with a random one; it is not a licence to sign with a key the internet already has,
     and a ``.env`` carrying a published literal is exactly the file that gets copied to a deployment.
 
+    A blank value is not refused here: it is what an unset variable and a forgotten one both look
+    like, and the caller answers it with the escape hatch or the refusal that names the variable.
+
     Raises:
         SecretKeyNotConfiguredError: what a published or too-short key amounts to.
     """
-    if is_published(configured):
+    if is_published(value):
         raise SecretKeyNotConfiguredError(
             f"{SECRET_KEY_VAR} is set to a value this repository has published. It appears in the "
             f"source history, the env template or the deploy guide, so it is readable by anyone who "
@@ -103,7 +108,8 @@ def _reject_a_secret_that_is_not_one(configured: str) -> None:
             f"once; a key everyone already holds is not the alternative."
         )
 
-    if len(configured) < MINIMUM_SECRET_LENGTH:
+    configured = configured_secret(value)
+    if configured and len(configured) < MINIMUM_SECRET_LENGTH:
         raise SecretKeyNotConfiguredError(
             f"{SECRET_KEY_VAR} is {len(configured)} characters long. A signing key is only worth the "
             f"work it takes to guess: this one signs the session cookie the organizer API "

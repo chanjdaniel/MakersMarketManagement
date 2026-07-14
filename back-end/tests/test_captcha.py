@@ -6,6 +6,7 @@ import pytest
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import utils.captcha as captcha_mod
 from utils.captcha import (
     RECAPTCHA_SECRET_KEY_VAR,
     CaptchaNotConfiguredError,
@@ -27,19 +28,29 @@ def deployed(monkeypatch):
     monkeypatch.delenv(INSECURE_LOCAL_DEV_VAR, raising=False)
 
 
+@pytest.fixture
+def no_secret(monkeypatch):
+    """A process holding no reCAPTCHA secret.
+
+    The module global, not the environment: it is captured once at import, so clearing
+    ``RECAPTCHA_SECRET_KEY`` from the environment says nothing to this process. A test that cleared
+    the variable passed only because the shell running it happened not to have one - and in a shell
+    that exports a real key it would have gone to Google instead of testing the bypass.
+    """
+    monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", None)
+
+
 class TestCaptchaBypass:
-    def test_bypass_when_disable_captcha_enabled(self, monkeypatch, local_dev):
+    def test_bypass_when_disable_captcha_enabled(self, monkeypatch, local_dev, no_secret):
         monkeypatch.setenv("DISABLE_CAPTCHA", "true")
-        monkeypatch.delenv("RECAPTCHA_SECRET_KEY", raising=False)
 
         success, score = verify_recaptcha("dummy-token")
 
         assert success is True
         assert score == 1.0
 
-    def test_bypass_when_disable_captcha_is_1(self, monkeypatch, local_dev):
+    def test_bypass_when_disable_captcha_is_1(self, monkeypatch, local_dev, no_secret):
         monkeypatch.setenv("DISABLE_CAPTCHA", "1")
-        monkeypatch.delenv("RECAPTCHA_SECRET_KEY", raising=False)
 
         success, score = verify_recaptcha("dummy-token")
 
@@ -62,7 +73,6 @@ class TestCaptchaBypass:
 
         monkeypatch.setattr("utils.captcha.requests.post", fake_post)
 
-        import utils.captcha as captcha_mod
         monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", "prod-secret-key")
 
         success, score = verify_recaptcha("dummy-token")
@@ -70,9 +80,8 @@ class TestCaptchaBypass:
         assert success is False
         assert score == 0.1
 
-    def test_dev_bypass_when_no_secret_key(self, monkeypatch, local_dev):
+    def test_dev_bypass_when_no_secret_key(self, monkeypatch, local_dev, no_secret):
         monkeypatch.delenv("DISABLE_CAPTCHA", raising=False)
-        monkeypatch.delenv("RECAPTCHA_SECRET_KEY", raising=False)
 
         success, score = verify_recaptcha("dummy-token")
 
@@ -119,7 +128,7 @@ class TestAnUnconfiguredCaptchaFailsClosed:
     stdout", so a deployment could ship with the gate silently off.
 
     The check used to be gated on ``FLASK_ENV == "production"``, which is how it came to be dead
-    code: the repo's own Dockerfile sets ``FLASK_ENV=development``, so every deployment built from
+    code: the repo's own Dockerfile exported ``FLASK_ENV=development``, so every deployment built from
     that image was exempt from the very check that existed for it. Nothing here reads ``FLASK_ENV``
     any more. The refusal is the default, and the exemption is what has to be asked for.
     """

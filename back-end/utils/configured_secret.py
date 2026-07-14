@@ -24,7 +24,6 @@ neither - four x's in a row is a one-in-a-million accident in a random 32-charac
 refusal tells its holder to generate another.
 """
 
-import os
 import re
 
 # Every value this repository has printed where a secret goes: the signing-key fallback that used to
@@ -63,14 +62,20 @@ def is_published(value: str) -> bool:
     return any(shape.search(candidate) for shape in _PLACEHOLDER_SHAPES)
 
 
-def configured_secret(var_name: str) -> str:
-    """The secret ``var_name`` holds, or ``""`` when it holds none.
+def configured_secret(value: str) -> str:
+    """The secret ``value`` holds, or ``""`` when it holds none.
+
+    Takes the value rather than the variable name, because that is what the three callers have: the
+    signing key is read from the environment on every call, the reCAPTCHA secret is captured into a
+    module global at import, and the Resend key is handed to the mailer. All three ask this one
+    question, so the stripping happens once and no caller can disagree with the boot check about what
+    a configured deployment looks like.
 
     A blank value and a published one both answer ``""``, because neither is a secret. Which of the
     two it was is ``is_published``'s to say, so a refusal can name what it actually met rather than
     telling an operator who filled the variable in that they left it empty.
     """
-    value = os.getenv(var_name, "").strip()
-    if is_published(value):
+    candidate = (value or "").strip()
+    if is_published(candidate):
         return ""
-    return value
+    return candidate

@@ -24,8 +24,8 @@ and naming nothing either. Both are variables an operator would otherwise have t
 deployment at a time.
 
 So none of them may be optional by default. Gating those checks on ``FLASK_ENV == "production"``
-was the shape of the bug rather than the fix: the repo's own image sets ``FLASK_ENV=development``
-and nothing overrides it, so a deployment built from that image was exempt from every one of them
+was the shape of the bug rather than the fix: the repo's own image exported ``FLASK_ENV=development``
+and nothing overrode it, so a deployment built from that image was exempt from every one of them
 and said nothing about it. A security control gated on a variable whose default is the insecure
 value is not a control - and neither is a session backend derived from one, which is how a
 disk-less host came to be told to look for a disk.

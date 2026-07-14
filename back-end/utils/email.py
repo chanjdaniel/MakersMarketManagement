@@ -6,7 +6,7 @@ import os
 import logging
 import resend
 
-from utils.configured_secret import is_published
+from utils.configured_secret import configured_secret, is_published
 from utils.deployment import (
     INSECURE_LOCAL_DEV_VAR,
     insecure_local_dev,
@@ -28,17 +28,15 @@ def sendable_key(api_key: str) -> str:
     rolled back behind it and nothing naming the variable. The check and the client ask this one
     question, so a deployment cannot pass the first and fail the second.
     """
-    key = (api_key or "").strip()
-    if not key or is_published(key):
-        return ""
-    return key
+    return configured_secret(api_key)
 
 
 # Initialize Resend client
-resend_api_key = os.getenv(RESEND_API_KEY_VAR, "").strip()
-resend_initialized = bool(sendable_key(resend_api_key))
+resend_api_key = os.getenv(RESEND_API_KEY_VAR, "")
+_resend_key = sendable_key(resend_api_key)
+resend_initialized = bool(_resend_key)
 if resend_initialized:
-    resend.api_key = resend_api_key
+    resend.api_key = _resend_key
     logger.info("Resend API initialized successfully")
 elif is_published(resend_api_key):
     logger.warning(
@@ -111,7 +109,7 @@ def _email_disabled() -> bool:
 
     Honored only by a process that has declared itself a local development one, and activated by the
     DISABLE_EMAIL env var. It used to be scoped by ``FLASK_ENV != "production"``, which scoped it to
-    nothing: the Dockerfile sets ``FLASK_ENV=development`` and nothing overrides it, so a deployment
+    nothing: the Dockerfile exported ``FLASK_ENV=development`` and nothing overrode it, so a deployment
     that inherited ``DISABLE_EMAIL=true`` from a copied env file would silently send no mail at all
     -- while reporting every verification link and reset link as delivered. See ``utils.deployment``.
     """

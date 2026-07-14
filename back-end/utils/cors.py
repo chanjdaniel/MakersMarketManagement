@@ -13,8 +13,8 @@ is not a permissive setting, it is the absence of the control. ``CORS_ALLOWED_OR
 comma-separated list of origins that may do it, and a process that has not been told refuses to boot,
 naming the variable - the same shape as the reCAPTCHA secret and the signing secret, and for the same
 reason: this used to be keyed on ``FLASK_ENV != "production"``,
-and the repo's own image sets ``FLASK_ENV=development``, so every deployment built from it served the
-reflect-any-origin branch. A security control keyed on a variable whose default is the insecure value
+and the repo's own image exported ``FLASK_ENV=development``, so every deployment built from it served
+the reflect-any-origin branch. A security control keyed on a variable whose default is the insecure value
 is not a control.
 
 The local-development escape hatch (see ``utils.deployment``) does not restore the wildcard either.

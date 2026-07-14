@@ -27,14 +27,18 @@ import app as app_module
 import utils.captcha as captcha_mod
 import utils.email as email_mod
 
+from dotenv import dotenv_values
 from flask import Flask
 
 from utils.captcha import RECAPTCHA_SECRET_KEY_VAR
-from utils.cors import CORS_ALLOWED_ORIGINS_VAR
+from utils.cors import CORS_ALLOWED_ORIGINS_VAR, LOOPBACK_ORIGINS
 from utils.deployment import INSECURE_LOCAL_DEV_VAR
-from utils.email import RESEND_API_KEY_VAR
+from utils.email import RESEND_API_KEY_VAR, sendable_key
+from utils.env_file import ENV_FILE
 from utils.secret_key import SECRET_KEY_VAR
 from utils.session_storage import IN_COOKIE, ON_DISK, SESSION_TYPE_VAR
+
+LOCAL_DEV_TEMPLATE = ENV_FILE.parent / ".env.example"
 
 A_REAL_SECRET = "SGDdxXn4YCG4M5pDeUjXTt8g0MSTXNKAtePMxo96b3s"
 
@@ -208,6 +212,37 @@ def test_asking_whether_a_deployment_is_configured_does_not_configure_it(configu
         len(live.after_request_funcs.get(None, [])),
         live.session_interface,
     ) == before
+
+
+def test_the_local_development_template_boots_as_it_stands(deployed, monkeypatch):
+    """`cp .env.example .env` is what STARTUP.md tells a developer to do, and app.py now loads that
+    file - so what the template holds is what the boot check reads. It has to pass.
+
+    A blank where a secret goes plus the escape hatch is the shape that boots; a *placeholder* where a
+    secret goes is the shape that passes a check keyed on truthiness and then fails at request time,
+    which is the whole reason the published values are refused by name. This test is the one thing
+    standing between an edit to that template and a developer who cannot start the back end.
+    """
+    template = dotenv_values(LOCAL_DEV_TEMPLATE)
+    for name, value in template.items():
+        monkeypatch.setenv(name, value or "")
+    monkeypatch.setattr(
+        captcha_mod, "RECAPTCHA_SECRET_KEY", template.get(RECAPTCHA_SECRET_KEY_VAR) or "",
+    )
+    monkeypatch.setattr(
+        email_mod,
+        "resend_initialized",
+        bool(sendable_key(template.get(RESEND_API_KEY_VAR) or "")),
+    )
+
+    defenses = app_module.check_public_endpoint_defenses()
+
+    assert defenses.signing_secret, "an unconfigured dev machine still signs with a real key"
+    assert defenses.origins == [LOOPBACK_ORIGINS], (
+        "a pinned origin overrides the hatch's loopback pattern, so the browser is refused the "
+        "moment Vite lands on another port"
+    )
+    assert defenses.session_backend == ON_DISK
 
 
 def test_configuring_is_what_installs_the_policy(configured):

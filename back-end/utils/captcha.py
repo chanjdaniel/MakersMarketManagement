@@ -19,7 +19,7 @@ import os
 import requests
 from typing import Tuple, Optional
 
-from utils.configured_secret import is_published
+from utils.configured_secret import configured_secret, is_published
 from utils.deployment import (
     INSECURE_LOCAL_DEV_VAR,
     insecure_local_dev,
@@ -27,7 +27,7 @@ from utils.deployment import (
 )
 
 RECAPTCHA_SECRET_KEY_VAR = "RECAPTCHA_SECRET_KEY"
-RECAPTCHA_SECRET_KEY = os.getenv(RECAPTCHA_SECRET_KEY_VAR, "").strip()
+RECAPTCHA_SECRET_KEY = os.getenv(RECAPTCHA_SECRET_KEY_VAR, "")
 RECAPTCHA_VERIFY_URL = "https://www.google.com/recaptcha/api/siteverify"
 MIN_SCORE = 0.5  # Minimum score threshold for reCAPTCHA v3
 
@@ -45,10 +45,7 @@ def verifiable_secret() -> str:
     a configured deployment. Boot and request time both ask this one question, so the check cannot
     pass on a value the request path then chokes on.
     """
-    secret = (RECAPTCHA_SECRET_KEY or "").strip()
-    if not secret or is_published(secret):
-        return ""
-    return secret
+    return configured_secret(RECAPTCHA_SECRET_KEY)
 
 
 def assert_captcha_configured() -> None:
@@ -60,8 +57,7 @@ def assert_captcha_configured() -> None:
             repository has published - which holds everywhere, escape hatch or not, the same way
             it does for the signing key.
     """
-    configured = (RECAPTCHA_SECRET_KEY or "").strip()
-    if is_published(configured):
+    if is_published(RECAPTCHA_SECRET_KEY or ""):
         raise CaptchaNotConfiguredError(
             f"{RECAPTCHA_SECRET_KEY_VAR} is set to a placeholder this repository has printed, not "
             f"to a secret. Google never issued it, so every signup token would be verified against "
@@ -73,7 +69,7 @@ def assert_captcha_configured() -> None:
             f"{INSECURE_LOCAL_DEV_VAR}=true (with DISABLE_CAPTCHA=true) if this is a local "
             f"development machine."
         )
-    if configured:
+    if verifiable_secret():
         return
     if insecure_local_dev():
         warn_insecure_local_dev("reCAPTCHA verification")

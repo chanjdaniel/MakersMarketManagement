@@ -4,10 +4,18 @@ Each of them used to ask its own, and each asked the weakest one available: is t
 Two values answer yes without being a secret, and both are what a half-copied template looks like: a
 blank, and a placeholder this repository has printed. The second is the dangerous one, because it is
 truthy - so the check passes, and the deployment fails later and elsewhere, naming none of it.
+
+``test_every_secret_asks_this_module`` is what keeps that true: three callers each re-implementing
+the same three lines is three chances for one of them to drift back to `if value:`.
 """
+
+import inspect
 
 import pytest
 
+import utils.captcha as captcha_mod
+import utils.email as email_mod
+import utils.secret_key as secret_key_mod
 from utils.configured_secret import (
     PUBLISHED_VALUES,
     configured_secret,
@@ -15,8 +23,6 @@ from utils.configured_secret import (
 )
 
 A_GENERATED_KEY = "SGDdxXn4YCG4M5pDeUjXTt8g0MSTXNKAtePMxo96b3s"
-
-VAR = "A_SECRET_FOR_THIS_TEST"
 
 
 class TestAValueThisRepositoryHasPrinted:
@@ -49,34 +55,56 @@ class TestARealSecret:
         assert not is_published(A_GENERATED_KEY)
         assert not is_published("re_QYt3bK9wLm2ZpR7vX4nHs6Ja")
 
-    def test_survives_the_read(self, monkeypatch):
-        monkeypatch.setenv(VAR, A_GENERATED_KEY)
+    def test_survives_the_read(self):
+        assert configured_secret(A_GENERATED_KEY) == A_GENERATED_KEY
 
-        assert configured_secret(VAR) == A_GENERATED_KEY
-
-    def test_the_whitespace_a_env_file_carries_is_stripped(self, monkeypatch):
-        monkeypatch.setenv(VAR, f"  {A_GENERATED_KEY}  ")
-
-        assert configured_secret(VAR) == A_GENERATED_KEY
+    def test_the_whitespace_a_env_file_carries_is_stripped(self):
+        assert configured_secret(f"  {A_GENERATED_KEY}  ") == A_GENERATED_KEY
 
 
-class TestAVariableThatHoldsNoSecret:
-    def test_an_unset_one_holds_none(self, monkeypatch):
-        monkeypatch.delenv(VAR, raising=False)
+class TestAValueThatHoldsNoSecret:
+    def test_an_unset_variable_holds_none(self):
+        assert configured_secret("") == ""
+        assert configured_secret(None) == ""
 
-        assert configured_secret(VAR) == ""
-
-    def test_a_blank_one_holds_none(self, monkeypatch):
+    def test_a_blank_one_holds_none(self):
         """The shape a forgotten variable takes in a .env file, and truthy to anything reading the
         raw value."""
-        monkeypatch.setenv(VAR, "   ")
-
-        assert configured_secret(VAR) == ""
+        assert configured_secret("   ") == ""
         assert not is_published("   "), "blank is unset, not published - the refusals differ"
 
-    def test_a_published_one_holds_none(self, monkeypatch):
+    def test_a_published_one_holds_none(self):
         """A secret only the deployment holds is the whole of what a secret is. This one is in the
         repo, so every reader has it - which makes it exactly as useful as an empty string."""
-        monkeypatch.setenv(VAR, "re_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+        assert configured_secret("re_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx") == ""
 
-        assert configured_secret(VAR) == ""
+
+class TestEverySecretAsksThisModule:
+    """The documentation calls this module the single answer to "does this value hold a secret?".
+
+    It was not: each of the three read its own variable, stripped it itself, and asked
+    ``is_published`` separately - three copies of one rule, and the next one to be written would have
+    been a fourth. They call it now, and these pin that they still do, because a caller that drifts
+    back to `if value:` is how a placeholder gets taken for a secret again.
+    """
+
+    @pytest.mark.parametrize("reads_the_secret", [
+        secret_key_mod.signing_secret,
+        captcha_mod.verifiable_secret,
+        email_mod.sendable_key,
+    ])
+    def test_it_is_the_one_that_decides(self, reads_the_secret):
+        assert "configured_secret" in inspect.getsource(reads_the_secret)
+
+    def test_the_captcha_secret_comes_through_it(self, monkeypatch):
+        monkeypatch.setattr(captcha_mod, "RECAPTCHA_SECRET_KEY", f"  {A_GENERATED_KEY}  ")
+
+        assert captcha_mod.verifiable_secret() == A_GENERATED_KEY
+
+    def test_the_mail_key_comes_through_it(self):
+        assert email_mod.sendable_key(f"  {A_GENERATED_KEY}  ") == A_GENERATED_KEY
+
+    def test_the_signing_secret_comes_through_it(self, monkeypatch):
+        monkeypatch.setenv("SECRET_KEY", f"  {A_GENERATED_KEY}  ")
+
+        assert secret_key_mod.signing_secret() == A_GENERATED_KEY

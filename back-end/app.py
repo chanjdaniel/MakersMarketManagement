@@ -1,4 +1,10 @@
 # flask run --cert=adhoc > error.log 2>&1
+# First, before anything else: utils.captcha and utils.email read their keys at import, and the boot
+# check below reads the rest, so a `.env` loaded after them is a `.env` nobody saw. See utils.env_file.
+from utils.env_file import load_env_file
+
+load_env_file()
+
 import api.users as UsersApi
 import api.organizations as OrgsApi
 import api.markets as MarketsApi
@@ -141,8 +147,8 @@ def check_public_endpoint_defenses() -> PublicEndpointDefenses:
     and a deployment that has not met it does not serve the organizer app either.
 
     This runs for *every* process, not only one that calls itself production. Conditioning it on
-    ``FLASK_ENV`` is what made the whole check dead code: the repo's own image sets
-    ``FLASK_ENV=development`` and nothing overrides it, so the deployments that most needed the
+    ``FLASK_ENV`` is what made the whole check dead code: the repo's own image exported
+    ``FLASK_ENV=development`` and nothing overrode it, so the deployments that most needed the
     check were exactly the ones exempt from it. The escape hatch is opt-in and it is loud - see
     ``utils.deployment`` - so a development machine can still boot unconfigured while a deployment
     that forgets cannot.

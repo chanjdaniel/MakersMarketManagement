@@ -122,9 +122,9 @@ docker run -d \
   ```
 3. Install Python dependencies:
   ```bash
-   pip install flask flask-session flask-login flask-bcrypt flask-cors pymongo pydantic
+   pip install -r requirements.txt
   ```
-   Or if you have a `requirements.txt`:
+   Install the file, not a hand-listed subset: `app.py` imports the floorplan and email modules on the way up, and `python-dotenv` is what reads the `.env` you write in step 5.
 4. Create necessary directories:
   ```bash
    mkdir -p flask_session csv_exports
@@ -134,7 +134,8 @@ docker run -d \
    cp .env.example .env
   ```
    The template boots as it stands - no keys to go and fetch, no accounts to sign up for.
-   It works because it sets `ALLOW_INSECURE_LOCAL_DEV=true`, which is what lets a process start without the five variables a deployment must set (`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY`, `SESSION_TYPE`), and which names in the log everything it turns off.
+   `app.py` loads `back-end/.env` on the first line it runs (`back-end/utils/env_file.py`), and anything already set in the environment wins over the file, so a variable you export by hand is never shadowed by it.
+   The template works because it sets `ALLOW_INSECURE_LOCAL_DEV=true`, which is what lets a process start without the five variables a deployment must set (`SECRET_KEY`, `RECAPTCHA_SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `RESEND_API_KEY`, `SESSION_TYPE`), and which names in the log everything it turns off.
    Sessions are then signed with a random per-process key, so restarting the back end logs you out; set `SECRET_KEY` to a generated value if that gets annoying.
    Never set `ALLOW_INSECURE_LOCAL_DEV` on a deployed environment - see [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment).
 6. Initialize the database:
@@ -298,6 +299,28 @@ docker system prune -f
 docker-compose build --no-cache
 docker-compose up
 ```
+
+**Backend crash-loops with "`RESEND_API_KEY` / `RECAPTCHA_SECRET_KEY` is set to a placeholder this repository has printed"**:
+
+Your root `.env` was copied from an older template that printed `RESEND_API_KEY=re_xxxxxxxx...` and `RECAPTCHA_SECRET_KEY=6Lcxxxxx...` as if they were fill-in values.
+They never worked - Resend rejects that key, and Google never issued that secret - but they are *truthy*, so the app took them for configured secrets and the failure landed at request time (a 500 per signup, a captcha verified against a key that cannot verify anything).
+They are refused by name at boot now, on a laptop as on a deployment, so the failure lands where it can be read.
+Blank both lines in your `.env` and leave the bypasses beside them on:
+
+```bash
+RESEND_API_KEY=
+RECAPTCHA_SECRET_KEY=
+DISABLE_EMAIL=true
+DISABLE_CAPTCHA=true
+```
+
+`.env.example` at the repository root now ships exactly that shape, so `cp .env.example .env` is the other way out.
+
+**Backend exits at startup with "Refusing to start: ... are not configured" (naming `SECRET_KEY`, `CORS_ALLOWED_ORIGINS`, `SESSION_TYPE`, ...)**:
+
+The five variables the refusal names are boot-time requirements, and nothing in this repository supplies a default for them - a security control keyed on a variable whose default is the insecure value is not a control (see [RELEASING.md](./RELEASING.md#pre-deploy-required-production-environment)).
+Running under `docker-compose`, that is already handled: the compose file sets `ALLOW_INSECURE_LOCAL_DEV=true`.
+Running the back end directly, it means the process has no `.env` to read: do step 5 of Backend Setup (`cd back-end && cp .env.example .env`), which sets the same escape hatch.
 
 **Backend exits at startup with "The market-key migration has not been applied to this database"**:
 

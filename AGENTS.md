@@ -269,6 +269,16 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   template and must boot as it stands (it sets the hatch); a placeholder that is *truthy* is worse
   than a blank, because the app takes it for a configured secret. A deploy doc that is wrong is worse
   than one that is missing, because it will be trusted.
+- **`back-end/.env` is read by `back-end/utils/env_file.py`, called on `app.py`'s first line**, before
+  `utils.captcha` and `utils.email` capture their keys at import - a `.env` loaded after them is a
+  `.env` nobody saw. Nothing loaded that file before this PR (no `load_dotenv`, no `python-dotenv`),
+  which was harmless only while the app booted regardless; with the five requirements in place, the
+  developer who followed `docs/STARTUP.md` met a refusal naming the variable they had just set. The
+  real environment wins (`override=False`): the Docker stack bind-mounts `back-end/` into the
+  container, so a stray `.env` must never be able to hand a process an escape hatch or a signing key
+  it did not choose. `test_the_local_development_template_boots_as_it_stands`
+  (`tests/test_public_endpoint_defenses.py`) runs the shipped template through the real boot check, so
+  an edit that pins an origin or reinstates a placeholder fails there rather than on a laptop.
 
 ## Maintaining this file
 

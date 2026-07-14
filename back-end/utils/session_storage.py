@@ -6,9 +6,10 @@ session in the signed cookie instead. Pick either one as the default and it is w
 only on the other host.
 
 That was the state this variable was in. ``SESSION_TYPE`` fell back to ``filesystem`` unless
-``FLASK_ENV == "production"``, and the Dockerfile sets ``FLASK_ENV=development`` and nothing
-overrides it - the same shape as the CORS hole this package exists to close: a variable derived from
-another variable whose default lies. A serverless deployment that trusted the derivation got
+``FLASK_ENV == "production"``, and the Dockerfile exported ``FLASK_ENV=development`` with nothing
+overriding it - the same shape as the CORS hole this package exists to close: a variable derived from
+another variable whose default lies. ``FLASK_ENV`` is gone from this repository entirely now, which
+is what makes the rule structural: a variable nobody sets is one nobody can key on. A serverless deployment that trusted the derivation got
 ``filesystem``, ``os.makedirs`` raised on the read-only filesystem at import, and every request
 answered 500 without naming a thing.
 
@@ -85,7 +86,7 @@ def session_backend() -> str:
         f"is deployed to: a serverless function has no disk that outlives a request, so '{ON_DISK}' "
         f"there fails at import - every request answers 500 and nothing names this variable - while "
         f"a container that kept its sessions in the cookie would be carrying state it has a disk "
-        f"for. This used to be derived from FLASK_ENV, which the Dockerfile sets to 'development' "
+        f"for. This used to be derived from FLASK_ENV, which the Dockerfile exported as 'development' "
         f"on every deployment built from it, so the derivation answered '{ON_DISK}' exactly where "
         f"it was wrong. Set {SESSION_TYPE_VAR}='{IN_COOKIE}' on a serverless host (Vercel) or "
         f"'{ON_DISK}' on a container or VM, or set {INSECURE_LOCAL_DEV_VAR}=true if this really is "
