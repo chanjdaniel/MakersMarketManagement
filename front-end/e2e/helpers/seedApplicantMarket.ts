@@ -59,7 +59,7 @@ export async function seedApplicantMarket(
   email: string,
   password: string,
 ): Promise<ApplicantMarketSeed> {
-  await loginViaApi(request, baseURL, email, password);
+  const userId = await loginViaApi(request, baseURL, email, password);
   const orgId = await ensureTestOrgAuthenticated(request, baseURL, email);
 
   const marketName = `E2E Applicant ${Date.now()}`;
@@ -69,7 +69,7 @@ export async function seedApplicantMarket(
       name: marketName,
       creationDate: new Date().toISOString(),
       organizationId: orgId,
-      roles: {},
+      roles: { [userId]: 'owner' },
       modificationList: [],
       assignmentObject: {},
     },
