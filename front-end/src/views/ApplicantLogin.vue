@@ -53,6 +53,7 @@ function startCooldown() {
 onUnmounted(() => clearInterval(cooldownTimer));
 
 onMounted(async () => {
+  store.error = null;
   if (store.isAuthenticatedFor(marketSlug.value)) {
     goOnward();
     return;
