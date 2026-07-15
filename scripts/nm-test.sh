@@ -37,11 +37,12 @@ find_free_port() {
 
 # ── Stack identity ───────────────────────────────────────────────────────────
 
-export COMPOSE_PROJECT_NAME="$RUN_ID"
-export TH_MONGO_PORT="$(find_free_port)"
-export TH_BACKEND_PORT="$(find_free_port)"
-export TH_FRONTEND_PORT="$(find_free_port)"
-export TH_MONGO_EXPRESS_PORT="$(find_free_port)"
+COMPOSE_PROJECT_NAME="$RUN_ID"
+TH_MONGO_PORT="$(find_free_port)"
+TH_BACKEND_PORT="$(find_free_port)"
+TH_FRONTEND_PORT="$(find_free_port)"
+TH_MONGO_EXPRESS_PORT="$(find_free_port)"
+export COMPOSE_PROJECT_NAME TH_MONGO_PORT TH_BACKEND_PORT TH_FRONTEND_PORT TH_MONGO_EXPRESS_PORT
 
 echo "nm-test: project=$COMPOSE_PROJECT_NAME"
 echo "nm-test: ports mongo=$TH_MONGO_PORT backend=$TH_BACKEND_PORT frontend=$TH_FRONTEND_PORT mongo-express=$TH_MONGO_EXPRESS_PORT"

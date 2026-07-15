@@ -58,7 +58,7 @@ fi
 
 # Wait for backend to accept connections
 echo "  Waiting for backend..."
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   if curl -k -s -o /dev/null -w '%{http_code}' "$BACKEND_URL/" 2>/dev/null | grep -qE '^(200|404|401)'; then
     echo "  Backend ready."
     break
