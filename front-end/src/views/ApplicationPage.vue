@@ -3,7 +3,6 @@ import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import type { FormField } from '@/assets/types/datatypes';
 import ApplicationFormFields from '@/components/application/ApplicationFormFields.vue';
-import { getApiErrorMessage } from '@/utils/api';
 import { formValidationErrors, sortedFormFields } from '@/utils/applicationForm';
 import { fetchPublicApplicationForm } from '@/utils/publicApplicationForm';
 import { useApplicationStore } from '@/stores/application';
@@ -28,17 +27,12 @@ const sortedFields = computed(() => sortedFormFields(fields.value));
 const signedIn = computed(() => store.isAuthenticatedFor(marketSlug.value));
 
 onMounted(async () => {
-  try {
-    const form = await fetchPublicApplicationForm(marketSlug.value);
-    fields.value = form.fields;
-    marketName.value = form.marketName;
-    phaseLabel.value = form.phaseLabel;
-    isOpen.value = form.isOpen;
-  } catch (err: unknown) {
-    pageError.value = getApiErrorMessage(err, 'Failed to load the application form.');
-  } finally {
-    loading.value = false;
-  }
+  const form = await fetchPublicApplicationForm(marketSlug.value);
+  fields.value = form.fields;
+  marketName.value = form.marketName;
+  phaseLabel.value = form.phaseLabel;
+  isOpen.value = form.isOpen;
+  loading.value = false;
 });
 
 function validateAll(): boolean {

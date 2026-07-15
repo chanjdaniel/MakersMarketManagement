@@ -22,14 +22,9 @@ onMounted(async () => {
   }
 
   loading.value = true;
-  try {
-    const form = await fetchPublicApplicationForm(marketSlug.value);
-    marketName.value = form.marketName;
-  } catch {
-    marketName.value = '';
-  } finally {
-    loading.value = false;
-  }
+  const form = await fetchPublicApplicationForm(marketSlug.value);
+  marketName.value = form.marketName;
+  loading.value = false;
 });
 
 function logout() {

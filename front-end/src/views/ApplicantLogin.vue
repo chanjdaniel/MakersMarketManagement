@@ -18,6 +18,8 @@ const email = ref('');
 const code = ref('');
 const step = ref<'email' | 'code'>('email');
 const submitting = ref(false);
+const validationError = ref<string | null>(null);
+const displayedError = computed(() => validationError.value || store.error);
 
 function goOnward() {
   router.push({
@@ -55,21 +57,18 @@ onMounted(async () => {
     goOnward();
     return;
   }
-  try {
-    marketName.value = (await fetchPublicApplicationForm(marketSlug.value)).marketName;
-  } catch {
-    marketName.value = '';
-  }
+  marketName.value = (await fetchPublicApplicationForm(marketSlug.value)).marketName;
 });
 
 async function requestCode() {
   if (!email.value.trim()) {
-    store.error = 'Email address is required.';
+    validationError.value = 'Email address is required.';
     return;
   }
   if (cooldownApplies.value) {
     return;
   }
+  validationError.value = null;
   store.error = null;
   submitting.value = true;
   const address = email.value.trim().toLowerCase();
@@ -84,9 +83,10 @@ async function requestCode() {
 
 async function verifyCode() {
   if (!code.value.trim()) {
-    store.error = 'Verification code is required.';
+    validationError.value = 'Verification code is required.';
     return;
   }
+  validationError.value = null;
   store.error = null;
   submitting.value = true;
   const ok = await store.verifyCode(
@@ -103,6 +103,7 @@ async function verifyCode() {
 function goBack() {
   step.value = 'email';
   code.value = '';
+  validationError.value = null;
   store.error = null;
 }
 </script>
@@ -116,8 +117,8 @@ function goBack() {
       </p>
     </header>
 
-    <div v-if="store.error" class="login-error" data-testid="applicant-login-error">
-      {{ store.error }}
+    <div v-if="displayedError" class="login-error" data-testid="applicant-login-error">
+      {{ displayedError }}
     </div>
 
     <template v-if="step === 'email'">
