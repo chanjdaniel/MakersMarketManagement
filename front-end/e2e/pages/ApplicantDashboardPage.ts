@@ -13,7 +13,7 @@ export class ApplicantDashboardPage {
   }
 
   get view(): Locator {
-    return this.page.getByTestId('applicant-dashboard-view');
+    return this.page.getByTestId('applicant-dashboard-page');
   }
 
   get editForm(): Locator {
