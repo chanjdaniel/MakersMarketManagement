@@ -43,6 +43,8 @@ from market_documents import published_market_by_slug
 from utils.email import _email_disabled, ready_mailer, from_email, frontend_url
 from utils.application_token import generate_application_token
 
+import api.applications as ApplicationsApi
+
 logger = logging.getLogger(__name__)
 
 # ── Collection setup ──────────────────────────────────────────────────────
@@ -394,12 +396,7 @@ def verify_login_code(market_slug: str) -> tuple:
     # Consume and verify. All failure branches inside this function return the
     # same observable outcome.
     if _consume_and_verify(market_id, email, code):
-        apps_collection = db["applications"]
-        app_doc = apps_collection.find_one({
-            "market_id": market_id,
-            "applicant_email": email,
-            "application_type": "main",
-        })
+        app_doc = ApplicationsApi.find_application_by_email(market_id, email)
         token = None
         if app_doc and app_doc.get("id"):
             token = generate_application_token(

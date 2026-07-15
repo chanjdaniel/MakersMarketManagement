@@ -316,9 +316,7 @@ def save_applicant_application(
         changes["submitted_at"], changes["updated_at"],
     )
     if not app_doc.get("status"):
-        ApplicationsApi.applications_collection.update_one(
-            {"id": app_id}, {"$set": {"status": ApplicationStatus.OPEN.value}},
-        )
+        ApplicationsApi.update_application_status(app_id, ApplicationStatus.OPEN)
 
     updated_doc = ApplicationsApi.find_application_by_id(app_id)
     app = Application(**updated_doc) if updated_doc else Application(**app_doc)

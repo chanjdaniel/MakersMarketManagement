@@ -219,10 +219,10 @@ def test_db():
 def applicant_auth_module(test_db, monkeypatch):
     """Import applicant_auth with our fake database installed."""
     import api.applicant_auth as mod
-    # Replace the module's `db` with our test database
+    import api.applications as ApplicationsApi
     monkeypatch.setattr(mod, "db", test_db)
     monkeypatch.setattr(mod, "challenges_collection", test_db["applicant_login_challenges"])
-    # Disable email sending
+    monkeypatch.setattr(ApplicationsApi, "applications_collection", test_db["applications"])
     monkeypatch.setattr(mod, "_send_code_email", lambda *a, **kw: True)
     return mod
 

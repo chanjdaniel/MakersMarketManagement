@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
-from datatypes import Application, ApplicationStatus
+from datatypes import Application, ApplicationStatus, ApplicationType
 from db_config import get_database
 
 logger = logging.getLogger(__name__)

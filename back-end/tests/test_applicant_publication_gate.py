@@ -12,7 +12,7 @@ and the application serialization that wraps it.
 """
 import pytest
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 import db_config as test_db_config
 from datatypes import (
     Application,
