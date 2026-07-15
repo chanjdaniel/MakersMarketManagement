@@ -31,7 +31,6 @@ from datatypes import (
     Application,
     ApplicationStatus,
     ApplicationType,
-    FormField,
     MarketPhase,
     phase_from_market_document,
 )
@@ -39,12 +38,12 @@ from utils.application_token import (
     generate_application_token,
     verify_application_token,
 )
+from utils.captcha import verify_recaptcha
 
 import api.applications as ApplicationsApi
 
 logger = logging.getLogger(__name__)
 
-APPLICANT_APPLICATION_COLLECTION = "applicants"
 
 # ── Publication gate ───────────────────────────────────────────────────────
 
@@ -117,14 +116,6 @@ def _application_response_organizer(app: Application) -> Dict[str, Any]:
     }
 
 
-def _load_market_results_published(market_id: str) -> bool:
-    """Read the ``results_published`` flag from a stored market document."""
-    from db_config import get_database
-    db = get_database()
-    doc = db["markets"].find_one({"id": market_id}, {"resultsPublished": 1})
-    if not doc:
-        return False
-    return bool(doc.get("resultsPublished"))
 
 
 # ── JWT authentication ─────────────────────────────────────────────────────
@@ -229,7 +220,7 @@ def get_applicant_application(
     # Verify the token belongs to this market
     from db_config import get_database
     db = get_database()
-    market_doc = published_market_by_slug(db["markets"], market_slug, fields=("id",))
+    market_doc = published_market_by_slug(db["markets"], market_slug, fields=("id", "resultsPublished"))
     if not market_doc:
         return {"error": "Market not found."}, 404
 
@@ -248,7 +239,7 @@ def get_applicant_application(
         return {"error": "Application not found."}, 404
 
     app = Application(**app_doc)
-    results_published = _load_market_results_published(market_id)
+    results_published = bool(market_doc.get("resultsPublished"))
     return {"application": _application_response(app, results_published)}, 200
 
 
@@ -276,7 +267,7 @@ def save_applicant_application(
     db = get_database()
 
     market_doc = published_market_by_slug(
-        db["markets"], market_slug, fields=("id", "phase", "applicationForm"),
+        db["markets"], market_slug, fields=("id", "phase", "applicationForm", "resultsPublished"),
     )
     if not market_doc:
         return {"error": "Market not found."}, 404
@@ -320,33 +311,44 @@ def save_applicant_application(
     if not app_doc.get("status"):
         changes["status"] = ApplicationStatus.OPEN.value
 
-    ApplicationsApi.applications_collection.update_one({"id": app_id}, {"$set": changes})
+    ApplicationsApi.update_application_form_data(
+        app_id, stored_form_data,
+        changes["submitted_at"], changes["updated_at"],
+    )
+    if not app_doc.get("status"):
+        ApplicationsApi.applications_collection.update_one(
+            {"id": app_id}, {"$set": {"status": ApplicationStatus.OPEN.value}},
+        )
 
     updated_doc = ApplicationsApi.find_application_by_id(app_id)
     app = Application(**updated_doc) if updated_doc else Application(**app_doc)
-    results_published = _load_market_results_published(market_id)
+    results_published = bool(market_doc.get("resultsPublished"))
     return {"application": _application_response(app, results_published)}, 200
 
 
 def request_applicant_token(
-    market_slug: str, email: str,
+    market_slug: str, email: str, captcha_token: str = "",
 ) -> Tuple[Dict[str, Any], int]:
     """Issue an application-scoped JWT for an applicant who has already verified their email.
 
-    This is the bridge between the 5d code-based login and the JWT-authenticated application
-    endpoints. Called after the applicant has successfully verified their login code.
-    If no application exists for this email+market, one is created (in ``applications_open``
-    phase only -- outside that phase, the email must already have an application).
+    This endpoint requires a reCAPTCHA token to prevent unauthenticated callers from
+    creating applications or obtaining JWTs for arbitrary email addresses.
 
     Args:
         market_slug: The URL-safe slug of the market.
-        email: The applicant's email address (already verified via login code).
+        email: The applicant's email address.
+        captcha_token: The reCAPTCHA token the browser obtained for this action.
 
     Returns:
         Tuple of (response_body, status_code).
     """
     if not email or not email.strip():
         return {"error": "Email is required."}, 400
+
+    captcha_ok, _score = verify_recaptcha(captcha_token, None)
+    if not captcha_ok:
+        return {"error": "Could not verify that this request came from a browser. "
+                         "Please reload the page and try again."}, 400
 
     email = email.strip().lower()
 

@@ -1322,11 +1322,14 @@ def public_get_application_form(market_slug: str) -> Response:
 
 @app.route('/public/markets/<market_slug>/applicant/token', methods=['POST'])
 def applicant_request_token(market_slug: str) -> Response:
-    """Issue an application-scoped JWT after email has been verified via login code."""
+    """Issue an application-scoped JWT. Requires reCAPTCHA verification."""
     try:
         data = request.json or {}
         email = data.get('email') or ''
-        result, status_code = ApplicantsApi.request_applicant_token(market_slug, email)
+        captcha_token = data.get('captchaToken') or data.get('captcha_token') or ''
+        result, status_code = ApplicantsApi.request_applicant_token(
+            market_slug, email, captcha_token,
+        )
         return jsonify(result), status_code
     except Exception as e:
         logger.error(f"Error in applicant_request_token {market_slug}: {e}")

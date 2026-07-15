@@ -159,7 +159,7 @@ function statusColor(status: string): string {
 
         <div class="app-actions">
           <button
-            v-if="app.status === ApplicationStatus.Open || app.status === ApplicationStatus.UnderReview"
+            v-if="app.status === ApplicationStatus.Open || app.status === ApplicationStatus.UnderReview || app.status === ApplicationStatus.ReviewerApproved || app.status === ApplicationStatus.ReviewerRejected"
             class="approve-button"
             @click="handleReview(app, ApplicationStatus.ReviewerApproved)"
             data-testid="app-monitor-approve-button"
@@ -167,7 +167,7 @@ function statusColor(status: string): string {
             Approve
           </button>
           <button
-            v-if="app.status === ApplicationStatus.Open || app.status === ApplicationStatus.UnderReview"
+            v-if="app.status === ApplicationStatus.Open || app.status === ApplicationStatus.UnderReview || app.status === ApplicationStatus.ReviewerApproved || app.status === ApplicationStatus.ReviewerRejected"
             class="reject-button"
             @click="handleReview(app, ApplicationStatus.ReviewerRejected)"
             data-testid="app-monitor-reject-button"
