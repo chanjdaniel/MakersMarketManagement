@@ -92,48 +92,60 @@ const router = createRouter({
       path: '/:marketSlug/check-in',
       name: 'attendance-checkin',
       component: () => import('@/views/AttendanceCheckinView.vue'),
+      meta: { public: true },
     },
     {
       path: '/:marketSlug',
       name: 'market-home',
       component: () => import('@/views/MarketHomeView.vue'),
+      meta: { public: true },
+    },
+    {
+      path: '/:marketSlug/apply',
+      name: 'apply',
+      component: () => import('@/views/ApplicationPage.vue'),
+      meta: { public: true },
+    },
+    {
+      path: '/:marketSlug/applicant-login',
+      name: 'applicant-login',
+      component: () => import('@/views/ApplicantLogin.vue'),
+      meta: { public: true },
+    },
+    {
+      path: '/:marketSlug/applicant/dashboard',
+      name: 'applicant-dashboard',
+      component: () => import('@/views/ApplicantDashboard.vue'),
+      meta: { public: true },
     },
   ],
 })
 
-router.beforeEach((to, from, next) => {
-  const publicPages = ["/login", "/register", "/verify-email", "/reset-password-request", "/reset-password"];
-  const user = JSON.parse(localStorage.getItem("user") || "null");
+router.beforeEach((to, _from, next) => {
+  const publicPages = ['/login', '/register', '/verify-email', '/reset-password-request', '/reset-password'];
+  const user = JSON.parse(localStorage.getItem('user') || 'null');
 
   if (publicPages.includes(to.path)) {
     next();
     return;
   }
 
-  if (to.path.endsWith('/check-in')) {
+  if (to.matched.some((record) => record.meta.public === true)) {
     next();
     return;
   }
-  
+
   if (!user) {
-    next("/login");
+    next('/login');
     return;
   }
 
-  if (user && to.path === "/login") {
-    next("/dashboard");
+  if (user && to.path === '/login') {
+    next('/dashboard');
     return;
   }
 
   next();
-
-  // if (!user && !publicPages.includes(to.path)) {
-  //   next("/login");
-  // } else if (user && to.path === "/login") {
-  //   next("/init");
-  // } else {
-  //   next();
-  // }
 });
 
 export default router

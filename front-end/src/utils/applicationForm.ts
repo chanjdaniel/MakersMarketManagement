@@ -66,3 +66,51 @@ export function applicationFormError(form: ApplicationForm | null): string | nul
     }
     return null;
 }
+
+/**
+ * Whether an applicant has given a real answer for this field type.
+ *
+ * "Present in the form data" is not the same as "answered", and the difference is type-shaped:
+ * an unticked mandatory consent checkbox arrives as ``false`` and an untouched mandatory
+ * multi_select as ``[]``, both of which are non-null, non-empty-string values that a purely
+ * null/blank test would wave through. The back end rejects these, so the front end says so first.
+ */
+export function isFieldAnswered(value: unknown, fieldType: string): boolean {
+  if (value === null || value === undefined) return false;
+  if (fieldType === 'checkbox') return value === true;
+  if (fieldType === 'multi_select') return Array.isArray(value) && value.length > 0;
+  if (typeof value === 'string') return value.trim() !== '';
+  return true;
+}
+
+/** The message the back-end would return for a particular unanswered required field. */
+export function requiredFieldError(field: FormField): string {
+  return `"${field.label}" is required.`;
+}
+
+/** Fields in display order, with any gaps in ``order`` renumbered away. */
+export function sortedFormFields(fields: FormField[]): FormField[] {
+  return [...fields].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+}
+
+/**
+ * Client-side validation of an applicant's answers against the market's field definitions.
+ * Returns an empty record when every required field has been answered.
+ *
+ * This is a front-end convenience that mirrors the back-end's ``_validated_form_data`` check
+ * so the applicant sees what is wrong before the request leaves.
+ */
+export function formValidationErrors(
+  fields: FormField[],
+  formData: Record<string, unknown>,
+): Record<string, string> {
+  const errors: Record<string, string> = {};
+  for (const field of fields) {
+    if (!field.required) continue;
+    const value = formData[field.key];
+    if (!isFieldAnswered(value, field.type)) {
+      errors[field.key] = requiredFieldError(field);
+    }
+  }
+  return errors;
+}
