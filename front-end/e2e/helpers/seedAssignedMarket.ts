@@ -1,9 +1,9 @@
-import type { APIRequestContext } from '@playwright/test';
-import { type SeedResult, seedMarketWithVendors, marketNameToSlug } from './seeds';
+import type { APIRequestContext } from '@playwright/test'
+import { type SeedResult, seedMarketWithVendors, marketNameToSlug } from './seeds'
 
 export interface AssignedSeedResult extends SeedResult {
-  slug: string;
-  assignmentObject: Record<string, unknown>;
+  slug: string
+  assignmentObject: Record<string, unknown>
 }
 
 /**
@@ -24,7 +24,7 @@ export async function seedAssignedMarket(
   email: string,
   password: string,
 ): Promise<AssignedSeedResult> {
-  const seed = await seedMarketWithVendors(request, baseURL, email, password);
+  const seed = await seedMarketWithVendors(request, baseURL, email, password)
 
   // SetupObject with colValues populated so the assignment algorithm has
   // vendor data to work with. colName is included because the assignment
@@ -42,15 +42,9 @@ export async function seedAssignedMarket(
     colInclude: [true, true, true, true, true],
     enumPriorityOrder: [[], [], [], [], []],
     priority: [],
-    marketDates: [
-      { date: '2025-06-01', colNameIdx: 4, colName: 'day_1' },
-    ],
-    tiers: [
-      { id: 1, name: 'Gold' },
-    ],
-    locations: [
-      { name: 'Main Hall' },
-    ],
+    marketDates: [{ date: '2025-06-01', colNameIdx: 4, colName: 'day_1' }],
+    tiers: [{ id: 1, name: 'Gold' }],
+    locations: [{ name: 'Main Hall' }],
     sections: [
       {
         name: 'Hall A',
@@ -67,7 +61,7 @@ export async function seedAssignedMarket(
       tableShareEmailColNameIdx: 3,
       maxDaysColNameIdx: null,
     },
-  };
+  }
 
   const putRes = await request.put(`${baseURL}/markets/${encodeURIComponent(seed.marketId)}`, {
     headers: {
@@ -84,9 +78,9 @@ export async function seedAssignedMarket(
       assignmentObject: {},
       setupObject,
     },
-  });
+  })
   if (!putRes.ok()) {
-    throw new Error(`Market PUT failed: ${putRes.status()} ${await putRes.text()}`);
+    throw new Error(`Market PUT failed: ${putRes.status()} ${await putRes.text()}`)
   }
 
   const assignRes = await request.get(
@@ -94,13 +88,13 @@ export async function seedAssignedMarket(
     {
       headers: { 'X-Owner-Email': email },
     },
-  );
+  )
   if (!assignRes.ok()) {
-    throw new Error(`Assignment GET failed: ${assignRes.status()} ${await assignRes.text()}`);
+    throw new Error(`Assignment GET failed: ${assignRes.status()} ${await assignRes.text()}`)
   }
-  const assignedMarket = await assignRes.json() as Record<string, unknown>;
+  const assignedMarket = (await assignRes.json()) as Record<string, unknown>
 
-  const storedAssignment = (assignedMarket.assignmentObject || {}) as Record<string, unknown>;
+  const storedAssignment = (assignedMarket.assignmentObject || {}) as Record<string, unknown>
 
   const storeRes = await request.put(`${baseURL}/markets/${encodeURIComponent(seed.marketId)}`, {
     headers: {
@@ -117,12 +111,12 @@ export async function seedAssignedMarket(
       setupObject,
       assignmentObject: storedAssignment,
     },
-  });
+  })
   if (!storeRes.ok()) {
-    throw new Error(`Assignment store failed: ${storeRes.status()} ${await storeRes.text()}`);
+    throw new Error(`Assignment store failed: ${storeRes.status()} ${await storeRes.text()}`)
   }
 
-  const slug = marketNameToSlug(seed.marketName);
+  const slug = marketNameToSlug(seed.marketName)
 
-  return { ...seed, slug, assignmentObject: storedAssignment };
+  return { ...seed, slug, assignmentObject: storedAssignment }
 }

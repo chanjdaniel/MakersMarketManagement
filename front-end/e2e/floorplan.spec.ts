@@ -1,6 +1,13 @@
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { test, expect, MarketSetupPage, FloorplanWorkflowPage, BACKEND_URL, TEST_USER } from './fixtures'
+import {
+  test,
+  expect,
+  MarketSetupPage,
+  FloorplanWorkflowPage,
+  BACKEND_URL,
+  TEST_USER,
+} from './fixtures'
 import { ensureTestOrg, loginViaApi } from './helpers/seeds'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -18,11 +25,41 @@ function fakeUploadObject() {
     lastModified: Date.now(),
     data: {
       data: [
-        { email: 'alice@example.com', vendor_name: 'Alice', table_choice: 'Full table', buddy_email: '', day_1: 'Gold' },
-        { email: 'bob@example.com', vendor_name: 'Bob', table_choice: 'Full table', buddy_email: '', day_1: 'Gold' },
-        { email: 'carol@example.com', vendor_name: 'Carol', table_choice: 'Half Table', buddy_email: '', day_1: 'Silver' },
-        { email: 'dave@example.com', vendor_name: 'Dave', table_choice: 'Half Table', buddy_email: 'carol@example.com', day_1: 'Silver' },
-        { email: 'eve@example.com', vendor_name: 'Eve', table_choice: 'Full table', buddy_email: '', day_1: 'Gold' },
+        {
+          email: 'alice@example.com',
+          vendor_name: 'Alice',
+          table_choice: 'Full table',
+          buddy_email: '',
+          day_1: 'Gold',
+        },
+        {
+          email: 'bob@example.com',
+          vendor_name: 'Bob',
+          table_choice: 'Full table',
+          buddy_email: '',
+          day_1: 'Gold',
+        },
+        {
+          email: 'carol@example.com',
+          vendor_name: 'Carol',
+          table_choice: 'Half Table',
+          buddy_email: '',
+          day_1: 'Silver',
+        },
+        {
+          email: 'dave@example.com',
+          vendor_name: 'Dave',
+          table_choice: 'Half Table',
+          buddy_email: 'carol@example.com',
+          day_1: 'Silver',
+        },
+        {
+          email: 'eve@example.com',
+          vendor_name: 'Eve',
+          table_choice: 'Full table',
+          buddy_email: '',
+          day_1: 'Gold',
+        },
       ],
       errors: [],
       meta: {
@@ -74,15 +111,18 @@ test.describe('Floorplan workflow E2E', () => {
       `${BACKEND_URL}/markets/${(await createRes.json()).market_id}`,
       { headers: { 'X-Owner-Email': TEST_USER.email } },
     )
-    const { market } = await marketRes.json() as { market: Record<string, unknown> }
+    const { market } = (await marketRes.json()) as { market: Record<string, unknown> }
 
     // Inject the market + pseudo-upload into localStorage so the setup wizard
     // has columns to display without a real CSV upload.
-    await page.evaluate(({ m, upload, user }) => {
-      localStorage.setItem('market', JSON.stringify(m))
-      localStorage.setItem('upload', JSON.stringify(upload))
-      localStorage.setItem('user', JSON.stringify(user))
-    }, { m: market, upload: fakeUploadObject(), user: TEST_USER.email })
+    await page.evaluate(
+      ({ m, upload, user }) => {
+        localStorage.setItem('market', JSON.stringify(m))
+        localStorage.setItem('upload', JSON.stringify(upload))
+        localStorage.setItem('user', JSON.stringify(user))
+      },
+      { m: market, upload: fakeUploadObject(), user: TEST_USER.email },
+    )
 
     await page.goto('/market-setup')
 

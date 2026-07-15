@@ -72,20 +72,18 @@ test.describe('New market - organization is required', () => {
       },
     })
     expect(createRes.ok()).toBe(true)
-    const { market_id: marketId } = await createRes.json() as { market_id: string }
+    const { market_id: marketId } = (await createRes.json()) as { market_id: string }
 
     // The persisted market carries the organizationId that was submitted.
     const marketRes = await request.get(`${BACKEND_URL}/markets/${marketId}`, {
       headers: { 'X-Owner-Email': TEST_USER.email },
     })
     expect(marketRes.ok()).toBe(true)
-    const { market } = await marketRes.json() as { market: { organizationId: string } }
+    const { market } = (await marketRes.json()) as { market: { organizationId: string } }
     expect(market.organizationId).toBe(orgId)
   })
 
-  test('user with no organizations cannot create a market via API', async ({
-    playwright,
-  }) => {
+  test('user with no organizations cannot create a market via API', async ({ playwright }) => {
     const api = await playwright.request.newContext({
       baseURL: BACKEND_URL,
       ignoreHTTPSErrors: true,
