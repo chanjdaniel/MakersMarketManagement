@@ -44,3 +44,8 @@ export async function verifyLoginCode(
 export function verifyErrorFrom(err: unknown): string {
   return getApiErrorMessage(err, 'Invalid or expired code.');
 }
+
+/** Suitable error message for unexpected request-code failures. */
+export function requestErrorFrom(err: unknown): string {
+  return getApiErrorMessage(err, 'Unable to send code. Please try again.');
+}

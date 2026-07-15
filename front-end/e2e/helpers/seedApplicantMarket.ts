@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import type { APIRequestContext } from '@playwright/test';
 import { mongoContainer } from './containerNames';
 import { loginViaApi, ensureTestOrgAuthenticated, marketNameToSlug } from './seeds';
+import { seedApplication } from './seedApplication';
 
 /**
  * Seed result for a market that an applicant can log into.
@@ -114,33 +115,7 @@ export function seedApplicationDoc(
   marketId: string,
   applicantEmail: string = 'applicant-e2e@example.com',
 ): string {
-  const applicationId = crypto.randomUUID();
-  const application = {
-    id: applicationId,
-    market_id: marketId,
-    applicant_email: applicantEmail,
-    form_data: {},
-    status: 'open',
-    application_type: 'main',
-    submitted_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-
-  execFileSync(
-    'docker',
-    [
-      'exec',
-      mongoContainer(),
-      'mongosh',
-      MONGO_URI,
-      '--quiet',
-      '--eval',
-      `db.applications.insertOne(${JSON.stringify(application)})`,
-    ],
-    { encoding: 'utf-8' },
-  );
-
-  return applicationId;
+  return seedApplication(marketId, applicantEmail, {});
 }
 
 /**

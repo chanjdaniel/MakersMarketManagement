@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { requestLoginCode, verifyLoginCode, verifyErrorFrom } from '@/utils/applicantApi';
+import { requestLoginCode, verifyLoginCode, verifyErrorFrom, requestErrorFrom } from '@/utils/applicantApi';
 
 export const useApplicationStore = defineStore('application', () => {
   const marketId = ref<string | null>(null);
@@ -19,7 +19,7 @@ export const useApplicationStore = defineStore('application', () => {
     try {
       await requestLoginCode(slug, email);
     } catch (err: unknown) {
-      error.value = verifyErrorFrom(err);
+      error.value = requestErrorFrom(err);
     } finally {
       loading.value = false;
     }

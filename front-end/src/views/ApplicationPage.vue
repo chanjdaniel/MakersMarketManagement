@@ -18,8 +18,6 @@ const marketName = ref('');
 const phaseLabel = ref('');
 const isOpen = ref(false);
 const loading = ref(true);
-const pageError = ref<string | null>(null);
-
 const formData = ref<Record<string, unknown>>({});
 const validationErrors = ref<Record<string, string>>({});
 
@@ -78,11 +76,6 @@ function goToLogin() {
       Loading application form...
     </div>
 
-    <div v-else-if="pageError" class="apply-error" data-testid="apply-error">
-      <h2>Unable to Load Application</h2>
-      <p>{{ pageError }}</p>
-    </div>
-
     <template v-else>
       <header class="apply-header">
         <h1 data-testid="apply-market-name">Apply for {{ marketName || marketSlug }}</h1>
@@ -130,7 +123,7 @@ function goToLogin() {
         </form>
       </template>
 
-      <div class="apply-returning" data-testid="apply-returning">
+      <div v-if="!signedIn" class="apply-returning" data-testid="apply-returning">
         Already applied?
         <a href="#" @click.prevent="goToLogin">Sign in to view your application</a>
       </div>
@@ -151,19 +144,6 @@ function goToLogin() {
   font-size: 14px;
   color: var(--mm-grey, #999);
   padding: 40px;
-}
-
-.apply-error h2 {
-  font-family: 'Merge One';
-  font-size: 20px;
-  color: var(--mm-red, #cc0000);
-  margin-bottom: 8px;
-}
-
-.apply-error p {
-  font-family: 'Outfit Regular';
-  font-size: 14px;
-  color: var(--mm-grey, #666);
 }
 
 .apply-header {
