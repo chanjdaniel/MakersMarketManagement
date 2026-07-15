@@ -26,7 +26,7 @@ api.interceptors.request.use((config) => {
  */
 export function getApiErrorMessage(err: unknown, fallback: string): string {
   if (axios.isAxiosError(err)) {
-    return err.response?.data?.error || fallback;
+    return err.response?.data?.message || err.response?.data?.error || fallback;
   }
   return fallback;
 }
