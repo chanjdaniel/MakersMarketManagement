@@ -30,15 +30,12 @@ from market_documents import (
 from datatypes import (
     Application,
     ApplicationStatus,
-    ApplicationType,
     MarketPhase,
     phase_from_market_document,
 )
 from utils.application_token import (
-    generate_application_token,
     verify_application_token,
 )
-from utils.captcha import verify_recaptcha
 
 import api.applications as ApplicationsApi
 
@@ -322,72 +319,6 @@ def save_applicant_application(
     app = Application(**updated_doc) if updated_doc else Application(**app_doc)
     results_published = bool(market_doc.get("resultsPublished"))
     return {"application": _application_response(app, results_published)}, 200
-
-
-def request_applicant_token(
-    market_slug: str, email: str, captcha_token: str = "",
-) -> Tuple[Dict[str, Any], int]:
-    """Issue an application-scoped JWT for an applicant who has already verified their email.
-
-    This endpoint requires a reCAPTCHA token to prevent unauthenticated callers from
-    creating applications or obtaining JWTs for arbitrary email addresses.
-
-    Args:
-        market_slug: The URL-safe slug of the market.
-        email: The applicant's email address.
-        captcha_token: The reCAPTCHA token the browser obtained for this action.
-
-    Returns:
-        Tuple of (response_body, status_code).
-    """
-    if not email or not email.strip():
-        return {"error": "Email is required."}, 400
-
-    captcha_ok, _score = verify_recaptcha(captcha_token, None)
-    if not captcha_ok:
-        return {"error": "Could not verify that this request came from a browser. "
-                         "Please reload the page and try again."}, 400
-
-    email = email.strip().lower()
-
-    from db_config import get_database
-    db = get_database()
-
-    market_doc = published_market_by_slug(
-        db["markets"], market_slug, fields=("id", "phase", "resultsPublished"),
-    )
-    if not market_doc:
-        return {"error": "Market not found."}, 404
-
-    market_id = market_doc.get("id", "")
-    phase = phase_from_market_document(market_doc)
-
-    app_doc = ApplicationsApi.find_application_by_email(market_id, email)
-    if not app_doc:
-        if phase == MarketPhase.APPLICATIONS_OPEN:
-            app = Application(
-                market_id=market_id,
-                applicant_email=email,
-                form_data={},
-                status=ApplicationStatus.OPEN,
-                application_type=ApplicationType.MAIN,
-            )
-            app = ApplicationsApi.find_or_create_application(app)
-            app_doc = ApplicationsApi.find_application_by_email(market_id, email)
-        else:
-            return {"error": "No application found for this email."}, 404
-
-    if not app_doc:
-        return {"error": "Could not create or find application."}, 500
-
-    app = Application(**app_doc)
-    token = generate_application_token(app.id, market_id, email)
-    results_published = bool(market_doc.get("resultsPublished"))
-
-    return {
-        "token": token,
-        "application": _application_response(app, results_published),
-    }, 200
 
 
 # ── Organizer (session-authenticated) endpoints ────────────────────────────

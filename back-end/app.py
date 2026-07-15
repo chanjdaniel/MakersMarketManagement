@@ -1320,23 +1320,6 @@ def public_get_application_form(market_slug: str) -> Response:
         return jsonify({"error": "Internal server error"}), 500
 
 
-@app.route('/public/markets/<market_slug>/applicant/token', methods=['POST'])
-def applicant_request_token(market_slug: str) -> Response:
-    """Issue an application-scoped JWT. Requires reCAPTCHA verification."""
-    try:
-        data = request.json or {}
-        email = data.get('email') or ''
-        captcha_token = data.get('captchaToken') or data.get('captcha_token') or ''
-        result, status_code = ApplicantsApi.request_applicant_token(
-            market_slug, email, captcha_token,
-        )
-        return jsonify(result), status_code
-    except Exception as e:
-        logger.error(f"Error in applicant_request_token {market_slug}: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({"error": "Internal server error"}), 500
-
-
 @app.route('/public/markets/<market_slug>/applicant/application', methods=['GET'])
 def public_get_applicant_application(market_slug: str) -> Response:
     """Return the authenticated applicant's application. Bearer token required."""
