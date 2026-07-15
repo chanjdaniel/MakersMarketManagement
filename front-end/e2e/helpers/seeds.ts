@@ -1,7 +1,4 @@
 import type { APIRequestContext } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { mongoContainer } from './containerNames';
 
 /**
  * Result returned by seedMarketWithVendors().
@@ -126,53 +123,6 @@ const MINIMAL_APPLICATION_FORM = {
     },
   ],
 };
-
-function mongoEval(script: string): string {
-  const MONGO_URI = 'mongodb://admin:secret@localhost:27017/conventioner?authSource=admin';
-  return execFileSync(
-    'docker',
-    ['exec', mongoContainer(), 'mongosh', MONGO_URI, '--quiet', '--eval', script],
-    { encoding: 'utf-8' },
-  ).trim();
-}
-
-/**
- * Insert an Application document directly into Mongo.
- *
- * Used by seeds to create pre-existing applications for testing the D9 lock,
- * assignment computation, and market pipeline without requiring a real applicant
- * submit flow. The D9 lock fires as soon as any application exists, so every
- * caller must finalize the application form and open applications BEFORE calling
- * this function.
- *
- * @param marketId  The market UUID this application belongs to
- * @param applicantEmail  Email of the applicant vendor
- * @param formData  Answers to the application form fields
- * @returns The generated application UUID
- */
-export function insertApplication(
-  marketId: string,
-  applicantEmail: string,
-  formData: Record<string, unknown>,
-): string {
-  const applicationId = randomUUID();
-  const application = {
-    id: applicationId,
-    market_id: marketId,
-    applicant_email: applicantEmail,
-    form_data: formData,
-    status: 'open',
-    application_type: 'main',
-    submitted_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-
-  mongoEval(
-    `db.applications.insertOne(${JSON.stringify(application)})`,
-  );
-
-  return applicationId;
-}
 
 /**
  * Create a test market with vendor data via the back-end API, through the

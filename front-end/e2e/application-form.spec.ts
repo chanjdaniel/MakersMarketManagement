@@ -90,7 +90,7 @@ test.describe('Application form builder', () => {
     authenticatedPage: page,
   }, testInfo) => {
     const formPage = new ApplicationFormPage(page);
-    await createMarket(page, page.request);
+    await createMarket(page);
 
     // The Application Form tab starts empty
     await formPage.openFormTab();
@@ -167,7 +167,7 @@ test.describe('Application form builder', () => {
     playwright,
   }, testInfo) => {
     const formPage = new ApplicationFormPage(page);
-    const marketId = await createMarket(page, page.request);
+    const marketId = await createMarket(page);
 
     // Build and save a form while the market is still applicant-free.
     await formPage.openFormTab();
