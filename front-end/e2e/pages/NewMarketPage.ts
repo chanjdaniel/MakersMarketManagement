@@ -2,13 +2,12 @@ import type { Locator, Page } from '@playwright/test';
 
 /**
  * Page object for the New Market overlay.
- * Covers CSV file upload, market name entry, and submission.
+ * Covers organization selection, market name entry, and submission.
  */
 export class NewMarketPage {
   readonly page: Page;
 
   readonly overlayBackground: Locator;
-  readonly chooseFileButton: Locator;
   readonly orgSelect: Locator;
   readonly orgEmptyHint: Locator;
   readonly orgCreateLink: Locator;
@@ -20,7 +19,6 @@ export class NewMarketPage {
     this.page = page;
 
     this.overlayBackground = page.getByTestId('new-market-overlay-background');
-    this.chooseFileButton = page.getByTestId('file-drop-choose-button');
     this.orgSelect = page.getByTestId('org-select-dropdown');
     this.orgEmptyHint = page.getByTestId('org-select-empty-hint');
     this.orgCreateLink = page.getByTestId('org-select-create-link');
@@ -31,18 +29,7 @@ export class NewMarketPage {
 
   /** Wait for the overlay to be visible. */
   async waitForOverlay(): Promise<void> {
-    await this.chooseFileButton.waitFor({ state: 'visible', timeout: 5000 });
-  }
-
-  /**
-   * Upload a CSV file via the file chooser.
-   * Uses Playwright's fileChooser event to handle the VueUse file dialog.
-   */
-  async uploadCsv(filePath: string): Promise<void> {
-    const fileChooserPromise = this.page.waitForEvent('filechooser');
-    await this.chooseFileButton.click();
-    const fileChooser = await fileChooserPromise;
-    await fileChooser.setFiles(filePath);
+    await this.nameInput.waitFor({ state: 'visible', timeout: 5000 });
   }
 
   /** Fill the market name input. */
@@ -54,11 +41,6 @@ export class NewMarketPage {
   /** Click the submit button to create the market. */
   async clickSubmit(): Promise<void> {
     await this.submitButton.click();
-  }
-
-  /** Wait for the name input to appear (indicating CSV was parsed). */
-  async waitForNameInput(): Promise<void> {
-    await this.nameInput.waitFor({ state: 'visible', timeout: 10000 });
   }
 
   /** Select an organization from the dropdown (first available option). */

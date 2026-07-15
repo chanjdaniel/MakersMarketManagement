@@ -38,22 +38,6 @@ function normalizeVendorAssignment(raw: Record<string, unknown>): VendorAssignme
     };
 }
 
-function parseUploadToGrid(uploadRaw: unknown): string[][] | null {
-    if (!uploadRaw || typeof uploadRaw !== 'object') return null;
-    const u = uploadRaw as { data?: { meta?: { fields?: string[] }; data?: Record<string, unknown>[] } };
-    const fields = u.data?.meta?.fields;
-    const rows = u.data?.data;
-    if (!Array.isArray(fields) || fields.length === 0 || !Array.isArray(rows)) return null;
-    const header = fields.map((f) => String(f));
-    const body: string[][] = rows.map((obj) =>
-        fields.map((f) => {
-            const v = obj[f];
-            return v == null ? '' : String(v);
-        }),
-    );
-    return [header, ...body];
-}
-
 async function loadSourceData() {
     loadError.value = null;
     dataRows.value = null;
@@ -73,26 +57,11 @@ async function loadSourceData() {
             return;
         }
     } catch {
-        // try localStorage upload
+        loadError.value = 'Could not fetch vendor source data.';
+        return;
     }
 
-    const uploadJson = localStorage.getItem('upload');
-    if (uploadJson) {
-        try {
-            const parsed = JSON.parse(uploadJson) as unknown;
-            const asArray = Array.isArray(parsed) ? parsed[0] : parsed;
-            const grid = parseUploadToGrid(asArray);
-            if (grid && grid.length > 1) {
-                dataRows.value = grid;
-                return;
-            }
-        } catch {
-            loadError.value = 'Could not read vendor data.';
-            return;
-        }
-    }
-
-    loadError.value = 'No vendor source data found. Upload CSV when creating the market or ensure it is saved on the server.';
+    loadError.value = 'No vendor source data found.';
 }
 
 watch(

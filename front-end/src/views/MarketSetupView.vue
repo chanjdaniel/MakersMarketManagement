@@ -122,54 +122,6 @@ onMounted(() => {
     market.value = JSON.parse(localStorage.getItem("market") || "null");
     if (market.value && market.value.setupObject) {
         Object.assign(setupObject, market.value.setupObject);
-
-    } else {
-        const inputDataJSON = localStorage.getItem("upload") || "{}";
-        const inputData = JSON.parse(inputDataJSON);
-
-        const colNames = Array.isArray(inputData?.data?.meta?.fields) ? inputData.data.meta.fields : [];
-        const colInclude = new Array(colNames.length).fill(false);
-        const uploadObjectJSON = localStorage.getItem("upload") || "{}";
-        const uploadObject = JSON.parse(uploadObjectJSON);
-        const uploadColNames = uploadObject.data.meta.fields;
-        const uploadRows = uploadObject.data.data;
-        const colValuesList: string[][] = [];
-        const enumPriorityOrder: string[][] = [];
-        for (let i = 0; i < colNames.length; i++) {
-
-            const columnValues: string[] = [];
-            for (let j = 0; j < uploadRows.length; j++) {
-                const uploadColName = uploadColNames[i];
-                const uploadRow = uploadObject.data.data[j];
-                columnValues.push(uploadRow[uploadColName]);
-            }
-            colValuesList.push([...new Set(columnValues.filter(v => v != null))]);
-            enumPriorityOrder.push([]);
-        }
-
-        const newSetupObject: SetupObject = {
-            colNames: colNames,
-            colValues: colValuesList,
-            colInclude: colInclude,
-            enumPriorityOrder: enumPriorityOrder,
-            priority: [],
-            marketDates: [],
-            tiers: [],
-            locations: [],
-            sections: [],
-            assignmentOptions: {
-                maxAssignmentsPerVendor: null,
-                maxHalfTableProportionPerSection: null,
-                emailColNameIdx: null,
-                tableChoiceColNameIdx: null,
-                tableShareEmailColNameIdx: null,
-                maxDaysColNameIdx: null,
-            },
-        };
-
-        Object.assign(setupObject, newSetupObject);
-        market.value!.setupObject = newSetupObject;
-        localStorage.setItem("market", JSON.stringify(market.value));
     }
 
     // retrieve view state
