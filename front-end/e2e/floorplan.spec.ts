@@ -52,10 +52,9 @@ test.describe('Floorplan workflow E2E', () => {
     }
     const { market_id: marketId } = (await createRes.json()) as { market_id: string }
 
-    const marketRes = await ctx.get(
-      `${BACKEND_URL}/markets/${marketId}`,
-      { headers: { 'X-Owner-Email': TEST_USER.email } },
-    )
+    const marketRes = await ctx.get(`${BACKEND_URL}/markets/${marketId}`, {
+      headers: { 'X-Owner-Email': TEST_USER.email },
+    })
     let { market } = (await marketRes.json()) as { market: Record<string, unknown> }
 
     // Seed a minimal setupObject so the setup wizard has columns to display.
@@ -88,10 +87,9 @@ test.describe('Floorplan workflow E2E', () => {
     if (!setupRes.ok()) {
       throw new Error(`Setup PUT failed: ${setupRes.status()} ${await setupRes.text()}`)
     }
-    const updatedRes = await ctx.get(
-      `${BACKEND_URL}/markets/${marketId}`,
-      { headers: { 'X-Owner-Email': TEST_USER.email } },
-    )
+    const updatedRes = await ctx.get(`${BACKEND_URL}/markets/${marketId}`, {
+      headers: { 'X-Owner-Email': TEST_USER.email },
+    })
     const updated = (await updatedRes.json()) as { market: Record<string, unknown> }
     market = updated.market
 

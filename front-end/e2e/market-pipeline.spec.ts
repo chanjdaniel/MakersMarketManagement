@@ -6,11 +6,7 @@ import {
   BACKEND_URL,
   TEST_USER,
 } from './fixtures'
-import {
-  ensureTestOrg,
-  loginViaApi,
-  marketNameToSlug,
-} from './helpers/seeds'
+import { ensureTestOrg, loginViaApi, marketNameToSlug } from './helpers/seeds'
 import { CheckinPage } from './pages/CheckinPage'
 
 test.describe('Market pipeline E2E', () => {
