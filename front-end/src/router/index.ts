@@ -1,9 +1,9 @@
-import { createRouter, createWebHistory } from 'vue-router';
-import InitView from '@/views/InitView.vue';
-import LoginView from '@/views/LoginView.vue';
-import EmailVerificationView from '@/views/EmailVerificationView.vue';
-import PasswordResetRequestView from '@/views/PasswordResetRequestView.vue';
-import PasswordResetView from '@/views/PasswordResetView.vue';
+import { createRouter, createWebHistory } from 'vue-router'
+import InitView from '@/views/InitView.vue'
+import LoginView from '@/views/LoginView.vue'
+import EmailVerificationView from '@/views/EmailVerificationView.vue'
+import PasswordResetRequestView from '@/views/PasswordResetRequestView.vue'
+import PasswordResetView from '@/views/PasswordResetView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -122,30 +122,36 @@ const router = createRouter({
 })
 
 router.beforeEach((to, _from, next) => {
-  const publicPages = ['/login', '/register', '/verify-email', '/reset-password-request', '/reset-password'];
-  const user = JSON.parse(localStorage.getItem('user') || 'null');
+  const publicPages = [
+    '/login',
+    '/register',
+    '/verify-email',
+    '/reset-password-request',
+    '/reset-password',
+  ]
+  const user = JSON.parse(localStorage.getItem('user') || 'null')
 
   if (publicPages.includes(to.path)) {
-    next();
-    return;
+    next()
+    return
   }
 
   if (to.matched.some((record) => record.meta.public === true)) {
-    next();
-    return;
+    next()
+    return
   }
 
   if (!user) {
-    next('/login');
-    return;
+    next('/login')
+    return
   }
 
   if (user && to.path === '/login') {
-    next('/dashboard');
-    return;
+    next('/dashboard')
+    return
   }
 
-  next();
-});
+  next()
+})
 
 export default router

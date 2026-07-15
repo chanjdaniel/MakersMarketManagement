@@ -1,63 +1,63 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
-import type { FormField } from '@/assets/types/datatypes';
-import ApplicationFormFields from '@/components/application/ApplicationFormFields.vue';
-import { formValidationErrors, sortedFormFields } from '@/utils/applicationForm';
-import { fetchPublicApplicationForm } from '@/utils/publicApplicationForm';
-import { useApplicationStore } from '@/stores/application';
+import { ref, computed, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import type { FormField } from '@/assets/types/datatypes'
+import ApplicationFormFields from '@/components/application/ApplicationFormFields.vue'
+import { formValidationErrors, sortedFormFields } from '@/utils/applicationForm'
+import { fetchPublicApplicationForm } from '@/utils/publicApplicationForm'
+import { useApplicationStore } from '@/stores/application'
 
-const route = useRoute();
-const router = useRouter();
-const store = useApplicationStore();
+const route = useRoute()
+const router = useRouter()
+const store = useApplicationStore()
 
-const marketSlug = computed(() => (route.params.marketSlug as string) || '');
+const marketSlug = computed(() => (route.params.marketSlug as string) || '')
 
-const fields = ref<FormField[]>([]);
-const marketName = ref('');
-const phaseLabel = ref('');
-const isOpen = ref(false);
-const loading = ref(true);
-const formData = ref<Record<string, unknown>>({});
-const validationErrors = ref<Record<string, string>>({});
+const fields = ref<FormField[]>([])
+const marketName = ref('')
+const phaseLabel = ref('')
+const isOpen = ref(false)
+const loading = ref(true)
+const formData = ref<Record<string, unknown>>({})
+const validationErrors = ref<Record<string, string>>({})
 
-const sortedFields = computed(() => sortedFormFields(fields.value));
-const signedIn = computed(() => store.isAuthenticatedFor(marketSlug.value));
+const sortedFields = computed(() => sortedFormFields(fields.value))
+const signedIn = computed(() => store.isAuthenticatedFor(marketSlug.value))
 
 onMounted(async () => {
-  const form = await fetchPublicApplicationForm(marketSlug.value);
-  fields.value = form.fields;
-  marketName.value = form.marketName;
-  phaseLabel.value = form.phaseLabel;
-  isOpen.value = form.isOpen;
-  loading.value = false;
-});
+  const form = await fetchPublicApplicationForm(marketSlug.value)
+  fields.value = form.fields
+  marketName.value = form.marketName
+  phaseLabel.value = form.phaseLabel
+  isOpen.value = form.isOpen
+  loading.value = false
+})
 
 function validateAll(): boolean {
-  validationErrors.value = formValidationErrors(sortedFields.value, formData.value);
-  return Object.keys(validationErrors.value).length === 0;
+  validationErrors.value = formValidationErrors(sortedFields.value, formData.value)
+  return Object.keys(validationErrors.value).length === 0
 }
 
 function clearFieldError(field: FormField) {
   if (validationErrors.value[field.key]) {
-    validationErrors.value = { ...validationErrors.value, [field.key]: '' };
+    validationErrors.value = { ...validationErrors.value, [field.key]: '' }
   }
 }
 
 const submitLabel = computed(() => {
-  if (!signedIn.value) return 'Continue to sign in';
-  return 'Save Application';
-});
+  if (!signedIn.value) return 'Continue to sign in'
+  return 'Save Application'
+})
 
 function submitForm() {
-  if (!validateAll()) return;
+  if (!validateAll()) return
 
   if (!signedIn.value) {
     router.push({
       name: 'applicant-login',
       params: { marketSlug: marketSlug.value },
       query: { redirect: 'apply' },
-    });
+    })
   }
 }
 
@@ -66,7 +66,7 @@ function goToLogin() {
     name: 'applicant-login',
     params: { marketSlug: marketSlug.value },
     query: { redirect: 'dashboard' },
-  });
+  })
 }
 </script>
 
@@ -86,8 +86,8 @@ function goToLogin() {
 
       <div v-if="!isOpen" class="apply-closed" data-testid="apply-closed">
         <p>
-          Applications are not currently open for this market.
-          The market is in the <strong>{{ phaseLabel }}</strong> phase.
+          Applications are not currently open for this market. The market is in the
+          <strong>{{ phaseLabel }}</strong> phase.
         </p>
       </div>
 
@@ -96,12 +96,7 @@ function goToLogin() {
           <p>This market does not have an application form yet.</p>
         </div>
 
-        <form
-          v-else
-          class="apply-form"
-          @submit.prevent="submitForm"
-          data-testid="apply-form"
-        >
+        <form v-else class="apply-form" @submit.prevent="submitForm" data-testid="apply-form">
           <ApplicationFormFields
             v-model="formData"
             :fields="sortedFields"

@@ -1,4 +1,4 @@
-import { api, getApiErrorMessage } from '@/utils/api';
+import { api, getApiErrorMessage } from '@/utils/api'
 
 /**
  * Request a login code for the applicant's email.
@@ -11,11 +11,10 @@ export async function requestLoginCode(
   marketSlug: string,
   email: string,
 ): Promise<{ message: string }> {
-  const { data } = await api.post(
-    `/public/markets/${marketSlug}/applicant-login/request-code`,
-    { email },
-  );
-  return data;
+  const { data } = await api.post(`/public/markets/${marketSlug}/applicant-login/request-code`, {
+    email,
+  })
+  return data
 }
 
 /**
@@ -33,19 +32,19 @@ export async function verifyLoginCode(
   email: string,
   code: string,
 ): Promise<{ success: boolean; marketId: string; applicantEmail: string }> {
-  const { data } = await api.post(
-    `/public/markets/${marketSlug}/applicant-login/verify-code`,
-    { email, code },
-  );
-  return { success: true, marketId: data.marketId, applicantEmail: data.applicantEmail };
+  const { data } = await api.post(`/public/markets/${marketSlug}/applicant-login/verify-code`, {
+    email,
+    code,
+  })
+  return { success: true, marketId: data.marketId, applicantEmail: data.applicantEmail }
 }
 
 /** Uniform error message for verification failures (anti-oracle ruling). */
 export function verifyErrorFrom(err: unknown): string {
-  return getApiErrorMessage(err, 'Invalid or expired code.');
+  return getApiErrorMessage(err, 'Invalid or expired code.')
 }
 
 /** Suitable error message for unexpected request-code failures. */
 export function requestErrorFrom(err: unknown): string {
-  return getApiErrorMessage(err, 'Unable to send code. Please try again.');
+  return getApiErrorMessage(err, 'Unable to send code. Please try again.')
 }

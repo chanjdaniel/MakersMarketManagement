@@ -15,8 +15,8 @@ import {
 /**
  * The public applicant login flow: email → request-code → verify-code → redirect.
  *
- * What is being pinned here is the anti-oracle behavior mandated by the
- * security design (see docs/decisions/applicant-login-oracle.md):
+ *   What is being pinned here is the anti-oracle behavior mandated by the
+ * security design:
  *
  *   a) Requesting a code returns the exact same response for any email —
  *      known applicant, stranger, nonexistent address — so an attacker cannot
@@ -48,10 +48,6 @@ const REQUEST_CODE_MESSAGE = {
 
 /** The exact body the back end returns on every verify-code failure. */
 const VERIFY_FAILURE_MESSAGE = { message: 'Invalid or expired code.' };
-
-function verifyUrl(slug: string): RegExp {
-  return new RegExp(`/${slug}/applicant-login`);
-}
 
 function dashboardUrl(slug: string): RegExp {
   return new RegExp(`/${slug}/applicant/dashboard`);

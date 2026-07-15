@@ -1,38 +1,38 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
-import { useApplicationStore } from '@/stores/application';
-import { fetchPublicApplicationForm } from '@/utils/publicApplicationForm';
+import { ref, onMounted, computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useApplicationStore } from '@/stores/application'
+import { fetchPublicApplicationForm } from '@/utils/publicApplicationForm'
 
-const route = useRoute();
-const router = useRouter();
-const store = useApplicationStore();
+const route = useRoute()
+const router = useRouter()
+const store = useApplicationStore()
 
-const marketSlug = computed(() => (route.params.marketSlug as string) || '');
-const marketName = ref('');
-const loading = ref(true);
+const marketSlug = computed(() => (route.params.marketSlug as string) || '')
+const marketName = ref('')
+const loading = ref(true)
 
 onMounted(async () => {
   if (!store.isAuthenticatedFor(marketSlug.value)) {
     router.push({
       name: 'applicant-login',
       params: { marketSlug: marketSlug.value },
-    });
-    return;
+    })
+    return
   }
 
-  loading.value = true;
-  const form = await fetchPublicApplicationForm(marketSlug.value);
-  marketName.value = form.marketName;
-  loading.value = false;
-});
+  loading.value = true
+  const form = await fetchPublicApplicationForm(marketSlug.value)
+  marketName.value = form.marketName
+  loading.value = false
+})
 
 function logout() {
-  store.logout();
+  store.logout()
   router.push({
     name: 'apply',
     params: { marketSlug: marketSlug.value },
-  });
+  })
 }
 </script>
 
@@ -57,9 +57,8 @@ function logout() {
     <template v-else>
       <div class="dash-info" data-testid="applicant-dashboard-info">
         <p>
-          You are signed in to view your application for this market.
-          Your application status and form will appear here once the market
-          organizer opens applications.
+          You are signed in to view your application for this market. Your application status and
+          form will appear here once the market organizer opens applications.
         </p>
       </div>
 
