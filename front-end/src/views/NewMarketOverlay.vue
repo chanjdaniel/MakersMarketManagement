@@ -88,7 +88,7 @@ const handleSubmit = async () => {
       :style="{ opacity: newOpen ? '100%' : '0%' }"
       data-testid="new-market-overlay-background"
     ></div>
-    <div class="window">
+    <div v-if="newOpen" class="window">
       <h2>Create new market</h2>
       <div class="org-select-container">
         <label class="org-select-label">Organization</label>
