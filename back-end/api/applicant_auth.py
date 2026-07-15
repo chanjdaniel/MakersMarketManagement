@@ -41,6 +41,7 @@ from pymongo.errors import PyMongoError
 from db_config import get_database
 from market_documents import published_market_by_slug
 from utils.email import _email_disabled, ready_mailer, from_email, frontend_url
+from utils.application_token import generate_application_token
 
 logger = logging.getLogger(__name__)
 
@@ -393,10 +394,25 @@ def verify_login_code(market_slug: str) -> tuple:
     # Consume and verify. All failure branches inside this function return the
     # same observable outcome.
     if _consume_and_verify(market_id, email, code):
-        return jsonify({
+        # Look up the application and issue a JWT so the caller can make
+        # authenticated application calls (get/save application).
+        apps_collection = db["applications"]
+        app_doc = apps_collection.find_one(
+            {"market_id": market_id, "applicant_email": email}
+        )
+        token = None
+        if app_doc:
+            token = generate_application_token(
+                app_doc["id"], market_id, email,
+            )
+
+        response = {
             "success": True,
             "marketId": market_id,
             "applicantEmail": email,
-        }), 200
+        }
+        if token:
+            response["token"] = token
+        return jsonify(response), 200
 
     return jsonify(_VERIFY_FAILURE_BODY), _VERIFY_FAILURE_STATUS
