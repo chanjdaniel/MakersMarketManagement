@@ -299,18 +299,11 @@ def save_applicant_application(
 
     now = datetime.now(timezone.utc).isoformat()
 
-    # The applicant owns their answers. They do not own ``status``.
-    changes: Dict[str, Any] = {
-        "form_data": stored_form_data,
-        "submitted_at": app_doc.get("submitted_at") or now,
-        "updated_at": now,
-    }
-    if not app_doc.get("status"):
-        changes["status"] = ApplicationStatus.OPEN.value
+    submitted_at = app_doc.get("submitted_at") or now
 
     ApplicationsApi.update_application_form_data(
         app_id, stored_form_data,
-        changes["submitted_at"], changes["updated_at"],
+        submitted_at, now,
     )
     if not app_doc.get("status"):
         ApplicationsApi.update_application_status(app_id, ApplicationStatus.OPEN)
@@ -347,15 +340,15 @@ def review_application(
     if new_status not in (ApplicationStatus.REVIEWER_APPROVED, ApplicationStatus.REVIEWER_REJECTED):
         return {"error": f"Invalid review status: {new_status.value}"}, 400
 
-    found = ApplicationsApi.update_application_status(application_id, new_status)
-    if not found:
-        return {"error": "Application not found."}, 404
-
-    # Verify the application belongs to this market
     app_doc = ApplicationsApi.find_application_by_id(application_id)
     if not app_doc or app_doc.get("market_id") != market_id:
         return {"error": "Application not found for this market."}, 404
 
+    found = ApplicationsApi.update_application_status(application_id, new_status)
+    if not found:
+        return {"error": "Application not found."}, 404
+
+    app_doc["status"] = new_status.value
     app = Application(**app_doc)
     return {"application": _application_response_organizer(app)}, 200
 
@@ -374,6 +367,10 @@ def publish_results(market_id: str) -> Tuple[Dict[str, Any], int]:
     doc = db["markets"].find_one({"id": market_id})
     if not doc:
         return {"error": "Market not found."}, 404
+
+    phase = phase_from_market_document(doc)
+    if phase == MarketPhase.DRAFT:
+        return {"error": "Cannot publish results on a draft market."}, 409
 
     already_published = bool(doc.get("resultsPublished"))
     if already_published:

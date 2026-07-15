@@ -128,7 +128,12 @@ class FakeMarketsDb:
     """Simulates the markets collection for the publish-results endpoint."""
 
     def __init__(self, doc=None):
-        self._doc = dict(doc) if doc else {"id": "market-1", "resultsPublished": False}
+        self._doc = dict(doc) if doc else {
+            "id": "market-1",
+            "phase": MarketPhase.APPLICATIONS_CLOSED.value,
+            "isDraft": False,
+            "resultsPublished": False,
+        }
         self.updates = []
 
     def find_one(self, query, projection=None):
@@ -157,7 +162,12 @@ def test_publish_results_flips_the_flag(monkeypatch):
 
 
 def test_publish_results_refuses_when_already_published(monkeypatch):
-    fake = FakeMarketsDb({"id": "market-1", "resultsPublished": True})
+    fake = FakeMarketsDb({
+        "id": "market-1",
+        "phase": MarketPhase.APPLICATIONS_CLOSED.value,
+        "isDraft": False,
+        "resultsPublished": True,
+    })
     monkeypatch.setattr(test_db_config, "get_database", lambda: MagicMock(**{
         "__getitem__": lambda s, k: fake if k == "markets" else MagicMock(),
     }))
@@ -175,6 +185,22 @@ def test_publish_results_404_on_missing_market(monkeypatch):
     result, status = publish_results("nonexistent")
 
     assert status == 404
+
+
+def test_publish_results_refuses_on_draft_market(monkeypatch):
+    fake = FakeMarketsDb({
+        "id": "market-1",
+        "phase": MarketPhase.DRAFT.value,
+        "isDraft": True,
+        "resultsPublished": False,
+    })
+    monkeypatch.setattr(test_db_config, "get_database", lambda: MagicMock(**{
+        "__getitem__": lambda s, k: fake if k == "markets" else MagicMock(),
+    }))
+    result, status = publish_results("market-1")
+
+    assert status == 409
+    assert "draft" in result.get("error", "").lower()
 
 
 # ── list_market_applications (organizer always sees raw status) ─────────────
@@ -259,5 +285,26 @@ def test_review_application_404_on_missing_app(monkeypatch):
 
     result, status = review_application(
         "market-1", "nonexistent", ApplicationStatus.REVIEWER_APPROVED,
+    )
+    assert status == 404
+
+
+def test_review_application_rejects_app_from_different_market(monkeypatch):
+    fake = FakeApplicationsCollection()
+    fake.documents = [{
+        "id": "app-1",
+        "market_id": "market-2",
+        "applicant_email": "vendor@example.com",
+        "form_data": {},
+        "status": ApplicationStatus.OPEN.value,
+        "application_type": ApplicationType.MAIN.value,
+        "main_application_id": None,
+        "submitted_at": None,
+        "updated_at": "2026-07-01T00:00:00Z",
+    }]
+    monkeypatch.setattr(ApplicationsApi, "applications_collection", fake)
+
+    result, status = review_application(
+        "market-1", "app-1", ApplicationStatus.REVIEWER_APPROVED,
     )
     assert status == 404
