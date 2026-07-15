@@ -38,7 +38,7 @@ if [ ! -f "$WT/docker-compose.yml" ]; then
 fi
 
 # Resolution order: 1) explicit env  2) treehouse slot  3) fail loud
-if [ -n "${COMPOSE_PROJECT_NAME:-}" ] && [ -n "${TH_BACKEND_PORT:-}" ]; then
+if [ -n "${COMPOSE_PROJECT_NAME:-}" ] && [ -n "${TH_BACKEND_PORT:-}" ] && [ -n "${TH_MONGO_PORT:-}" ] && [ -n "${TH_FRONTEND_PORT:-}" ] && [ -n "${TH_MONGO_EXPRESS_PORT:-}" ]; then
   # Explicit stack identity provided — use it as-is. The caller owns every
   # TH_* port variable and the project name. We skip slot detection entirely
   # so this works from a no-mistakes worktree, CI, or any directory.
