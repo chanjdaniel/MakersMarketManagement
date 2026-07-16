@@ -38,6 +38,7 @@ from utils.application_token import (
 )
 
 import api.applications as ApplicationsApi
+import essential_fields as EssentialFields
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +165,7 @@ def get_public_application_form(
     market_doc = published_market_by_slug(
         db["markets"],
         market_slug,
-        fields=("id", "name", "phase", "applicationForm", "resultsPublished"),
+        fields=("id", "name", "phase", "applicationForm", "resultsPublished", "setupObject"),
     )
     if not market_doc:
         return {"error": "Market not found. Check the URL and try again."}, 404
@@ -187,8 +188,11 @@ def get_public_application_form(
             })
         form_payload = {"fields": fields}
 
+    essential_options = EssentialFields.effective_essential_options(market_doc)
+
     return {
         "application_form": form_payload,
+        "essential_options": EssentialFields.essential_options_payload(essential_options),
         "market_name": market_doc.get("name", ""),
         "phase": phase.value,
         "is_open": phase == MarketPhase.APPLICATIONS_OPEN,
@@ -245,9 +249,14 @@ def save_applicant_application(
 ) -> Tuple[Dict[str, Any], int]:
     """Save or update the authenticated applicant's application for this market.
 
-    Validates the form data against the market's application form fields.
-    Refuses submission when the market is not in ``applications_open``.
+    Validates the form data against the market's application form fields, and the essential
+    answers against what the essential questions offer (``essential_fields``). Refuses
+    submission when the market is not in ``applications_open``.
     The applicant owns their answers but never ``status``.
+
+    The first successful save freezes the essential offering onto the market's stored form
+    (``freeze_essential_options``), so later market-plan edits can never move a question an
+    applicant has already answered.
 
     Args:
         market_slug: The URL-safe slug of the market.
@@ -264,7 +273,9 @@ def save_applicant_application(
     db = get_database()
 
     market_doc = published_market_by_slug(
-        db["markets"], market_slug, fields=("id", "phase", "applicationForm", "resultsPublished"),
+        db["markets"],
+        market_slug,
+        fields=("id", "phase", "applicationForm", "resultsPublished", "setupObject"),
     )
     if not market_doc:
         return {"error": "Market not found."}, 404
@@ -297,6 +308,16 @@ def save_applicant_application(
     if error:
         return {"error": error}, 422
 
+    # Validate the essential answers against what the questions offered. The essential answers
+    # are merged last so no custom answer can ever shadow one.
+    essential_options = EssentialFields.effective_essential_options(market_doc)
+    essential_error, essential_answers = EssentialFields.validated_essential_answers(
+        form_data, essential_options,
+    )
+    if essential_error:
+        return {"error": essential_error}, 422
+    stored_form_data.update(essential_answers)
+
     now = datetime.now(timezone.utc).isoformat()
 
     submitted_at = app_doc.get("submitted_at") or now
@@ -307,6 +328,9 @@ def save_applicant_application(
     )
     if not app_doc.get("status"):
         ApplicationsApi.update_application_status(app_id, ApplicationStatus.OPEN)
+
+    # A recorded answer freezes the offering it was validated against; a no-op once frozen.
+    EssentialFields.freeze_essential_options(db["markets"], market_id, essential_options)
 
     updated_doc = ApplicationsApi.find_application_by_id(app_id)
     app = Application(**updated_doc) if updated_doc else Application(**app_doc)
