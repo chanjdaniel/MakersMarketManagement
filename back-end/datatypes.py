@@ -354,7 +354,7 @@ class ApplicationType(str, Enum):
 
 
 class FormField(BaseModel):
-    key: str                       # machine name (e.g., "business_name")
+    key: str                       # machine name (e.g., "business_name"); must not use the reserved "essential_" prefix
     label: str                     # human label (e.g., "Business Name")
     type: str                      # "text", "number", "select", "multi_select", "checkbox", "date", "email", "file"
     required: bool = False

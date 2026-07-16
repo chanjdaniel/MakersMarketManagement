@@ -201,6 +201,11 @@ export enum ApplicationType {
   Waitlist = 'waitlist',
 }
 
+/**
+ * A single editable field in an application form. Keys with the reserved `essential_`
+ * prefix are rejected by both front-end validation and the back-end API; see
+ * `essential_fields.py` and `front-end/src/utils/applicationForm.ts`.
+ */
 export interface FormField {
   key: string;
   label: string;
