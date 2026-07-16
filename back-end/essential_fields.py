@@ -141,10 +141,11 @@ def freeze_essential_options(
 ) -> None:
     """Persist the offering the first recorded answer was validated against.
 
-    Written once: the ``$exists: False`` filter makes every later call a no-op, so the first
-    applicant save is the freeze point and concurrent saves cannot fight over it. The form must
-    already be an object on the document - a dot-path ``$set`` onto a market with no form would
-    conjure a fieldless one.
+    Written once: the filter matches only while no snapshot is stored - ``None`` in a Mongo
+    filter matches both a missing key and the explicit ``null`` the form save writes - so the
+    first applicant save is the freeze point and concurrent saves cannot fight over it. The
+    form must already be an object on the document - a dot-path ``$set`` onto a market with no
+    form would conjure a fieldless one.
     """
     form_key = market_doc_key("application_form")
     snapshot_key = f"{form_key}.{snake_to_camel('essential_options')}"
@@ -152,7 +153,7 @@ def freeze_essential_options(
         {
             "id": market_id,
             form_key: {"$type": "object"},
-            snapshot_key: {"$exists": False},
+            snapshot_key: None,
         },
         {"$set": {snapshot_key: essential_options_payload(options)}},
     )

@@ -249,14 +249,16 @@ class FakeFreezeMarketsCollection:
 
 
 class TestFreezeEssentialOptions:
-    def test_the_snapshot_is_written_once_in_camel_case_behind_an_exists_guard(self):
+    def test_the_snapshot_is_written_once_in_camel_case_behind_an_unset_guard(self):
         markets = FakeFreezeMarketsCollection()
 
         EssentialFields.freeze_essential_options(markets, "market-123", OPTIONS)
 
         (filter_, update), = markets.calls
         assert filter_["id"] == "market-123"
-        assert filter_["applicationForm.essentialOptions"] == {"$exists": False}
+        # None matches both a missing key and the explicit null the form save writes;
+        # either way, an existing snapshot is never overwritten.
+        assert filter_["applicationForm.essentialOptions"] is None
         assert filter_["applicationForm"] == {"$type": "object"}
         written = update["$set"]["applicationForm.essentialOptions"]
         assert written == {"dates": DATES, "sections": SECTIONS, "tableTypes": TABLE_TYPES}
