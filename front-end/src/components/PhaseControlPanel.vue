@@ -228,7 +228,7 @@ function cancelArchive() {
       </div>
 
       <p v-if="isTerminal" class="terminal-note" data-testid="phase-control-terminal">
-        This market is archived and read-only.
+        This market is archived.
       </p>
     </div>
 
@@ -292,8 +292,8 @@ function cancelArchive() {
       <div class="archive-confirm-dialog" data-testid="archive-confirm-dialog">
         <h3>Archive this market?</h3>
         <p>
-          Archiving is permanent. Once archived, a market cannot be edited or returned to an active
-          phase. This action cannot be undone.
+          Archiving is permanent. Once archived, a market cannot be returned to an active phase.
+          This action cannot be undone.
         </p>
         <div class="archive-confirm-buttons">
           <button
