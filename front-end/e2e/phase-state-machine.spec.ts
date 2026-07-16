@@ -247,10 +247,11 @@ test.describe('Phase state machine - sweep', () => {
   test('offers -> market_days sweeps assignment_sent to vendor_refused, leaves vendor_accepted alone', async ({
     authenticatedPage: page,
   }) => {
-    seedApplicationWithStatus(seed.marketId, 'assignment_sent', 'sweep-sent@example.com');
-    seedApplicationWithStatus(seed.marketId, 'vendor_accepted', 'sweep-accepted@example.com');
+    const sentEmail = 'sweep-sent@example.com';
+    const acceptedEmail = 'sweep-accepted@example.com';
 
-    await transitionViaPage(page, seed.marketId, 'market_days');
+    seedApplicationWithStatus(seed.marketId, 'assignment_sent', sentEmail);
+    seedApplicationWithStatus(seed.marketId, 'vendor_accepted', acceptedEmail);
 
     function queryStatus(appEmail: string): string {
       return runMongo(
@@ -258,9 +259,58 @@ test.describe('Phase state machine - sweep', () => {
       );
     }
 
-    expect(queryStatus('sweep-sent@example.com')).toBe('vendor_refused');
-    expect(queryStatus('sweep-accepted@example.com')).toBe('vendor_accepted');
+    const beforeSent = queryStatus(sentEmail);
+    const beforeAccepted = queryStatus(acceptedEmail);
 
+    // Render a status page that proves the before/after states
+    await page.setContent(`
+      <html><body style="font-family:monospace;font-size:16px;padding:40px;background:#fff">
+        <h1>Sweep test — application states</h1>
+        <h2>Before transition (offers phase)</h2>
+        <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse">
+          <tr><th>Email</th><th>Status</th></tr>
+          <tr><td>${sentEmail}</td><td style="font-weight:bold;color:#b91c1c">${beforeSent}</td></tr>
+          <tr><td>${acceptedEmail}</td><td style="font-weight:bold;color:#15803d">${beforeAccepted}</td></tr>
+        </table>
+      </body></html>
+    `);
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/11a-sweep-before.png`, fullPage: true });
+
+    // Perform the sweep transition
+    await transitionViaPage(page, seed.marketId, 'market_days');
+
+    const afterSent = queryStatus(sentEmail);
+    const afterAccepted = queryStatus(acceptedEmail);
+
+    expect(afterSent).toBe('vendor_refused');
+    expect(afterAccepted).toBe('vendor_accepted');
+
+    await page.setContent(`
+      <html><body style="font-family:monospace;font-size:16px;padding:40px;background:#fff">
+        <h1>Sweep test — application states</h1>
+        <h2>After transition to market_days</h2>
+        <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse">
+          <tr><th>Email</th><th>Status</th><th>Expected?</th></tr>
+          <tr>
+            <td>${sentEmail}</td>
+            <td style="font-weight:bold;color:${afterSent === 'vendor_refused' ? '#15803d' : '#b91c1c'}">${afterSent}</td>
+            <td>vendor_refused</td>
+          </tr>
+          <tr>
+            <td>${acceptedEmail}</td>
+            <td style="font-weight:bold;color:${afterAccepted === 'vendor_accepted' ? '#15803d' : '#b91c1c'}">${afterAccepted}</td>
+            <td>vendor_accepted</td>
+          </tr>
+        </table>
+        <p style="margin-top:20px">
+          assignment_sent ${afterSent === 'vendor_refused' ? 'was' : 'was NOT'} swept to vendor_refused.
+          vendor_accepted ${afterAccepted === 'vendor_accepted' ? 'was' : 'was NOT'} left untouched.
+        </p>
+      </body></html>
+    `);
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/11b-sweep-after.png`, fullPage: true });
+
+    // Also show the market_days UI
     const marketBody = await loadMarket(page, seed.marketId);
     await setMarketInPage(page, marketBody);
     await page.goto('/market-setup');
@@ -268,7 +318,7 @@ test.describe('Phase state machine - sweep', () => {
       timeout: 10000,
     });
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/11-market-days-after-sweep.png`,
+      path: `${SCREENSHOT_DIR}/11c-market-days-after-sweep.png`,
       fullPage: true,
     });
   });

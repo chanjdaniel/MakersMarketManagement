@@ -41,16 +41,6 @@ const TRANSITION_LABELS: Record<string, string> = {
   [MarketPhase.Archived]: 'Archive Market',
 };
 
-const TRANSITION_VARIANTS: Record<string, string> = {
-  [MarketPhase.ApplicationsOpen]: 'advance',
-  [MarketPhase.ApplicationsClosed]: 'advance',
-  [MarketPhase.Review]: 'advance',
-  [MarketPhase.Assignment]: 'advance',
-  [MarketPhase.Offers]: 'advance',
-  [MarketPhase.MarketDays]: 'advance',
-  [MarketPhase.Archived]: 'danger',
-};
-
 /** Frontend mirror of guards.py VALID_TRANSITIONS -- single source of truth for UI routing. */
 const VALID_TRANSITIONS: Array<[string, string]> = [
   ['draft', 'applications_open'],
@@ -111,7 +101,6 @@ async function doTransition(toPhase: string) {
       phase: response.data.phase,
     };
 
-    // Refresh from server so localStorage / local state stays current.
     try {
       const full = await api.get(`/markets/${encodeURIComponent(props.market.id)}`);
       const fresh = parseMarketFromApi(full.data.market);
@@ -167,37 +156,38 @@ function cancelArchive() {
 
 <template>
   <div v-if="market" class="phase-control-panel" data-testid="phase-control-panel">
-    <div class="phase-info">
-      <span class="phase-label-text">Current Phase:</span>
-      <span
-        class="phase-badge"
-        :class="`phase-${currentPhase}`"
-        data-testid="phase-control-current-phase"
-      >
-        {{ phaseLabel }}
-      </span>
-    </div>
-
-    <div v-if="!isTerminal && availableTransitions.length > 0" class="phase-actions">
-      <span class="phase-label-text">Advance to:</span>
-      <div class="phase-buttons">
-        <button
-          v-for="toPhase in availableTransitions"
-          :key="toPhase"
-          class="phase-transition-button"
-          :class="`variant-${transitionVariant(toPhase)}`"
-          :disabled="transitioning"
-          :data-testid="`phase-transition-${toPhase}`"
-          @click="handleTransitionClick(toPhase)"
+    <div class="phase-control-row">
+      <div class="phase-info">
+        <span class="phase-label-text">Current Phase:</span>
+        <span
+          class="phase-badge"
+          :class="`phase-${currentPhase}`"
+          data-testid="phase-control-current-phase"
         >
-          {{ transitionLabel(toPhase) }}
-        </button>
+          {{ phaseLabel }}
+        </span>
       </div>
-    </div>
 
-    <p v-if="isTerminal" class="terminal-note" data-testid="phase-control-terminal">
-      This market is archived and read-only.
-    </p>
+      <div v-if="!isTerminal && availableTransitions.length > 0" class="phase-actions">
+        <div class="phase-buttons">
+          <button
+            v-for="toPhase in availableTransitions"
+            :key="toPhase"
+            class="phase-transition-button"
+            :class="`variant-${transitionVariant(toPhase)}`"
+            :disabled="transitioning"
+            :data-testid="`phase-transition-${toPhase}`"
+            @click="handleTransitionClick(toPhase)"
+          >
+            {{ transitionLabel(toPhase) }}
+          </button>
+        </div>
+      </div>
+
+      <p v-if="isTerminal" class="terminal-note" data-testid="phase-control-terminal">
+        This market is archived and read-only.
+      </p>
+    </div>
 
     <p v-if="transitionError" class="transition-error" data-testid="phase-control-error">
       {{ transitionError }}
@@ -249,18 +239,25 @@ function cancelArchive() {
 <style scoped>
 .phase-control-panel {
   width: 100%;
-  padding: 0 40px;
+  padding: 10px 40px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.phase-control-row {
   display: flex;
   align-items: center;
   gap: 24px;
   flex-wrap: wrap;
-  min-height: 48px;
+  min-height: 36px;
 }
 
 .phase-info {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
 }
 
 .phase-label-text {
@@ -366,6 +363,7 @@ function cancelArchive() {
   font-size: 13px;
   color: #fca5a5;
   margin: 0;
+  padding: 0 2px;
 }
 
 /* Archive confirmation overlay */

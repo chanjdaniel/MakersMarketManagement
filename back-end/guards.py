@@ -82,11 +82,12 @@ class AllApplicationsReviewedGuard:
             if app.get("status") in ("open", "under_review")
         ]
         if unreviewed:
+            app_word = "application is" if len(unreviewed) == 1 else "applications are"
             return PreconditionResult(
                 id=self.id,
                 passed=False,
                 message=(
-                    f"{len(unreviewed)} application(s) are still awaiting review. "
+                    f"{len(unreviewed)} {app_word} still awaiting review. "
                     "Every application must be approved or rejected before assignment "
                     "can begin."
                 ),
@@ -123,11 +124,12 @@ class NoApprovedApplicationsGuard:
             if app.get("status") == "reviewer_approved"
         ]
         if approved:
+            app_word = "application is" if len(approved) == 1 else "applications are"
             return PreconditionResult(
                 id=self.id,
                 passed=False,
                 message=(
-                    f"{len(approved)} application(s) are still approved but not yet "
+                    f"{len(approved)} {app_word} still approved but not yet "
                     "assigned or unassigned. Run the assignment solver before "
                     "sending offers."
                 ),
