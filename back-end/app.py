@@ -1105,15 +1105,23 @@ def transition_market(market_id: str) -> Response:
 
         # ── Side effects (only after a successful phase write) ────────────
         if from_phase == "offers" and to_phase == MarketPhase.MARKET_DAYS:
-            result_sweep = MarketsApi.db.applications.update_many(
-                {"market_id": market_id, "status": "assignment_sent"},
-                {"$set": {"status": "vendor_refused"}},
-            )
-            logger.info(
-                "Swept %d assignment_sent applications to vendor_refused for market %s",
-                result_sweep.modified_count,
-                market_id,
-            )
+            try:
+                result_sweep = MarketsApi.db.applications.update_many(
+                    {"market_id": market_id, "status": "assignment_sent"},
+                    {"$set": {"status": "vendor_refused"}},
+                )
+                logger.info(
+                    "Swept %d assignment_sent applications to vendor_refused for market %s",
+                    result_sweep.modified_count,
+                    market_id,
+                )
+            except Exception:
+                logger.error(
+                    "Phase advanced to market_days for market %s but the "
+                    "assignment_sent -> vendor_refused sweep failed",
+                    market_id,
+                    exc_info=True,
+                )
 
         return jsonify({"phase": to_phase.value}), 200
 
@@ -1141,6 +1149,13 @@ def pending_offers_count(market_id: str) -> Response:
         context = MarketsApi.load_market_context(market_id)
         if context is None or context.market is None:
             return jsonify({"error": "Market not found"}), 404
+
+        if not PermissionsApi.user_has_permission(
+            user_email, context.market, MarketRole.VIEWER, context.organization
+        ):
+            return jsonify({
+                "error": "User does not have permission to view this market"
+            }), 403
 
         count = MarketsApi.db.applications.count_documents({
             "market_id": market_id,

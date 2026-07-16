@@ -163,6 +163,7 @@ function handleTransitionClick(toPhase: string) {
 async function openSweepConfirm() {
   if (!props.market) return;
   sweepConfirmLoading.value = true;
+  showingSweepConfirm.value = true;
   try {
     const res = await api.get(
       `/markets/${encodeURIComponent(props.market.id)}/pending-offers-count`,
@@ -173,7 +174,6 @@ async function openSweepConfirm() {
   } finally {
     sweepConfirmLoading.value = false;
   }
-  showingSweepConfirm.value = true;
 }
 
 function confirmSweep() {
