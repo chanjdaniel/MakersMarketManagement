@@ -1223,17 +1223,8 @@ def get_application_form(market_id: str, requesting_user: str) -> dict:
     return {
         "application_form": convert_keys_to_camel_case(form_dict) if form_dict else None,
         "essential_options": EssentialFields.essential_options_payload(
-            _effective_essential_options(market)
+            EssentialFields.effective_essential_options_for_market(market)
         ),
         "editable": lock_reason is None,
         "lock_reason": lock_reason,
     }
-
-
-def _effective_essential_options(market: Market) -> EssentialFormOptions:
-    """The essential offering for a parsed market: frozen snapshot first, live plan otherwise."""
-    form = market.application_form
-    if form is not None and form.essential_options is not None:
-        return form.essential_options
-    setup = market.setup_object.model_dump() if market.setup_object else None
-    return EssentialFields.essential_options_from_setup(setup)

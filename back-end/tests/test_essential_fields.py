@@ -369,6 +369,39 @@ class TestApplicantSave:
         assert status == 422
         assert "does not offer" in body["error"]
 
+    def test_a_save_losing_the_freeze_race_is_validated_against_the_winning_offering(
+        self, monkeypatch, applications,
+    ):
+        """The freeze is attempted before the answers are persisted; when a concurrent save
+        froze a different offering first, the answers are re-validated against the winner and
+        nothing is stored on failure."""
+        doc = _applicant_market_doc()
+        markets = FakeSlugMarketsCollection(doc)
+        original_update = markets.update_one
+
+        def losing_freeze(filter_, update):
+            doc["applicationForm"]["essentialOptions"] = {
+                "dates": ["2026-08-01"], "sections": ["Main Hall"], "tableTypes": ["Full Table"],
+            }
+            return original_update(filter_, update)
+
+        markets.update_one = losing_freeze
+
+        class _Db(dict):
+            def __getitem__(self, name):
+                return markets
+
+        monkeypatch.setattr(test_db_config, "get_database", lambda *_a, **_kw: _Db())
+        _seed_application(applications)
+
+        body, status = save_applicant_application(
+            "test-market", _token(), {**VALID_ANSWERS, "business_name": "Acme"},
+        )
+
+        assert status == 422
+        assert "does not offer" in body["error"]
+        assert applications.find_one({"id": "app-1"})["form_data"] == {}
+
 
 class TestPublicForm:
     def test_the_public_form_carries_the_essential_offering(self, applicant_db):

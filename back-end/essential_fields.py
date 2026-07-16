@@ -20,10 +20,11 @@ market's floorplan (the latest saved one - ``floorplans_save`` overwrites ``sect
 
 Freeze semantics (the D9 principle extended to the offering): while no applicant has recorded
 an answer, the offering follows the market plan live - an organizer edits their plan and the
-form follows. The moment the first answer is stored, the offering it was validated against is
-persisted onto ``applicationForm.essentialOptions`` (camelCase, like the whole market document)
-and every later read serves that snapshot, so an applicant can never have answered a question
-that moved. There is deliberately no way to refresh it afterwards.
+form follows. The first accepted answer freezes the offering it was validated against onto
+``applicationForm.essentialOptions`` (camelCase, like the whole market document) - written
+atomically before the answer itself is stored, so no answer ever lands against an unfrozen
+offering - and every later read serves that snapshot, so an applicant can never have answered
+a question that moved. There is deliberately no way to refresh it afterwards.
 """
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -32,7 +33,7 @@ from assignment.utils import (
     convert_keys_to_snake_case,
     snake_to_camel,
 )
-from datatypes import EssentialFormOptions
+from datatypes import EssentialFormOptions, Market
 from market_documents import market_doc_field, market_doc_key
 
 # Custom builder fields may never use this prefix: the essential answers live beside the custom
@@ -121,6 +122,19 @@ def effective_essential_options(market_doc: Dict[str, Any]) -> EssentialFormOpti
     return essential_options_from_setup(setup)
 
 
+def effective_essential_options_for_market(market: Market) -> EssentialFormOptions:
+    """``effective_essential_options`` over a parsed ``Market``: same rule, other representation.
+
+    A frozen snapshot on the form wins; absent one, the offering is the market plan as it
+    stands.
+    """
+    form = market.application_form
+    if form is not None and form.essential_options is not None:
+        return form.essential_options
+    setup = market.setup_object.model_dump() if market.setup_object else None
+    return essential_options_from_setup(setup)
+
+
 def essential_options_from_snapshot(snapshot: Dict[str, Any]) -> EssentialFormOptions:
     """Parse a stored (camelCase) ``essentialOptions`` snapshot."""
     data = convert_keys_to_snake_case(snapshot)
@@ -157,6 +171,26 @@ def freeze_essential_options(
         },
         {"$set": {snapshot_key: essential_options_payload(options)}},
     )
+
+
+def freeze_and_effective_essential_options(
+    markets_collection: Any, market_id: str, options: EssentialFormOptions,
+) -> EssentialFormOptions:
+    """Freeze the offering and return the one that actually governs the save.
+
+    Called before an applicant's answers are persisted, so no answer can ever be recorded
+    against an unfrozen offering. The freeze attempt is atomic and first-writer-wins; the
+    re-read serves whichever snapshot won (ours, or a concurrent save's). A caller must
+    re-validate its answers when the returned offering differs from the one it validated
+    against, because that means another save froze a different offering first.
+    """
+    freeze_essential_options(markets_collection, market_id, options)
+    form_key = market_doc_key("application_form")
+    setup_key = market_doc_key("setup_object")
+    market_doc = markets_collection.find_one(
+        {"id": market_id}, {form_key: 1, setup_key: 1},
+    )
+    return effective_essential_options(market_doc or {})
 
 
 # -- Applicant answer validation ---------------------------------------------------------------

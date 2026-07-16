@@ -255,8 +255,9 @@ def save_applicant_application(
     The applicant owns their answers but never ``status``.
 
     The first successful save freezes the essential offering onto the market's stored form
-    (``freeze_essential_options``), so later market-plan edits can never move a question an
-    applicant has already answered.
+    (``freeze_and_effective_essential_options``), atomically and before the answers are
+    persisted, so later market-plan edits can never move a question an applicant has already
+    answered and no answer is ever recorded against an unfrozen offering.
 
     Args:
         market_slug: The URL-safe slug of the market.
@@ -316,6 +317,19 @@ def save_applicant_application(
     )
     if essential_error:
         return {"error": essential_error}, 422
+
+    # Freeze BEFORE persisting, so no answer is ever recorded against an unfrozen offering.
+    # A concurrent first save may have frozen a different offering; when the governing one
+    # differs from what we validated against, re-validate against it.
+    frozen_options = EssentialFields.freeze_and_effective_essential_options(
+        db["markets"], market_id, essential_options,
+    )
+    if frozen_options != essential_options:
+        essential_error, essential_answers = EssentialFields.validated_essential_answers(
+            form_data, frozen_options,
+        )
+        if essential_error:
+            return {"error": essential_error}, 422
     stored_form_data.update(essential_answers)
 
     now = datetime.now(timezone.utc).isoformat()
@@ -328,9 +342,6 @@ def save_applicant_application(
     )
     if not app_doc.get("status"):
         ApplicationsApi.update_application_status(app_id, ApplicationStatus.OPEN)
-
-    # A recorded answer freezes the offering it was validated against; a no-op once frozen.
-    EssentialFields.freeze_essential_options(db["markets"], market_id, essential_options)
 
     updated_doc = ApplicationsApi.find_application_by_id(app_id)
     app = Application(**updated_doc) if updated_doc else Application(**app_doc)
