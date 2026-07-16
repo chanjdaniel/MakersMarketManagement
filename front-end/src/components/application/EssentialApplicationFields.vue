@@ -275,8 +275,8 @@ function errorFor(key: string): string {
 .essential-dates {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px;
+  gap: 2px;
+  padding: 6px;
   border: 1px solid var(--mm-grey, #ddd);
   border-radius: 5px;
   background: white;
@@ -290,10 +290,30 @@ function errorFor(key: string): string {
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 5px;
   font-family: 'Outfit Regular';
   font-size: 14px;
   color: var(--mm-black);
+  cursor: pointer;
+}
+
+.essential-date-option:hover {
+  background: #f4f4f4;
+}
+
+.essential-date-option.checked {
+  background: #eef7ef;
+  border-color: #cfe3d4;
+}
+
+.essential-date-option input[type='checkbox'] {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  accent-color: var(--mm-green);
   cursor: pointer;
 }
 

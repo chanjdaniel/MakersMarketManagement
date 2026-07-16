@@ -47,7 +47,7 @@ function move(index: number, delta: number) {
           type="button"
           class="ranked-btn"
           :disabled="index === 0"
-          :aria-label="`Move ${option} up to rank ${index}`"
+          :aria-label="`Move ${option} up to rank ${Math.max(index, 1)}`"
           :data-testid="`${testid}-up-${index}`"
           @click="move(index, -1)"
         >
@@ -57,7 +57,7 @@ function move(index: number, delta: number) {
           type="button"
           class="ranked-btn"
           :disabled="index === modelValue.length - 1"
-          :aria-label="`Move ${option} down to rank ${index + 2}`"
+          :aria-label="`Move ${option} down to rank ${Math.min(index + 2, modelValue.length)}`"
           :data-testid="`${testid}-down-${index}`"
           @click="move(index, 1)"
         >
