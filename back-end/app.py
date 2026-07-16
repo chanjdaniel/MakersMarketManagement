@@ -1066,18 +1066,6 @@ def transition_market(market_id: str) -> Response:
                 "blockers": [asdict(b) for b in blockers],
             })), 409
 
-        # ── Side effects ──────────────────────────────────────────────────
-        if from_phase == "offers" and to_phase == MarketPhase.MARKET_DAYS:
-            result_sweep = MarketsApi.db.applications.update_many(
-                {"market_id": market_id, "status": "assignment_sent"},
-                {"$set": {"status": "vendor_refused"}},
-            )
-            logger.info(
-                "Swept %d assignment_sent applications to vendor_refused for market %s",
-                result_sweep.modified_count,
-                market_id,
-            )
-
         phase_key = market_doc_key("phase")
         is_draft_key = market_doc_key("is_draft")
         stored_phase = (
@@ -1114,6 +1102,18 @@ def transition_market(market_id: str) -> Response:
                 "target_phase": to_phase.value,
                 "blockers": [asdict(conflict)],
             })), 409
+
+        # ── Side effects (only after a successful phase write) ────────────
+        if from_phase == "offers" and to_phase == MarketPhase.MARKET_DAYS:
+            result_sweep = MarketsApi.db.applications.update_many(
+                {"market_id": market_id, "status": "assignment_sent"},
+                {"$set": {"status": "vendor_refused"}},
+            )
+            logger.info(
+                "Swept %d assignment_sent applications to vendor_refused for market %s",
+                result_sweep.modified_count,
+                market_id,
+            )
 
         return jsonify({"phase": to_phase.value}), 200
 

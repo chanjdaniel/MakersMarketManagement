@@ -74,15 +74,27 @@ const isTerminal = computed(() => currentPhase.value === MarketPhase.Archived);
 
 function transitionLabel(toPhase: string): string {
   if (toPhase === MarketPhase.Archived) return 'Archive Market';
-  if (toPhase === MarketPhase.ApplicationsOpen) return 'Reopen Applications';
-  if (toPhase === MarketPhase.ApplicationsClosed) return 'Return to Applications Closed';
+
+  if (toPhase === MarketPhase.ApplicationsOpen) {
+    return currentPhase.value === MarketPhase.Draft ? 'Open Applications' : 'Reopen Applications';
+  }
+  if (toPhase === MarketPhase.ApplicationsClosed) {
+    return currentPhase.value === MarketPhase.ApplicationsOpen
+      ? 'Close Applications'
+      : 'Return to Applications Closed';
+  }
   return TRANSITION_LABELS[toPhase] ?? `Move to ${PHASE_LABELS[toPhase] ?? toPhase}`;
 }
 
 function transitionVariant(toPhase: string): string {
   if (toPhase === MarketPhase.Archived) return 'danger';
-  if (toPhase === MarketPhase.ApplicationsOpen || toPhase === MarketPhase.ApplicationsClosed)
-    return 'back';
+
+  if (toPhase === MarketPhase.ApplicationsOpen) {
+    return currentPhase.value === MarketPhase.Draft ? 'advance' : 'back';
+  }
+  if (toPhase === MarketPhase.ApplicationsClosed) {
+    return currentPhase.value === MarketPhase.ApplicationsOpen ? 'advance' : 'back';
+  }
   return 'advance';
 }
 
