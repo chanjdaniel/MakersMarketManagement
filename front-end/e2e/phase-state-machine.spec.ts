@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { test, expect, TEST_USER, BACKEND_URL } from './fixtures';
 import { mongoContainer } from './helpers/containerNames';
+import type { APIRequestContext, Page } from '@playwright/test';
 import {
   seedPhaseMarket,
   seedApplicationWithStatus,
@@ -10,7 +11,7 @@ import {
 const SCREENSHOT_DIR = 'e2e-screenshots/phase-state-machine';
 const MONGO_URI = 'mongodb://admin:secret@localhost:27017/conventioner?authSource=admin';
 
-async function transitionViaPage(page: any, marketId: string, toPhase: string): Promise<void> {
+async function transitionViaPage(page: Page, marketId: string, toPhase: string): Promise<void> {
   const res = await page.request.post(`${BACKEND_URL}/markets/${marketId}/transition`, {
     headers: { 'Content-Type': 'application/json', 'X-Owner-Email': TEST_USER.email },
     data: { toPhase },
@@ -21,7 +22,7 @@ async function transitionViaPage(page: any, marketId: string, toPhase: string): 
   }
 }
 
-async function loadMarket(page: any, marketId: string): Promise<Record<string, unknown>> {
+async function loadMarket(page: Page, marketId: string): Promise<Record<string, unknown>> {
   const res = await page.request.get(`${BACKEND_URL}/markets/${encodeURIComponent(marketId)}`, {
     headers: { 'X-Owner-Email': TEST_USER.email },
   });
@@ -29,7 +30,7 @@ async function loadMarket(page: any, marketId: string): Promise<Record<string, u
   return json.market as Record<string, unknown>;
 }
 
-function setMarketInPage(page: any, marketBody: Record<string, unknown>) {
+function setMarketInPage(page: Page, marketBody: Record<string, unknown>) {
   return page.evaluate(
     ({ market, user }: { market: Record<string, unknown>; user: string }) => {
       localStorage.setItem('market', JSON.stringify(market));
@@ -53,7 +54,7 @@ function runMongo(evalJs: string): string {
  * then transitions to offers. The market is left in `offers` ready for the
  * sweep transition.
  */
-async function setupMarketToOffers(request: any): Promise<PhaseMarketSeed> {
+async function setupMarketToOffers(request: APIRequestContext): Promise<PhaseMarketSeed> {
   const seed = await seedPhaseMarket(request, BACKEND_URL, TEST_USER.email, TEST_USER.password);
 
   // Navigate to review
