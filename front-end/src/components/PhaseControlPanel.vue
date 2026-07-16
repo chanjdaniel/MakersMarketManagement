@@ -18,6 +18,7 @@ const showingArchiveConfirm = ref(false);
 const archiveTargetPhase = ref('');
 const showingSweepConfirm = ref(false);
 const sweepPendingCount = ref(0);
+const sweepCountUnknown = ref(false);
 const sweepConfirmLoading = ref(false);
 const transitionError = ref('');
 const transitionBlockers = ref<PreconditionResult[]>([]);
@@ -114,6 +115,7 @@ async function doTransition(toPhase: string) {
     const updatedMarket = {
       ...props.market,
       phase: response.data.phase,
+      isDraft: response.data.phase === MarketPhase.Draft,
     };
 
     try {
@@ -163,6 +165,7 @@ function handleTransitionClick(toPhase: string) {
 async function openSweepConfirm() {
   if (!props.market) return;
   sweepConfirmLoading.value = true;
+  sweepCountUnknown.value = false;
   showingSweepConfirm.value = true;
   try {
     const res = await api.get(
@@ -171,6 +174,7 @@ async function openSweepConfirm() {
     sweepPendingCount.value = res.data.count ?? 0;
   } catch {
     sweepPendingCount.value = 0;
+    sweepCountUnknown.value = true;
   } finally {
     sweepConfirmLoading.value = false;
   }
@@ -184,6 +188,7 @@ function confirmSweep() {
 function cancelSweep() {
   showingSweepConfirm.value = false;
   sweepPendingCount.value = 0;
+  sweepCountUnknown.value = false;
 }
 
 function confirmArchive() {
@@ -254,7 +259,11 @@ function cancelArchive() {
         <h3>Begin Market Days?</h3>
         <p v-if="sweepConfirmLoading">Checking pending offers...</p>
         <p v-else>
-          <template v-if="sweepPendingCount === 0">
+          <template v-if="sweepCountUnknown">
+            Could not determine how many offers are still pending. Any pending offers will be marked
+            as refused. This cannot be undone.
+          </template>
+          <template v-else-if="sweepPendingCount === 0">
             No offers are pending — no vendors will be marked refused.
           </template>
           <template v-else>

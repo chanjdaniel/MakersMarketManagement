@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import api.applications as ApplicationsApi
-from datatypes import Market, MarketPhase
+from datatypes import ApplicationStatus, Market, MarketPhase
 
 
 # ── Wire shape (backend/frontend contract) ──────────────────────────────
@@ -79,7 +79,8 @@ class AllApplicationsReviewedGuard:
     def evaluate(self, market: Market, _db) -> PreconditionResult:
         total = ApplicationsApi.count_applications_for_market(market.id)
         unreviewed_count = ApplicationsApi.count_applications_with_any_status(
-            market.id, ["open", "under_review"],
+            market.id,
+            [ApplicationStatus.OPEN.value, ApplicationStatus.UNDER_REVIEW.value],
         )
         if unreviewed_count > 0:
             app_word = (
@@ -121,7 +122,7 @@ class NoApprovedApplicationsGuard:
 
     def evaluate(self, market: Market, _db) -> PreconditionResult:
         approved_count = ApplicationsApi.count_applications_with_status(
-            market.id, "reviewer_approved",
+            market.id, ApplicationStatus.REVIEWER_APPROVED.value,
         )
         if approved_count > 0:
             app_word = (
@@ -157,7 +158,6 @@ VALID_TRANSITIONS: set[tuple[str, str]] = {
     ("review", "assignment"),
     ("assignment", "offers"),
     ("offers", "market_days"),
-    ("market_days", "archived"),
     # Archive from anywhere
     ("draft", "archived"),
     ("applications_open", "archived"),

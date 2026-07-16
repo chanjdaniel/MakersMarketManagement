@@ -28,7 +28,7 @@ from flask import Flask, request, jsonify, Response
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user
 from flask_bcrypt import Bcrypt
 from datetime import timedelta, datetime, timezone
-from datatypes import Market, MarketPhase, MarketRole, phase_from_market_document
+from datatypes import ApplicationStatus, Market, MarketPhase, MarketRole, phase_from_market_document
 from assignment.utils import convert_keys_to_camel_case, convert_keys_to_snake_case
 from guards import PreconditionResult, VALID_TRANSITIONS, evaluate_transition
 from market_documents import (
@@ -1104,7 +1104,7 @@ def transition_market(market_id: str) -> Response:
             })), 409
 
         # ── Side effects (only after a successful phase write) ────────────
-        if from_phase == "offers" and to_phase == MarketPhase.MARKET_DAYS:
+        if from_phase == MarketPhase.OFFERS.value and to_phase == MarketPhase.MARKET_DAYS:
             try:
                 swept = ApplicationsApi.sweep_unanswered_offers(market_id)
                 logger.info(
@@ -1155,7 +1155,7 @@ def pending_offers_count(market_id: str) -> Response:
             }), 403
 
         count = ApplicationsApi.count_applications_with_status(
-            market_id, "assignment_sent",
+            market_id, ApplicationStatus.ASSIGNMENT_SENT.value,
         )
 
         return jsonify({"count": count}), 200

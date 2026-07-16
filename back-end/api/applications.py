@@ -239,7 +239,7 @@ def sweep_unanswered_offers(market_id: str) -> int:
     """
     ensure_application_indexes()
     result = applications_collection.update_many(
-        {**market_filter(market_id), "status": "assignment_sent"},
+        {**market_filter(market_id), "status": ApplicationStatus.ASSIGNMENT_SENT.value},
         {"$set": {"status": ApplicationStatus.VENDOR_REFUSED.value}},
     )
     return result.modified_count
