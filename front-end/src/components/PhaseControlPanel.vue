@@ -16,6 +16,9 @@ const emit = defineEmits<{
 
 const showingArchiveConfirm = ref(false);
 const archiveTargetPhase = ref('');
+const showingSweepConfirm = ref(false);
+const sweepPendingCount = ref(0);
+const sweepConfirmLoading = ref(false);
 const transitionError = ref('');
 const transitionBlockers = ref<PreconditionResult[]>([]);
 const transitioning = ref(false);
@@ -150,9 +153,37 @@ function handleTransitionClick(toPhase: string) {
   if (toPhase === MarketPhase.Archived) {
     archiveTargetPhase.value = toPhase;
     showingArchiveConfirm.value = true;
+  } else if (toPhase === MarketPhase.MarketDays) {
+    openSweepConfirm();
   } else {
     doTransition(toPhase);
   }
+}
+
+async function openSweepConfirm() {
+  if (!props.market) return;
+  sweepConfirmLoading.value = true;
+  try {
+    const res = await api.get(
+      `/markets/${encodeURIComponent(props.market.id)}/pending-offers-count`,
+    );
+    sweepPendingCount.value = res.data.count ?? 0;
+  } catch {
+    sweepPendingCount.value = 0;
+  } finally {
+    sweepConfirmLoading.value = false;
+  }
+  showingSweepConfirm.value = true;
+}
+
+function confirmSweep() {
+  showingSweepConfirm.value = false;
+  doTransition(MarketPhase.MarketDays);
+}
+
+function cancelSweep() {
+  showingSweepConfirm.value = false;
+  sweepPendingCount.value = 0;
 }
 
 function confirmArchive() {
@@ -212,8 +243,47 @@ function cancelArchive() {
     />
   </div>
 
-  <!-- Archive confirmation dialog -->
+  <!-- Sweep confirmation dialog -->
   <Teleport to="body">
+    <div
+      v-if="showingSweepConfirm"
+      class="archive-confirm-overlay"
+      data-testid="sweep-confirm-overlay"
+    >
+      <div class="archive-confirm-dialog" data-testid="sweep-confirm-dialog">
+        <h3>Begin Market Days?</h3>
+        <p v-if="sweepConfirmLoading">Checking pending offers...</p>
+        <p v-else>
+          <template v-if="sweepPendingCount === 0">
+            No offers are pending — no vendors will be marked refused.
+          </template>
+          <template v-else>
+            {{ sweepPendingCount }} offer{{ sweepPendingCount === 1 ? '' : 's' }}
+            will be marked as refused. This cannot be undone.
+          </template>
+        </p>
+        <div class="archive-confirm-buttons">
+          <button
+            class="confirm-archive-button"
+            :disabled="transitioning || sweepConfirmLoading"
+            data-testid="sweep-confirm-confirm"
+            @click="confirmSweep"
+          >
+            Begin Market Days
+          </button>
+          <button
+            class="cancel-archive-button"
+            :disabled="transitioning"
+            data-testid="sweep-confirm-cancel"
+            @click="cancelSweep"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Archive confirmation dialog -->
     <div
       v-if="showingArchiveConfirm"
       class="archive-confirm-overlay"

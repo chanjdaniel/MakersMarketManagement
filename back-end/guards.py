@@ -60,7 +60,7 @@ class FormHasFieldsGuard:
                     "The application form has no fields. "
                     "Add at least one field before publishing the market."
                 ),
-                resolution_link=f"/markets/{market.id}/form-builder",
+                resolution_link="/market-setup",
             )
         return PreconditionResult(id=self.id, passed=True, message="")
 
@@ -91,7 +91,7 @@ class AllApplicationsReviewedGuard:
                     "Every application must be approved or rejected before assignment "
                     "can begin."
                 ),
-                resolution_link=f"/markets/{market.id}/applications",
+                resolution_link="/market-setup",
             )
         if len(apps) == 0:
             return PreconditionResult(
@@ -133,7 +133,7 @@ class NoApprovedApplicationsGuard:
                     "assigned or unassigned. Run the assignment solver before "
                     "sending offers."
                 ),
-                resolution_link=f"/markets/{market.id}/assignment-results",
+                resolution_link="/assignment-results",
             )
         return PreconditionResult(id=self.id, passed=True, message="")
 

@@ -1123,6 +1123,37 @@ def transition_market(market_id: str) -> Response:
         return jsonify({"error": "Internal server error"}), 500
 
 
+@app.route('/markets/<market_id>/pending-offers-count', methods=['GET'])
+@login_required
+def pending_offers_count(market_id: str) -> Response:
+    """Return how many applications are still in ``assignment_sent`` — the count of
+    offers that will be swept to ``vendor_refused`` when the market advances from
+    ``offers`` to ``market_days``. Drives the sweep confirmation dialog in the UI.
+    """
+    try:
+        user_email = request.headers.get("X-Owner-Email")
+        if not user_email:
+            return jsonify({"error": "User email not provided in headers"}), 400
+
+        if not UsersApi.get_user(user_email):
+            return jsonify({"error": "User not found"}), 404
+
+        context = MarketsApi.load_market_context(market_id)
+        if context is None or context.market is None:
+            return jsonify({"error": "Market not found"}), 404
+
+        count = MarketsApi.db.applications.count_documents({
+            "market_id": market_id,
+            "status": "assignment_sent",
+        })
+
+        return jsonify({"count": count}), 200
+
+    except Exception as e:
+        logger.error(f"Error in pending_offers_count {market_id}: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
 @app.route('/markets/<market_id>/assignment', methods=['GET'])
 @login_required
 def get_assigned_market(market_id: str) -> Response:

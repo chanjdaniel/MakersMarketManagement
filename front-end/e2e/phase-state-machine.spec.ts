@@ -153,6 +153,15 @@ test.describe('Phase state machine - full walk', () => {
     await page.screenshot({ path: `${SCREENSHOT_DIR}/06-offers.png`, fullPage: true });
 
     await page.getByTestId('phase-transition-market_days').click();
+    // Sweep confirmation dialog should appear
+    const sweepDialog = page.getByTestId('sweep-confirm-dialog');
+    await expect(sweepDialog).toBeVisible({ timeout: 5000 });
+    await expect(sweepDialog).toContainText('Begin Market Days');
+    await page.screenshot({
+      path: `${SCREENSHOT_DIR}/06b-sweep-confirmation.png`,
+      fullPage: true,
+    });
+    await page.getByTestId('sweep-confirm-confirm').click();
     await expect(page.getByTestId('phase-control-current-phase')).toHaveText('Market Days', {
       timeout: 10000,
     });
