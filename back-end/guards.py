@@ -21,6 +21,7 @@ Phase 2 guards implemented (conv-market-state-machine-t7):
 from dataclasses import dataclass, field
 from typing import Optional
 
+import api.applications as ApplicationsApi
 from datatypes import Market, MarketPhase
 
 
@@ -75,25 +76,26 @@ class AllApplicationsReviewedGuard:
     id: str = "all_applications_reviewed"
     description: str = "Every application is approved or rejected"
 
-    def evaluate(self, market: Market, db) -> PreconditionResult:
-        apps = list(db.applications.find({"market_id": market.id}))
-        unreviewed = [
-            app for app in apps
-            if app.get("status") in ("open", "under_review")
-        ]
-        if unreviewed:
-            app_word = "application is" if len(unreviewed) == 1 else "applications are"
+    def evaluate(self, market: Market, _db) -> PreconditionResult:
+        total = ApplicationsApi.count_applications_for_market(market.id)
+        unreviewed_count = ApplicationsApi.count_applications_with_any_status(
+            market.id, ["open", "under_review"],
+        )
+        if unreviewed_count > 0:
+            app_word = (
+                "application is" if unreviewed_count == 1 else "applications are"
+            )
             return PreconditionResult(
                 id=self.id,
                 passed=False,
                 message=(
-                    f"{len(unreviewed)} {app_word} still awaiting review. "
+                    f"{unreviewed_count} {app_word} still awaiting review. "
                     "Every application must be approved or rejected before assignment "
                     "can begin."
                 ),
                 resolution_link="/market-setup",
             )
-        if len(apps) == 0:
+        if total == 0:
             return PreconditionResult(
                 id=self.id,
                 passed=False,
@@ -117,19 +119,19 @@ class NoApprovedApplicationsGuard:
     id: str = "no_approved_applications"
     description: str = "No application remains reviewer_approved"
 
-    def evaluate(self, market: Market, db) -> PreconditionResult:
-        apps = list(db.applications.find({"market_id": market.id}))
-        approved = [
-            app for app in apps
-            if app.get("status") == "reviewer_approved"
-        ]
-        if approved:
-            app_word = "application is" if len(approved) == 1 else "applications are"
+    def evaluate(self, market: Market, _db) -> PreconditionResult:
+        approved_count = ApplicationsApi.count_applications_with_status(
+            market.id, "reviewer_approved",
+        )
+        if approved_count > 0:
+            app_word = (
+                "application is" if approved_count == 1 else "applications are"
+            )
             return PreconditionResult(
                 id=self.id,
                 passed=False,
                 message=(
-                    f"{len(approved)} {app_word} still approved but not yet "
+                    f"{approved_count} {app_word} still approved but not yet "
                     "assigned or unassigned. Run the assignment solver before "
                     "sending offers."
                 ),

@@ -296,32 +296,6 @@ class TestGuardDesignProperties:
         assert len(guards) == 1
 
 
-class FakeApplicationsCollection:
-    """A fake Mongo collection for guard tests that query applications."""
-
-    def __init__(self, docs):
-        self._docs = list(docs)
-
-    def find(self, query):
-        results = []
-        for doc in self._docs:
-            match = True
-            for key, value in query.items():
-                if doc.get(key) != value:
-                    match = False
-                    break
-            if match:
-                results.append(dict(doc))
-        return results
-
-
-class FakeDB:
-    """A fake database handle carrying a fake applications collection."""
-
-    def __init__(self, applications=None):
-        self.applications = applications or FakeApplicationsCollection([])
-
-
 class TestAllApplicationsReviewedGuard:
     def _market(self):
         return _make_market(
@@ -331,38 +305,39 @@ class TestAllApplicationsReviewedGuard:
             ),
         )
 
-    def test_passes_when_all_apps_are_reviewed(self):
-        market = self._market()
-        db = FakeDB(FakeApplicationsCollection([
-            {"market_id": market.id, "status": "reviewer_approved"},
-            {"market_id": market.id, "status": "reviewer_rejected"},
-        ]))
-        result = AllApplicationsReviewedGuard().evaluate(market, db)
+    @staticmethod
+    def _patch(monkeypatch, total=0, unreviewed=0):
+        monkeypatch.setattr(
+            guards.ApplicationsApi,
+            "count_applications_for_market",
+            lambda _market_id: total,
+        )
+        monkeypatch.setattr(
+            guards.ApplicationsApi,
+            "count_applications_with_any_status",
+            lambda _market_id, _statuses: unreviewed,
+        )
+
+    def test_passes_when_all_apps_are_reviewed(self, monkeypatch):
+        self._patch(monkeypatch, total=3, unreviewed=0)
+        result = AllApplicationsReviewedGuard().evaluate(self._market(), None)
         assert result.passed is True
         assert result.id == "all_applications_reviewed"
 
-    def test_fails_when_some_apps_are_open(self):
-        market = self._market()
-        db = FakeDB(FakeApplicationsCollection([
-            {"market_id": market.id, "status": "open"},
-            {"market_id": market.id, "status": "reviewer_approved"},
-        ]))
-        result = AllApplicationsReviewedGuard().evaluate(market, db)
+    def test_fails_when_some_apps_are_open(self, monkeypatch):
+        self._patch(monkeypatch, total=3, unreviewed=1)
+        result = AllApplicationsReviewedGuard().evaluate(self._market(), None)
         assert result.passed is False
         assert "still awaiting review" in result.message.lower()
 
-    def test_fails_when_some_apps_are_under_review(self):
-        market = self._market()
-        db = FakeDB(FakeApplicationsCollection([
-            {"market_id": market.id, "status": "under_review"},
-        ]))
-        result = AllApplicationsReviewedGuard().evaluate(market, db)
+    def test_fails_when_some_apps_are_under_review(self, monkeypatch):
+        self._patch(monkeypatch, total=1, unreviewed=1)
+        result = AllApplicationsReviewedGuard().evaluate(self._market(), None)
         assert result.passed is False
 
-    def test_fails_when_no_applications_exist(self):
-        market = self._market()
-        db = FakeDB(FakeApplicationsCollection([]))
-        result = AllApplicationsReviewedGuard().evaluate(market, db)
+    def test_fails_when_no_applications_exist(self, monkeypatch):
+        self._patch(monkeypatch, total=0, unreviewed=0)
+        result = AllApplicationsReviewedGuard().evaluate(self._market(), None)
         assert result.passed is False
         assert "no applications" in result.message.lower()
 
@@ -382,30 +357,23 @@ class TestNoApprovedApplicationsGuard:
             ),
         )
 
-    def test_passes_when_no_apps_are_approved(self):
-        market = self._market()
-        db = FakeDB(FakeApplicationsCollection([
-            {"market_id": market.id, "status": "assigned"},
-            {"market_id": market.id, "status": "unassigned"},
-            {"market_id": market.id, "status": "reviewer_rejected"},
-        ]))
-        result = NoApprovedApplicationsGuard().evaluate(market, db)
+    @staticmethod
+    def _patch(monkeypatch, approved_count=0):
+        monkeypatch.setattr(
+            guards.ApplicationsApi,
+            "count_applications_with_status",
+            lambda _market_id, _status: approved_count,
+        )
+
+    def test_passes_when_no_apps_are_approved(self, monkeypatch):
+        self._patch(monkeypatch, approved_count=0)
+        result = NoApprovedApplicationsGuard().evaluate(self._market(), None)
         assert result.passed is True
         assert result.id == "no_approved_applications"
 
-    def test_passes_when_no_apps_exist(self):
-        market = self._market()
-        db = FakeDB(FakeApplicationsCollection([]))
-        result = NoApprovedApplicationsGuard().evaluate(market, db)
-        assert result.passed is True
-
-    def test_fails_when_some_apps_are_still_approved(self):
-        market = self._market()
-        db = FakeDB(FakeApplicationsCollection([
-            {"market_id": market.id, "status": "reviewer_approved"},
-            {"market_id": market.id, "status": "assigned"},
-        ]))
-        result = NoApprovedApplicationsGuard().evaluate(market, db)
+    def test_fails_when_some_apps_are_still_approved(self, monkeypatch):
+        self._patch(monkeypatch, approved_count=2)
+        result = NoApprovedApplicationsGuard().evaluate(self._market(), None)
         assert result.passed is False
         assert "still approved" in result.message.lower()
 

@@ -1106,13 +1106,10 @@ def transition_market(market_id: str) -> Response:
         # ── Side effects (only after a successful phase write) ────────────
         if from_phase == "offers" and to_phase == MarketPhase.MARKET_DAYS:
             try:
-                result_sweep = MarketsApi.db.applications.update_many(
-                    {"market_id": market_id, "status": "assignment_sent"},
-                    {"$set": {"status": "vendor_refused"}},
-                )
+                swept = ApplicationsApi.sweep_unanswered_offers(market_id)
                 logger.info(
                     "Swept %d assignment_sent applications to vendor_refused for market %s",
-                    result_sweep.modified_count,
+                    swept,
                     market_id,
                 )
             except Exception:
@@ -1157,10 +1154,9 @@ def pending_offers_count(market_id: str) -> Response:
                 "error": "User does not have permission to view this market"
             }), 403
 
-        count = MarketsApi.db.applications.count_documents({
-            "market_id": market_id,
-            "status": "assignment_sent",
-        })
+        count = ApplicationsApi.count_applications_with_status(
+            market_id, "assignment_sent",
+        )
 
         return jsonify({"count": count}), 200
 
